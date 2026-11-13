@@ -341,7 +341,10 @@ def lesen(uid: str) -> dict | None:
         "teilnehmer": tn, "status": a["status"], "status_grund": a["status_grund"],
         "kein_bot": a["kein_bot"], "will_zusammenfassung": a["will_zusammenfassung"],
         "abgesagt": a["abgesagt_am"] is not None, "briefing": briefing,
-        "mitschrift": mitschrift, "vorschlaege": vorschlaege}
+        "mitschrift": mitschrift, "vorschlaege": vorschlaege,
+        "bildschirm_auswerten": bool(a["bildschirm_auswerten"]),
+        "bilder_anzahl": int(server._q(
+            "select count(*) as n from termin_bilder where uid = %s", (uid,))[0]["n"])}
 
 
 def status_setzen(uid: str, status: str, grund: str = "", **felder) -> None:

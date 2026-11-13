@@ -637,3 +637,268 @@ def test_i2_aufnahme_beenden_setzt_status_vor_dem_loeschen(monkeypatch):
     _post("u1", "ohne_aufnahme")
     assert gesehen == ["ohne_aufnahme"]
     assert _mit() is None
+
+
+# --- Bildschirm (Bildauswertung live, Task 7) --------------------------------
+
+def _jpeg(farbe=(10, 20, 30)):
+    import io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (64, 40), farbe).save(out, "JPEG")
+    return out.getvalue()
+
+
+def _jitsi(uid="j1", status="laeuft", **spalten):
+    return _akte(uid, plattform="jitsi", status=status, vexa_meeting_id=7,
+                 link="https://meet.ffmuc.net/x1", **spalten)
+
+
+def _bild(uid="j1", minuten=0, name=None, beschr=None):
+    import bildschirm
+    bid = bildschirm.bild_ablegen(uid, _jpeg((minuten * 20 % 255, 0, 0)),
+                                  datetime(2099, 1, 9, 12, 1, tzinfo=timezone.utc)
+                                  + timedelta(minutes=minuten), name)
+    assert bid
+    if beschr is not None:
+        server._q("update termin_bilder set beschreibung = %s, beschreibung_status = 'fertig' "
+                  "where id = %s returning id", (beschr, bid))
+    return bid
+
+
+def _an(uid="j1"):
+    return _zeile(uid)["bildschirm_auswerten"]
+
+
+def _neue_uuid():
+    import uuid
+    return str(uuid.uuid4())
+
+
+def test_schalter_nur_bei_jitsi():
+    _akte("u1", plattform="google_meet", status="geplant")
+    a = _post("u1", "bildschirm")
+    assert a.status_code == 303
+    assert _hinweis(a) == "Bildschirm auswerten geht in Stufe 1 nur bei Jitsi-Terminen."
+    assert _an("u1") is False
+    # auch ohne erkannte Plattform
+    _akte("u2", plattform=None, status="kein_link", link=None)
+    assert "nur bei Jitsi" in _hinweis(_post("u2", "bildschirm"))
+    assert _an("u2") is False
+
+
+def test_schalter_schaltet_um():
+    _akte("j1", plattform="jitsi", status="geplant")
+    assert "Bildschirm auswerten: aus" in _get(_pfad("j1")).text
+    a = _post("j1", "bildschirm")
+    assert a.status_code == 303 and _hinweis(a) == ""
+    assert _an("j1") is True
+    assert "Bildschirm auswerten: an" in _get(_pfad("j1")).text
+    _post("j1", "bildschirm")
+    assert _an("j1") is False
+
+
+@pytest.mark.parametrize("status", ["wartet_auf_einlass", "laeuft", "kein_link"])
+def test_schalter_in_erlaubten_status(status):
+    _akte("j1", plattform="jitsi", status=status)
+    assert _hinweis(_post("j1", "bildschirm")) == ""
+    assert _an("j1") is True
+
+
+@pytest.mark.parametrize("status", ["fertig", "ohne_aufnahme", "fehlgeschlagen"])
+def test_schalter_gesperrt_nach_dem_termin(status):
+    _akte("j1", plattform="jitsi", status=status)
+    assert "nicht mehr" in _hinweis(_post("j1", "bildschirm"))
+    assert _an("j1") is False
+
+
+def test_schalter_csrf_und_rolle_lesen(scharf):
+    _akte("j1", plattform="jitsi", status="geplant")
+    assert _post("j1", "bildschirm", csrf=False).status_code == 403
+    assert _an("j1") is False
+    client = _anmelden("lena", "lesen")
+    assert _post("j1", "bildschirm", client=client).status_code == 403
+    assert _an("j1") is False
+    assert "Bildschirm auswerten:" not in _get(_pfad("j1"), client).text
+
+
+def test_reiter_bildschirm_nur_mit_schalter_oder_bildern():
+    _akte("j1", plattform="jitsi", status="geplant")
+    assert "reiter=bildschirm" not in _get(_pfad("j1")).text
+    _post("j1", "bildschirm")
+    assert "reiter=bildschirm" in _get(_pfad("j1")).text
+
+
+def test_reiter_bildschirm_zeigt_bilder():
+    _jitsi(bildschirm_auswerten=True)
+    b1 = _bild(minuten=0, name="Karla <i>K</i>", beschr="Folie <script>x()</script> Budget")
+    b2 = _bild(minuten=1)
+    a = _get(_pfad("j1") + "?reiter=bildschirm")
+    assert a.status_code == 200
+    t = a.text
+    assert f"/termine/j1/bild/{b1}.jpg" in t and f"/termine/j1/bild/{b2}.jpg" in t
+    assert "Folie &lt;script&gt;x()&lt;/script&gt; Budget" in t and "<script>x()" not in t
+    assert "Karla &lt;i&gt;K&lt;/i&gt;" in t and "<i>K</i>" not in t
+    assert "wird beschrieben" in t                       # b2 noch ohne Beschreibung
+    assert "13:01" in t                                  # 12:01 UTC = 13:01 Berlin (Januar)
+    assert "/static/termin_bilder/bilder.js" in t and 'type="search"' in t
+    assert "script-src 'self'" in a.headers["content-security-policy"]
+
+
+def test_reiter_bildschirm_ohne_bilder_hinweis():
+    _jitsi(bildschirm_auswerten=True)
+    assert "Noch keine Bilder" in _get(_pfad("j1") + "?reiter=bildschirm").text
+
+
+def test_bilder_json_live():
+    _jitsi(bildschirm_auswerten=True)
+    b = _bild(beschr="Preisliste")
+    a = _get(_pfad("j1") + "/bilder.json")
+    assert a.status_code == 200
+    d = a.json()
+    assert d["live"] is True
+    assert [x["id"] for x in d["bilder"]] == [b]
+    x = d["bilder"][0]
+    assert x["beschreibung"] == "Preisliste" and x["url"] == f"/termine/j1/bild/{b}.jpg"
+    assert "bild" not in x and "dhash" not in x
+    server._q("update termin_akten set status = 'fertig' where uid = 'j1' returning uid")
+    assert _get(_pfad("j1") + "/bilder.json").json()["live"] is False
+
+
+def test_bilder_json_unbekannte_akte_404():
+    assert _get(_pfad("gibts-nicht") + "/bilder.json").status_code == 404
+
+
+def test_bild_jpg_und_fremde_uid_404():
+    _jitsi(bildschirm_auswerten=True)
+    _jitsi("j2", bildschirm_auswerten=True)
+    b = _bild("j1")
+    a = _get(f"/termine/j1/bild/{b}.jpg")
+    assert a.status_code == 200 and a.headers["content-type"] == "image/jpeg"
+    assert a.headers["cache-control"] == "private, max-age=3600"
+    assert a.content.startswith(b"\xff\xd8")
+    assert _get(f"/termine/j2/bild/{b}.jpg").status_code == 404
+    assert _get(f"/termine/j1/bild/{_neue_uuid()}.jpg").status_code == 404
+    assert _get("/termine/j1/bild/kein-uuid.jpg").status_code == 404
+
+
+def test_bild_loeschen():
+    _jitsi(bildschirm_auswerten=True)
+    b1, b2 = _bild(minuten=0), _bild(minuten=1)
+    a = _post("j1", "bild_loeschen", bild_id=b1)
+    assert a.status_code == 303 and _hinweis(a) == ""
+    assert "reiter=bildschirm" in a.headers["location"]
+    import bildschirm
+    assert [str(x["id"]) for x in bildschirm.bilder("j1")] == [b2]
+    assert "nicht (mehr)" in _hinweis(_post("j1", "bild_loeschen", bild_id=b1))
+    assert "nicht (mehr)" in _hinweis(_post("j1", "bild_loeschen", bild_id="murks"))
+
+
+def test_bild_loeschen_csrf_und_rolle(scharf):
+    _jitsi(bildschirm_auswerten=True)
+    b = _bild()
+    assert _post("j1", "bild_loeschen", csrf=False, bild_id=b).status_code == 403
+    client = _anmelden("lena", "lesen")
+    assert _post("j1", "bild_loeschen", client=client, bild_id=b).status_code == 403
+    import bildschirm
+    assert len(bildschirm.bilder("j1")) == 1
+    t = _get(_pfad("j1") + "?reiter=bildschirm", client).text
+    assert f"/termine/j1/bild/{b}.jpg" in t and "bild_loeschen" not in t
+
+
+def test_rolle_lesen_darf_bilder_sehen(scharf):
+    _jitsi(bildschirm_auswerten=True)
+    b = _bild()
+    client = _anmelden("lena", "lesen")
+    assert _get(_pfad("j1") + "/bilder.json", client).status_code == 200
+    assert _get(f"/termine/j1/bild/{b}.jpg", client).status_code == 200
+
+
+class _Antwort:
+    def __init__(self, daten):
+        self._d = json.dumps(daten).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, *a):
+        return self._d
+
+
+def test_bilder_json_suche_ruft_auge(monkeypatch):
+    import urllib.request
+    _jitsi(bildschirm_auswerten=True)
+    b1, b2 = _bild(minuten=0, beschr="Preisliste"), _bild(minuten=1, beschr="Vertrag")
+    gesehen = {}
+
+    def urlopen(req, timeout=None):
+        gesehen["url"], gesehen["timeout"] = req.full_url, timeout
+        gesehen["body"] = json.loads(req.data)
+        return _Antwort([
+            {"id": b2, "uid": "j1", "aufgenommen_am": "x", "beschreibung": "Vertrag",
+             "score": 0.9},
+            {"id": _neue_uuid(), "uid": "j1", "aufgenommen_am": "x",
+             "beschreibung": "weg", "score": 0.5}])
+
+    monkeypatch.setenv("AUGE_URL", "http://auge:8790")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    d = _get(_pfad("j1") + "/bilder.json?q=Vertrag").json()
+    assert gesehen["url"] == "http://auge:8790/suche" and gesehen["timeout"] <= 15
+    assert gesehen["body"]["text"] == "Vertrag" and gesehen["body"]["uid"] == "j1"
+    assert [x["id"] for x in d["bilder"]] == [b2]       # unbekannte Id faellt weg
+    assert d["bilder"][0]["score"] == 0.9 and "fehler" not in d
+
+
+def test_bilder_json_suche_ohne_auge_ist_freundlich(monkeypatch):
+    import urllib.request
+    _jitsi(bildschirm_auswerten=True)
+    _bild()
+    monkeypatch.setenv("AUGE_URL", "")
+    d = _get(_pfad("j1") + "/bilder.json?q=x")
+    assert d.status_code == 200 and d.json()["bilder"] == [] and d.json()["fehler"]
+
+    def kaputt(req, timeout=None):
+        raise OSError("weg")
+    monkeypatch.setenv("AUGE_URL", "http://auge:8790")
+    monkeypatch.setattr(urllib.request, "urlopen", kaputt)
+    d = _get(_pfad("j1") + "/bilder.json?q=x")
+    assert d.status_code == 200 and d.json()["fehler"]
+
+
+def test_route_reihenfolge_vor_kennung_path():
+    pfade = [r.path for r in ui_termin.routen(ui)]
+    kennung = [i for i, p in enumerate(pfade) if p == "/termine/{kennung:path}"]
+    assert kennung
+    bild = [i for i, p in enumerate(pfade) if "bild" in p]
+    assert bild and max(bild) < min(kennung)
+    assert any(p.endswith("/bilder.json") for p in pfade)
+    assert any(p.endswith(".jpg") for p in pfade)
+
+
+def test_static_bilder_js():
+    a = _get("/static/termin_bilder/bilder.js")
+    assert a.status_code == 200 and "javascript" in a.headers["content-type"]
+    assert "innerHTML" not in a.text
+    assert _get("/static/termin_bilder/nix.js").status_code == 404
+
+
+def test_verlauf_zeigt_vorschaubilder():
+    _jitsi(bildschirm_auswerten=True)
+    segmente = [{"sprecher": "A", "beginn": "2099-01-09T12:00:00Z", "text": "SEGMENTAAA"},
+                {"sprecher": "B", "beginn": "2099-01-09T12:02:00Z", "text": "SEGMENTBBB"}]
+    _mitschrift("j1", segmente=json.dumps(segmente))
+    b0 = _bild(minuten=0)          # 12:01 -> gehoert zu "erste"
+    b1 = _bild(minuten=2)          # 12:03 -> gehoert zu "zweite"
+    t = _get(_pfad("j1") + "?reiter=mitschrift").text
+    i0, i1 = t.index(f"/bild/{b0}.jpg"), t.index(f"/bild/{b1}.jpg")
+    assert t.index("SEGMENTAAA") < i0 < t.index("SEGMENTBBB") < i1
+
+
+def test_akte_json_hat_schalter_und_anzahl():
+    _jitsi(bildschirm_auswerten=True)
+    _bild()
+    d = _get(_pfad("j1") + ".json").json()
+    assert d["bildschirm_auswerten"] is True and d["bilder_anzahl"] == 1

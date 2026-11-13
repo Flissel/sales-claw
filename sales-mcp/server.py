@@ -10584,6 +10584,25 @@ def termin_akte_lesen(uid: str) -> str:
     return _json(termin_akte.fuer_agenten(akte))
 
 
+@_gesichert
+def termin_bilder_suchen(text: str, uid: str = "", limit: int = 10) -> str:
+    """Bildschirm-Standbilder aus Terminen durchsuchen (Bildauswertung live):
+    findet per Textsuche die Bilder, deren Beschreibung zum `text` passt.
+    `uid` (Kalender-UID des Termins) begrenzt auf einen Termin, leer = alle
+    Termine. Liefert eine JSON-Liste mit id, uid, aufgenommen_am, beschreibung
+    und score - nie die Bildbytes. Nur lesen."""
+    import bildschirm   # erst hier: bildschirm importiert server (Ringimport)
+    text = " ".join(str(text or "").split())
+    if not text:
+        return _json({"fehler": "Suchtext fehlt."})
+    try:
+        treffer = bildschirm.suchen(text, uid.strip() or None, limit)
+    except bildschirm.SucheFehler as e:
+        return _json({"fehler": str(e)})
+    erlaubt = ("id", "uid", "aufgenommen_am", "beschreibung", "score")
+    return _json([{k: t.get(k) for k in erlaubt} for t in treffer])
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
@@ -10736,7 +10755,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              # M8 Auftragsbuch: Meldungen an den Betreiber (antworten-pruefen). tests/test_auftrag_meldung.py.
              auftraege_melden,
              # Meeting-Mittelpunkt: Termin-Akte lesen. tests/test_termin_akte_mcp.py.
-             termin_akte_lesen)
+             termin_akte_lesen,
+             # Bildauswertung live: Standbilder der Termine suchen. tests/test_termin_akte_mcp.py.
+             termin_bilder_suchen)
 
 def bedarfsanalyse_an() -> bool:
     """Schalter SALES_BEDARFSANALYSE (je Aufruf gelesen): nur "an" schaltet

@@ -114,3 +114,55 @@ def test_mcp_pwd_hash_in_jeder_url_weg():
     d = json.loads(roh)
     assert "https://zoom.us/j/9?uname=x" in d["beschreibung"] and "Bis dann" in d["beschreibung"]
     assert d["beitreten"]["link"] == "https://zoom.us/j/9"
+
+
+class _Antwort:
+    def __init__(self, daten):
+        self._d = json.dumps(daten).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, *a):
+        return self._d
+
+
+def test_mcp_termin_bilder_suchen(monkeypatch):
+    import urllib.request
+
+    gesehen = {}
+
+    def urlopen(req, timeout=None):
+        gesehen["url"], gesehen["body"] = req.full_url, json.loads(req.data)
+        gesehen["timeout"] = timeout
+        return _Antwort([{"id": "i1", "uid": "u1", "aufgenommen_am": "2099-01-09T12:00:00Z",
+                          "beschreibung": "Folie", "score": 0.8, "bild": "ROHBYTES"}])
+
+    monkeypatch.setenv("AUGE_URL", "http://auge:8790")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert server.termin_bilder_suchen in server.WERKZEUGE
+    roh = server.termin_bilder_suchen("Preisliste", uid="u1", limit=3)
+    assert gesehen["url"] == "http://auge:8790/suche" and gesehen["timeout"] <= 15
+    assert gesehen["body"] == {"text": "Preisliste", "uid": "u1", "limit": 3}
+    d = json.loads(roh)
+    assert d[0]["id"] == "i1" and d[0]["beschreibung"] == "Folie" and "ROHBYTES" not in roh
+    # ohne uid: kein uid-Feld
+    server.termin_bilder_suchen("x")
+    assert "uid" not in gesehen["body"] and gesehen["body"]["limit"] == 10
+
+
+def test_mcp_termin_bilder_suchen_fehlerfaelle(monkeypatch):
+    import urllib.request
+    monkeypatch.setenv("AUGE_URL", "")
+    assert "fehler" in json.loads(server.termin_bilder_suchen("x"))
+    monkeypatch.setenv("AUGE_URL", "http://auge:8790")
+
+    def kaputt(req, timeout=None):
+        raise OSError("geheim-Anfragetext")
+    monkeypatch.setattr(urllib.request, "urlopen", kaputt)
+    roh = server.termin_bilder_suchen("x")
+    assert "fehler" in json.loads(roh) and "geheim" not in roh
+    assert "fehler" in json.loads(server.termin_bilder_suchen("   "))

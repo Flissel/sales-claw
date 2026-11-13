@@ -155,3 +155,36 @@ def bilder_zu_abschnitt(segmente: list[dict], von: int, bis: int,
     ende = next((b for b in map(_beginn, segmente[bis + 1:]) if b), None)
     return [str(b["id"]) for b in bilder
             if b["aufgenommen_am"] >= anfang and (ende is None or b["aufgenommen_am"] < ende)]
+
+
+class SucheFehler(Exception):
+    """Die Bildsuche (sales-auge) ist nicht erreichbar oder antwortet unbrauchbar.
+    Der Text ist fest und traegt nie die Anfrage."""
+
+
+SUCHE_ZEIT = 10  # Sekunden
+
+
+def suchen(text: str, uid: str | None = None, limit: int = 10) -> list[dict]:
+    """Fragt sales-auge (`AUGE_URL/suche`) und gibt dessen Trefferliste zurueck
+    (id, uid, aufgenommen_am, beschreibung, score). Nie loggen: der Suchtext."""
+    import json
+    import os
+    import urllib.request
+    basis = os.environ.get("AUGE_URL", "").strip().rstrip("/")
+    if not basis:
+        raise SucheFehler("Die Bildsuche ist nicht eingerichtet.")
+    body = {"text": text, "limit": max(1, min(int(limit), 50))}
+    if uid:
+        body["uid"] = uid
+    anfrage = urllib.request.Request(
+        basis + "/suche", data=json.dumps(body).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(anfrage, timeout=SUCHE_ZEIT) as antwort:
+            treffer = json.loads(antwort.read())
+    except Exception:   # Netz, Zeit, JSON: alles wird zur festen Meldung
+        raise SucheFehler("Die Bildsuche ist gerade nicht erreichbar.") from None
+    if not isinstance(treffer, list):
+        raise SucheFehler("Die Bildsuche ist gerade nicht erreichbar.")
+    return [t for t in treffer if isinstance(t, dict)]
