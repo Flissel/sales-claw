@@ -502,7 +502,10 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
         LOG.info("Auswertung uid=%s: Mitschrift verworfen waehrend Auswertung", _h(uid))
         return
     entwurf = None
-    if akte and akte["will_zusammenfassung"] and leads and m["entwurf_id"] is None:
+    # Internes Gespraech (art "intern"): keine Zusammenfassung an einen Kunden,
+    # Ergebnis und Wiedervorlagen oben entstehen trotzdem.
+    if (akte and akte["will_zusammenfassung"] and a.get("art") != "intern"
+            and leads and m["entwurf_id"] is None):
         try:
             entwurf = _zusammenfassung(uid, akte, a, leads[0])
             if entwurf:

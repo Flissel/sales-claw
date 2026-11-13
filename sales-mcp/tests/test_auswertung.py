@@ -55,6 +55,12 @@ VOLL = {
     "offene_fragen": ["Zwei Arbeitsplaetze mehr?"],
     "stimmung": "STIMMUNG-GEHEIM offen und interessiert",
     "ergebnis": {"stattgefunden": True, "erfolg": True, "was": "Vorfuehrung vereinbart"},
+    "art": "kundentermin",
+    "verlauf": [{"thema": "VERLAUF-GEHEIM Angebote", "inhalt": "Angebote dauern zu lange.",
+                 "von": 0, "bis": 9},
+                {"thema": "Budget", "inhalt": "Budget liegt bei 5000 Euro.", "von": 10, "bis": 20}],
+    "entscheidungen": [{"text": "Vorfuehrung am 17.11.", "segment": 30}],
+    "ideen": ["IDEE-GEHEIM Vorlage fuer Angebote"],
 }
 
 
@@ -67,9 +73,12 @@ def test_fixture_ist_ein_gespraech():
 
 def test_abschnitte_reihenfolge():
     assert [k for k, _ in auswertung.ABSCHNITTE] == [
-        "kurzfassung", "painpoints", "ziele", "fakten", "einwaende", "zusagen_felix",
-        "zusagen_kunde", "naechste_schritte", "beteiligte", "offene_fragen", "stimmung"]
-    assert [t for _, t in auswertung.ABSCHNITTE][2] == "Ziele und Wünsche"
+        "kurzfassung", "verlauf", "entscheidungen", "painpoints", "ziele", "ideen", "fakten",
+        "einwaende", "zusagen_felix", "zusagen_kunde", "naechste_schritte", "beteiligte",
+        "offene_fragen", "stimmung"]
+    titel = dict(auswertung.ABSCHNITTE)
+    assert titel["ziele"] == "Ziele und Wünsche"
+    assert titel["verlauf"] == "Gesprächsverlauf"
 
 
 def test_markdown_alle_abschnitte_in_reihenfolge(stub):
@@ -93,11 +102,11 @@ def test_painpoint_zeit_aus_segment(stub):
     seg = _fixture()
     a = auswertung.auswerten(seg)
     assert a["painpoints"] == [{"zitat": "Das kostet uns jede Woche gut zehn Stunden.",
-                                "zeit": "01:15", "sprecher": seg[5]["sprecher"]}]
+                                "zeit": "01:15", "sprecher": seg[5]["sprecher"],
+                                "bedeutung": ""}]
     assert s.aufrufe[0]["als_json"] is True
     assert "[5] " in s.aufrufe[0]["nutzer"]
-    assert "Probleme, Ärger, Kosten, Zeitverlust des Kunden, wörtlich zitiert" \
-        in s.aufrufe[0]["system"]
+    assert "Painpoints nur fuer echte Probleme, Kosten oder Frust" in s.aufrufe[0]["system"]
 
 
 def test_painpoint_modellzeit_wird_ignoriert(stub):
@@ -138,7 +147,8 @@ def _stueck_antwort(kurz, painpoint_segment, punkt="Doppelt tippen"):
             "ziele": ["Zeit sparen"], "einwaende": ["Cloud?"]}
 
 
-def test_stueckelung(stub):
+def test_stueckelung(stub, monkeypatch):
+    monkeypatch.delenv("AUSWERTUNG_STUECK_ZEICHEN", raising=False)
     # 30 Segmente mit je ~1000 Zeichen = ~30 000 Zeichen -> drei Stuecke
     seg = [{"sprecher": "A", "beginn": f"2026-11-12T09:{i:02d}:00Z",
             "text": "wort " * 195, "sprache": "de"} for i in range(30)]
@@ -147,7 +157,7 @@ def test_stueckelung(stub):
     a = auswertung.auswerten(seg)
     assert len(s.aufrufe) == 4
     for aufruf in s.aufrufe[:3]:
-        assert len(aufruf["nutzer"]) <= auswertung.AUSWERTUNG_STUECK_ZEICHEN
+        assert len(aufruf["nutzer"]) <= auswertung.AUSWERTUNG_STUECK_ZEICHEN == 12000
         # nie mitten im Segment geteilt: jede Zeile beginnt mit [n] und ist vollstaendig
         assert all(z.startswith("[") and z.endswith("wort") for z in aufruf["nutzer"].splitlines())
     assert "Teil eins" in s.aufrufe[3]["nutzer"] and "Teil drei" in s.aufrufe[3]["nutzer"]
@@ -167,7 +177,8 @@ def test_stueckelung_dedupe_normalisiert_und_behaelt_datum(stub):
           "zusagen_felix": [{"text": "angebot senden.", "datum": "2026-12-01"}]})
     a = auswertung.auswerten(seg)
     assert len(a["painpoints"]) == 1
-    assert a["zusagen_felix"] == [{"text": "Angebot senden", "datum": "2026-12-01"}]
+    assert a["zusagen_felix"] == [{"text": "Angebot senden", "datum": "2026-12-01",
+                                   "segment": None}]
 
 
 def test_stueck_ohne_kurzfassung_braucht_keinen_zusammenfuehr_aufruf(stub):
@@ -224,7 +235,8 @@ def test_fehlende_schluessel_und_ergebnis_standard(stub):
     a = auswertung.auswerten(_fixture())
     assert a == auswertung._leer()
     assert a["ergebnis"] == {"stattgefunden": True, "erfolg": None, "was": ""}
-    assert set(a) == {k for k, _ in auswertung.ABSCHNITTE} | {"ergebnis", "felder"}
+    assert a["art"] == "kundentermin"
+    assert set(a) == {k for k, _ in auswertung.ABSCHNITTE} | {"ergebnis", "felder", "art"}
 
 
 def test_falsche_typen_werden_gerade_gezogen(stub):
@@ -241,9 +253,12 @@ def test_falsche_typen_werden_gerade_gezogen(stub):
     assert a["kurzfassung"] == "" and a["stimmung"] == "5"
     assert a["ziele"] == ["ein Ziel"] and a["fakten"] == ["1", "Wort Wort"]
     assert a["einwaende"] == [] and a["painpoints"] == []
-    assert a["zusagen_felix"] == [{"text": "A", "datum": None}, {"text": "B", "datum": None},
-                                  {"text": "C", "datum": "2026-12-31"},
-                                  {"text": "D", "datum": None}, {"text": "7", "datum": None}]
+    ohne = {"segment": None}
+    assert a["zusagen_felix"] == [{"text": "A", "datum": None, **ohne},
+                                  {"text": "B", "datum": None, **ohne},
+                                  {"text": "C", "datum": "2026-12-31", **ohne},
+                                  {"text": "D", "datum": None, **ohne},
+                                  {"text": "7", "datum": None, **ohne}]
     assert a["naechste_schritte"] == [{"text": "nicht liste", "datum": None}]
     assert a["ergebnis"] == {"stattgefunden": True, "erfolg": None, "was": "3"}
 
@@ -292,7 +307,8 @@ def test_kundenfassung_ohne_interna(stub):
     text = auswertung.kundenfassung(a, "Guten Tag Frau Kunde")
     assert text.startswith("Guten Tag Frau Kunde,")
     for geheim in ("EINWAND-GEHEIM", "STIMMUNG-GEHEIM", "BETEILIGTER-GEHEIM",
-                   "zehn Stunden", "Painpoint", "Einw", "Stimmung", "Entscheider"):
+                   "zehn Stunden", "Painpoint", "Einw", "Stimmung", "Entscheider",
+                   "VERLAUF-GEHEIM", "IDEE-GEHEIM", "Verlauf", "Ideen", "Segment"):
         assert geheim not in text
     for erwartet in (VOLL["kurzfassung"], "Nichts doppelt eintippen", "Angebot schicken",
                      "Budget klaeren", "Vorfuehrung", "Zwei Arbeitsplaetze mehr?",
@@ -358,3 +374,182 @@ def test_i10_felder_ueber_stuecke_vereint():
     a["felder"] = {"title": "Alt", "company": "Firma A"}
     b["felder"] = {"title": "Neu"}
     assert auswertung._vereinen([a, b])["felder"] == {"title": "Neu", "company": "Firma A"}
+
+
+# --- Tiefere Auswertung: Verlauf, Entscheidungen, Ideen, Gespraechsart ------
+
+def test_prompt_kennt_neue_regeln():
+    p = auswertung.SYSTEM_PROMPT
+    for teil in ('"art"', '"kundentermin"', '"intern"', '"verlauf"', '"entscheidungen"',
+                 '"ideen"', '"bedeutung"', "6 bis 12 Saetze", "Smalltalk",
+                 "ausdruecklich", "Spracherkennung",
+                 # Nachbesserung: Umlaute, technische Einrichtung, lueckenloser Verlauf
+                 "echte Umlaute (ä, ö, ü) und ß", "Bildschirm teilen", "Einwahl",
+                 "wer ist da", "jeder inhaltliche Abschnitt"):
+        assert teil in p, teil
+    assert "6 bis 12 Saetze" in auswertung.SYSTEM_ZUSAMMENFUEHREN
+
+
+def test_neue_abschnitte_falsche_typen_werden_leer(stub):
+    stub({"verlauf": "ein Text", "entscheidungen": {"x": 1}, "ideen": 5, "art": 7})
+    a = auswertung.auswerten(_fixture())
+    assert a["verlauf"] == [] and a["entscheidungen"] == [] and a["ideen"] == []
+    assert a["art"] == "kundentermin"
+
+
+def test_neue_abschnitte_eintraege_normalisiert(stub):
+    stub({"verlauf": [{"thema": "  Budget  ", "inhalt": "Fuenf   tausend", "von": 2, "bis": 4},
+                      {"thema": "ohne Bereich", "inhalt": "x", "von": "3", "bis": True},
+                      {"thema": "", "inhalt": ""}, "Text", None,
+                      {"thema": "zu gross", "von": 5, "bis": 999},
+                      {"inhalt": "nur Inhalt", "von": -1, "bis": 6}],
+          "entscheidungen": [{"text": "Pilot startet", "segment": 7},
+                             {"text": "ohne Beleg", "segment": "7"}, "als Text",
+                             {"segment": 3}, 4],
+          "ideen": ["  Vorlage  bauen ", None, {"a": 1}, 3]})
+    a = auswertung.auswerten(_fixture())
+    assert a["verlauf"] == [
+        {"thema": "Budget", "inhalt": "Fuenf tausend", "von": 2, "bis": 4},
+        {"thema": "ohne Bereich", "inhalt": "x", "von": None, "bis": None},
+        {"thema": "zu gross", "inhalt": "", "von": 5, "bis": None},
+        {"thema": "", "inhalt": "nur Inhalt", "von": None, "bis": 6},
+    ]
+    assert a["entscheidungen"] == [{"text": "Pilot startet", "segment": 7},
+                                   {"text": "ohne Beleg", "segment": None},
+                                   {"text": "als Text", "segment": None},
+                                   {"text": "4", "segment": None}]
+    assert a["ideen"] == ["Vorlage bauen", "3"]
+
+
+def test_verlauf_chronologisch_ohne_ueberlappung(stub):
+    stub({"verlauf": [{"thema": "C", "von": 20, "bis": 30},
+                      {"thema": "A", "von": 0, "bis": 12},
+                      {"thema": "B", "von": 10, "bis": 19},
+                      {"thema": "D", "von": 22, "bis": 25},
+                      {"thema": "E", "von": 33, "bis": 31}]})
+    v = auswertung.auswerten(_fixture())["verlauf"]
+    assert [(x["thema"], x["von"], x["bis"]) for x in v] == [
+        ("A", 0, 12), ("B", 13, 19), ("C", 20, 30), ("D", None, None), ("E", 31, 33)]
+
+
+def test_painpoint_bedeutung_und_markdown(stub):
+    stub({"painpoints": [{"zitat": "Das dauert ewig", "segment": 5,
+                          "bedeutung": "  kostet   Zeit "}]})
+    a = auswertung.auswerten(_fixture())
+    assert a["painpoints"][0]["bedeutung"] == "kostet Zeit"
+    assert "- „Das dauert ewig“ (01:15, Kundin) — kostet Zeit" in auswertung.markdown(a)
+
+
+def test_zusagen_mit_segment_beleg(stub):
+    stub({"zusagen_felix": [{"text": "Angebot", "datum": None, "segment": 12}],
+          "zusagen_kunde": [{"text": "Zahlen liefern", "segment": 14}, "Budget klaeren",
+                            {"text": "falscher Beleg", "segment": 999}]})
+    a = auswertung.auswerten(_fixture())
+    assert a["zusagen_felix"] == [{"text": "Angebot", "datum": None, "segment": 12}]
+    assert a["zusagen_kunde"] == [{"text": "Zahlen liefern", "segment": 14},
+                                  {"text": "Budget klaeren", "segment": None},
+                                  {"text": "falscher Beleg", "segment": None}]
+    md = auswertung.markdown(a)
+    assert "- Angebot [Segment 12]" in md and "- Zahlen liefern [Segment 14]" in md
+    assert "- Budget klaeren\n" in md
+
+
+def test_art_intern_leert_verkaufsrubriken(stub):
+    stub({**VOLL, "art": "intern", "ideen": ["Neues Modul"]})
+    a = auswertung.auswerten(_fixture())
+    assert a["art"] == "intern"
+    assert a["einwaende"] == [] and a["zusagen_kunde"] == []
+    assert a["painpoints"] == []     # intern: nie Painpoints, auch wenn das Modell welche liefert
+    assert a["ideen"] == ["Neues Modul"]
+    # Inhalt, Entscheidungen und Felix' Zusagen bleiben
+    assert a["verlauf"] and a["entscheidungen"] and a["zusagen_felix"]
+
+
+def test_art_kundentermin_behaelt_verkaufsrubriken(stub):
+    stub(VOLL)
+    a = auswertung.auswerten(_fixture())
+    assert a["art"] == "kundentermin"
+    assert a["einwaende"] == VOLL["einwaende"]
+    assert [z["text"] for z in a["zusagen_kunde"]] == VOLL["zusagen_kunde"]
+
+
+def test_stueck_zeichen_aus_umgebung(monkeypatch):
+    monkeypatch.delenv("AUSWERTUNG_STUECK_ZEICHEN", raising=False)
+    assert auswertung._stueck_zeichen() == 12000
+    monkeypatch.setenv("AUSWERTUNG_STUECK_ZEICHEN", "80000")
+    assert auswertung._stueck_zeichen() == 80000
+    for falsch in ("", "abc", "0", "-5", "1.5"):
+        monkeypatch.setenv("AUSWERTUNG_STUECK_ZEICHEN", falsch)
+        assert auswertung._stueck_zeichen() == 12000, falsch
+
+
+def test_stueck_zeichen_wirkt_auf_stueckelung(stub, monkeypatch):
+    seg = [{"sprecher": "A", "beginn": "", "text": "wort " * 195, "sprache": "de"}
+           for _ in range(30)]
+    monkeypatch.setenv("AUSWERTUNG_STUECK_ZEICHEN", "80000")
+    s = stub({"kurzfassung": "Ganz"})
+    assert auswertung.auswerten(seg)["kurzfassung"] == "Ganz"
+    assert len(s.aufrufe) == 1
+    monkeypatch.setenv("AUSWERTUNG_STUECK_ZEICHEN", "500")
+    zeilen = auswertung._zeilen(seg)
+    assert all(len(z) <= 499 for z in zeilen)
+    assert len(auswertung._stuecke(zeilen)) == 30
+
+
+def test_vereinen_haengt_verlauf_entscheidungen_ideen_an():
+    a, b = auswertung._leer(), auswertung._leer()
+    a["verlauf"] = [{"thema": "Eins", "inhalt": "", "von": 0, "bis": 10}]
+    b["verlauf"] = [{"thema": "Zwei", "inhalt": "", "von": 8, "bis": 20}]
+    a["entscheidungen"] = [{"text": "Pilot", "segment": 3}]
+    b["entscheidungen"] = [{"text": "Pilot", "segment": 15}]
+    a["ideen"], b["ideen"] = ["Vorlage"], ["Vorlage", "Bot"]
+    v = auswertung._vereinen([a, b])
+    assert [(x["thema"], x["von"], x["bis"]) for x in v["verlauf"]] == [
+        ("Eins", 0, 10), ("Zwei", 11, 20)]
+    assert v["entscheidungen"] == [{"text": "Pilot", "segment": 3},
+                                   {"text": "Pilot", "segment": 15}]
+    assert v["ideen"] == ["Vorlage", "Vorlage", "Bot"]
+
+
+def test_vereinen_art_intern_nur_wenn_alle_stuecke_intern():
+    a, b = auswertung._leer(), auswertung._leer()
+    a["art"], b["art"] = "intern", "intern"
+    b["painpoints"] = [{"zitat": "kaputt", "zeit": "", "sprecher": "A", "bedeutung": ""}]
+    assert auswertung._vereinen([a, b])["art"] == "intern"
+    assert auswertung._vereinen([a, b])["painpoints"] == []
+    b["art"] = "kundentermin"
+    b["einwaende"] = ["Preis"]
+    v = auswertung._vereinen([a, b])
+    assert v["art"] == "kundentermin" and v["einwaende"] == ["Preis"]
+
+
+def test_markdown_mit_verlauf(stub):
+    stub(VOLL)
+    md = auswertung.markdown(auswertung.auswerten(_fixture()))
+    ueberschriften = [z for z in md.splitlines() if z.startswith("## ")]
+    assert ueberschriften[:3] == ["## Kurzfassung", "## Gesprächsverlauf", "## Entscheidungen"]
+    assert "- **VERLAUF-GEHEIM Angebote** (Segment 0–9): Angebote dauern zu lange." in md
+    assert "- **Budget** (Segment 10–20): Budget liegt bei 5000 Euro." in md
+    assert "- Vorfuehrung am 17.11. [Segment 30]" in md
+    assert "## Ideen und Feedback\n- IDEE-GEHEIM Vorlage fuer Angebote" in md
+
+
+def test_markdown_verlauf_ohne_bereich_und_ohne_thema():
+    a = auswertung._leer()
+    a["verlauf"] = [{"thema": "Nur Thema", "inhalt": "", "von": None, "bis": None},
+                    {"thema": "", "inhalt": "Nur Inhalt", "von": 3, "bis": None}]
+    md = auswertung.markdown(a)
+    assert "- **Nur Thema**\n" in md and "- Nur Inhalt (Segment 3)\n" in md
+
+
+def test_kundenfassung_ohne_verlauf_und_ideen():
+    a = auswertung._leer()
+    a["kurzfassung"] = "Kurz."
+    a["verlauf"] = [{"thema": "VERLAUF-GEHEIM", "inhalt": "x", "von": 0, "bis": 1}]
+    a["ideen"] = ["IDEE-GEHEIM"]
+    a["entscheidungen"] = [{"text": "Pilot startet im Januar", "segment": 4}]
+    a["zusagen_kunde"] = [{"text": "Zahlen liefern", "segment": 9}]
+    text = auswertung.kundenfassung(a, "Hallo")
+    assert "VERLAUF-GEHEIM" not in text and "IDEE-GEHEIM" not in text
+    assert "Segment" not in text and "[" not in text
+    assert "Pilot startet im Januar" in text and "- Zahlen liefern" in text

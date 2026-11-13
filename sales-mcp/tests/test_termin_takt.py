@@ -550,6 +550,26 @@ def test_zusammenfassung_ohne_verknuepften_kontakt_kein_draft(fake, monkeypatch)
     assert server._q("select count(*) as n from termin_vorschlaege")[0]["n"] == 0
 
 
+def test_internes_gespraech_kein_entwurf_aber_vorschlaege(fake, monkeypatch):
+    # art "intern": keine Zusammenfassung an einen Kunden, auch mit Schalter;
+    # Ergebnis und Wiedervorlagen fuer Felix entstehen trotzdem.
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(auswertung, "auswerten", lambda s: _ergebnis(
+        art="intern", zusagen_felix=[{"text": "Board zeigen", "datum": "2099-02-01",
+                                      "segment": 3}]))
+    lead = _lead()
+    _akte("u1", status="fertig", will_zusammenfassung=True)
+    _teilnehmer("u1", lead)
+    _mitschrift("u1")
+    termin_takt.runde(JETZT)
+    m = _mit("u1")
+    assert m["auswertung_status"] == "fertig" and m["entwurf_id"] is None
+    assert server._q("select count(*) as n from drafts")[0]["n"] == 0
+    v = server._q("select art from termin_vorschlaege where mitschrift_id = %s order by art",
+                  (m["id"],))
+    assert [x["art"] for x in v] == ["termin_ergebnis", "wiedervorlage"]
+
+
 # ---------- Rundenverhalten und Log ----------
 
 def test_schritt_fehler_stoppt_rest_nicht_und_loggt_keine_meldung(fake, monkeypatch, caplog):
