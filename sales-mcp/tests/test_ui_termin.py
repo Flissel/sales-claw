@@ -888,13 +888,37 @@ def test_static_bilder_js():
 def test_verlauf_zeigt_vorschaubilder():
     _jitsi(bildschirm_auswerten=True)
     segmente = [{"sprecher": "A", "beginn": "2099-01-09T12:00:00Z", "text": "SEGMENTAAA"},
-                {"sprecher": "B", "beginn": "2099-01-09T12:02:00Z", "text": "SEGMENTBBB"}]
-    _mitschrift("j1", segmente=json.dumps(segmente))
-    b0 = _bild(minuten=0)          # 12:01 -> gehoert zu "erste"
-    b1 = _bild(minuten=2)          # 12:03 -> gehoert zu "zweite"
-    t = _get(_pfad("j1") + "?reiter=mitschrift").text
+                {"sprecher": "B", "beginn": "2099-01-09T12:02:00Z", "text": "SEGMENTBBB"},
+                {"sprecher": "C", "beginn": "2099-01-09T12:10:00Z", "text": "SEGMENTCCC"}]
+    verlauf = [{"thema": "Preise <b>neu</b>", "inhalt": "x", "von": 0, "bis": 0},
+               {"thema": "Vertrag", "inhalt": "y", "von": 1, "bis": 1},
+               {"thema": "Ohne Bilder", "inhalt": "z", "von": 2, "bis": 2},
+               {"thema": "KaputtBereich", "inhalt": "z", "von": "a", "bis": None},
+               {"thema": "AusserhalbBereich", "inhalt": "z", "von": 1, "bis": 99},
+               "kein-dict"]
+    _mitschrift("j1", segmente=json.dumps(segmente),
+                auswertung_json=json.dumps({"verlauf": verlauf}))
+    b0 = _bild(minuten=0)          # 12:01 -> Eintrag "Preise"
+    b1 = _bild(minuten=2)          # 12:03 -> Eintrag "Vertrag"
+    a = _get(_pfad("j1") + "?reiter=mitschrift")
+    assert a.status_code == 200
+    t = a.text
+    assert "Preise &lt;b&gt;neu&lt;/b&gt;" in t and "Preise <b>neu</b>" not in t
+    ip, iv = t.index("Preise &lt;b&gt;"), t.index(">Vertrag</h3>")
     i0, i1 = t.index(f"/bild/{b0}.jpg"), t.index(f"/bild/{b1}.jpg")
-    assert t.index("SEGMENTAAA") < i0 < t.index("SEGMENTBBB") < i1
+    assert ip < i0 < iv < i1
+    assert t.count(f"/bild/{b0}.jpg") == 2 and t.count(f"/bild/{b1}.jpg") == 2   # Link + Bild
+    for fremd in ("Ohne Bilder", "KaputtBereich", "AusserhalbBereich"):
+        assert f">{fremd}</h3>" not in t
+    # keine Vorschaubilder mehr je Rohsegment: nach dem Mitschrift-Text kommt keins
+    assert f"/bild/{b1}.jpg" not in t[t.index("SEGMENTAAA"):]
+
+
+def test_verlauf_ohne_auswertung_json_keine_bilder_je_thema():
+    _jitsi(bildschirm_auswerten=True)
+    _mitschrift("j1")
+    _bild()
+    assert "Bilder je Thema" not in _get(_pfad("j1") + "?reiter=mitschrift").text
 
 
 def test_akte_json_hat_schalter_und_anzahl():

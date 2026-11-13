@@ -310,7 +310,7 @@ def lesen(uid: str) -> dict | None:
               "order by (rolle = 'organisator') desc, adresse", (uid,))
           # Eine Sperre NACH dem Verknuepfen zaehlt auch: live pruefen.
           if not teilnehmer.sperrgrund(t["adresse"]) and not lead_weg(t["lead_id"])]
-    mit = server._q("select id, segmente, auswertung_status, auswertung_md "
+    mit = server._q("select id, segmente, auswertung_status, auswertung_md, auswertung_json "
                     "from termin_mitschriften where uid = %s", (uid,))
     mitschrift = None
     vorschlaege: list[dict] = []
@@ -318,7 +318,8 @@ def lesen(uid: str) -> dict | None:
         m = mit[0]
         mitschrift = {"id": str(m["id"]), "segmente": m["segmente"],
                       "auswertung_status": m["auswertung_status"],
-                      "auswertung_md": m["auswertung_md"]}
+                      "auswertung_md": m["auswertung_md"],
+                      "auswertung_json": m["auswertung_json"]}
         for v in server._q(
                 "select id, art, lead_id, daten, status from termin_vorschlaege "
                 "where mitschrift_id = %s order by erstellt_am", (m["id"],)):

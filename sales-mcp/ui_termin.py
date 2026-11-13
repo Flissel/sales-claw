@@ -292,14 +292,12 @@ def _mitschrift(akte: dict, schreiben: bool) -> str:
                           f'<span class="meta">({_e(VORSCHLAG_TEXT.get(v["status"], v["status"]))})</span>'
                           f'<div class="termin-aktionen">{knoepfe}</div></li>')
         teile.append(f'<h2>Vorschläge fürs CRM</h2><ul class="termin-liste">{"".join(zeilen)}</ul>')
+    teile.append(_bilder_je_thema(akte))
     segmente = m["segmente"] if isinstance(m["segmente"], list) else []
     if segmente:
-        bilder = bildschirm.bilder(uid) if akte["bilder_anzahl"] else []
         zeilen = "".join(f'<p><b>{_e(s.get("sprecher") or "?")}:</b> {_e(s.get("text"))}</p>'
-                         + (_vorschaubilder(akte, segmente, i, bilder) if bilder else "")
-                         for i, s in enumerate(segmente) if isinstance(s, dict))
-        stil = _BILD_STIL if bilder else ""
-        teile.append(f'{stil}<h2>Mitschrift</h2><div class="termin-md">{zeilen}</div>')
+                         for s in segmente if isinstance(s, dict))
+        teile.append(f'<h2>Mitschrift</h2><div class="termin-md">{zeilen}</div>')
     if schreiben:
         teile.append(_knopf(uid, "mitschrift_verwerfen", "Mitschrift verwerfen", "gefahr"))
     return "".join(teile)
@@ -389,12 +387,41 @@ def _bildschirm(akte: dict, schreiben: bool) -> str:
             + '<script src="/static/termin_bilder/bilder.js" defer></script>')
 
 
-def _vorschaubilder(akte: dict, segmente: list, i: int, bilder: list[dict]) -> str:
-    ids = bildschirm.bilder_zu_abschnitt(segmente, i, i, bilder)
+def _bilder_je_thema(akte: dict) -> str:
+    """Je Verlaufseintrag der Auswertung (auswertung_json["verlauf"]) die Bilder,
+    die in dessen Segmentbereich von..bis entstanden. Eintraege ohne gueltigen
+    Bereich oder ohne Bilder fehlen."""
+    m = akte["mitschrift"]
+    aj = m.get("auswertung_json")
+    if isinstance(aj, str):
+        try:
+            aj = json.loads(aj)
+        except ValueError:
+            aj = None
+    verlauf = aj.get("verlauf") if isinstance(aj, dict) else None
+    segmente = m["segmente"] if isinstance(m["segmente"], list) else []
+    if not akte["bilder_anzahl"] or not isinstance(verlauf, list) or not segmente:
+        return ""
+    bilder = bildschirm.bilder(akte["uid"])
     basis = _e(_pfad(akte["uid"]))
-    return "".join(f'<a href="{basis}/bild/{_e(b)}.jpg" target="_blank" rel="noopener">'
+    teile = []
+    for e in verlauf:
+        if not isinstance(e, dict):
+            continue
+        von, bis = e.get("von"), e.get("bis")
+        if (not isinstance(von, int) or not isinstance(bis, int) or isinstance(von, bool)
+                or isinstance(bis, bool) or von < 0 or bis < von or bis >= len(segmente)):
+            continue
+        ids = bildschirm.bilder_zu_abschnitt(segmente, von, bis, bilder)
+        if not ids:
+            continue
+        vorschau = "".join(f'<a href="{basis}/bild/{_e(b)}.jpg" target="_blank" rel="noopener">'
                    f'<img class="bild-vorschau" loading="lazy" alt="Bildschirm" '
                    f'src="{basis}/bild/{_e(b)}.jpg"></a>' for b in ids)
+        teile.append(f'<h3>{_e(e.get("thema") or "Thema")}</h3><p>{vorschau}</p>')
+    if not teile:
+        return ""
+    return _BILD_STIL + '<h2>Bilder je Thema</h2>' + "".join(teile)
 
 
 def _reiter_leiste(akte: dict, aktiv: str) -> str:
