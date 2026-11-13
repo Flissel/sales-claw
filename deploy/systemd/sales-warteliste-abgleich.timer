@@ -1,0 +1,10 @@
+[Unit]
+Description=sales-claw: Wartelisten-Abgleich einmal in der Nacht
+
+[Timer]
+OnCalendar=*-*-* 03:40:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
