@@ -63,6 +63,7 @@ MELDUNGEN = {
     "aufnahme_beendet": "Aufnahme beendet – der Bot verlässt den Termin in Kürze.",
     "bildschirm_nur_jitsi": "Bildschirm auswerten geht in Stufe 1 nur bei Jitsi-Terminen.",
     "bildschirm_gesperrt": "Bildschirm auswerten lässt sich bei diesem Terminstatus nicht mehr ändern.",
+    "bildschirm_wert": "Unklar, ob Bildschirm auswerten an oder aus sein soll – nichts geändert.",
     "bild_unbekannt": "Dieses Bild gibt es nicht (mehr).",
 }
 _VERLAUF_MAX = 20
@@ -178,8 +179,12 @@ def _schalter(akte: dict) -> str:
         teile.append(_knopf(uid, "kein_bot", "Kein Bot: " + ("an" if akte["kein_bot"]
                                                              else "aus")))
     if akte["status"] in _SCHALTER_STATUS:
-        teile.append(_knopf(uid, "bildschirm", "Bildschirm auswerten: "
-                            + ("an" if akte["bildschirm_auswerten"] else "aus")))
+        # Das Formular traegt den Zielzustand (idempotent: doppelt absenden
+        # oder ein alter Tab schaltet nicht zurueck).
+        an = bool(akte["bildschirm_auswerten"])
+        teile.append(_knopf(uid, "bildschirm", "Bildschirm auswerten: " + ("an" if an else "aus"),
+                            extra=f'<input type="hidden" name="wert" '
+                                  f'value="{"aus" if an else "an"}">'))
     return f'<div class="termin-aktionen">{"".join(teile)}</div>' if teile else ""
 
 
@@ -543,14 +548,17 @@ def _aktion(uid: str, form) -> str:
                 _zurueck(vid)
                 return fehler
     elif aktion == "bildschirm":
+        ziel = {"an": True, "aus": False}.get(str(form.get("wert") or ""))
+        if ziel is None:
+            return "bildschirm_wert"
         z = server._q("select plattform from termin_akten where uid = %s", (uid,))
         if not z or z[0]["plattform"] != "jitsi":
             return "bildschirm_nur_jitsi"
         if not server._q(
-                "update termin_akten set bildschirm_auswerten = not bildschirm_auswerten, "
+                "update termin_akten set bildschirm_auswerten = %s, "
                 "geaendert_am = now() where uid = %s and plattform = 'jitsi' "
                 "and status in ('geplant', 'kein_link', 'wartet_auf_einlass', 'laeuft') "
-                "returning uid", (uid,)):
+                "returning uid", (ziel, uid)):
             return "bildschirm_gesperrt"
     elif aktion == "bild_loeschen":
         bid = _uuid(form.get("bild_id"))

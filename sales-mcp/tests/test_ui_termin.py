@@ -677,47 +677,68 @@ def _neue_uuid():
 
 def test_schalter_nur_bei_jitsi():
     _akte("u1", plattform="google_meet", status="geplant")
-    a = _post("u1", "bildschirm")
+    a = _post("u1", "bildschirm", wert="an")
     assert a.status_code == 303
     assert _hinweis(a) == "Bildschirm auswerten geht in Stufe 1 nur bei Jitsi-Terminen."
     assert _an("u1") is False
     # auch ohne erkannte Plattform
     _akte("u2", plattform=None, status="kein_link", link=None)
-    assert "nur bei Jitsi" in _hinweis(_post("u2", "bildschirm"))
+    assert "nur bei Jitsi" in _hinweis(_post("u2", "bildschirm", wert="an"))
     assert _an("u2") is False
 
 
 def test_schalter_schaltet_um():
     _akte("j1", plattform="jitsi", status="geplant")
     assert "Bildschirm auswerten: aus" in _get(_pfad("j1")).text
-    a = _post("j1", "bildschirm")
+    assert 'name="wert" value="an"' in _get(_pfad("j1")).text
+    a = _post("j1", "bildschirm", wert="an")
     assert a.status_code == 303 and _hinweis(a) == ""
     assert _an("j1") is True
-    assert "Bildschirm auswerten: an" in _get(_pfad("j1")).text
-    _post("j1", "bildschirm")
+    t = _get(_pfad("j1")).text
+    assert "Bildschirm auswerten: an" in t and 'name="wert" value="aus"' in t
+    _post("j1", "bildschirm", wert="aus")
     assert _an("j1") is False
+
+
+def test_schalter_setzt_zielwert_idempotent():
+    _akte("j1", plattform="jitsi", status="laeuft", bildschirm_auswerten=True)
+    for _ in range(2):          # doppelt abgeschickt / alter Tab: bleibt aus
+        assert _hinweis(_post("j1", "bildschirm", wert="aus")) == ""
+        assert _an("j1") is False
+    for _ in range(2):
+        assert _hinweis(_post("j1", "bildschirm", wert="an")) == ""
+        assert _an("j1") is True
+
+
+@pytest.mark.parametrize("wert", [None, "", "toggle", "AN"])
+def test_schalter_ohne_gueltigen_wert_aendert_nichts(wert):
+    _akte("j1", plattform="jitsi", status="laeuft", bildschirm_auswerten=True)
+    felder = {} if wert is None else {"wert": wert}
+    a = _post("j1", "bildschirm", **felder)
+    assert a.status_code == 303 and "nichts geändert" in _hinweis(a)
+    assert _an("j1") is True
 
 
 @pytest.mark.parametrize("status", ["wartet_auf_einlass", "laeuft", "kein_link"])
 def test_schalter_in_erlaubten_status(status):
     _akte("j1", plattform="jitsi", status=status)
-    assert _hinweis(_post("j1", "bildschirm")) == ""
+    assert _hinweis(_post("j1", "bildschirm", wert="an")) == ""
     assert _an("j1") is True
 
 
 @pytest.mark.parametrize("status", ["fertig", "ohne_aufnahme", "fehlgeschlagen"])
 def test_schalter_gesperrt_nach_dem_termin(status):
     _akte("j1", plattform="jitsi", status=status)
-    assert "nicht mehr" in _hinweis(_post("j1", "bildschirm"))
+    assert "nicht mehr" in _hinweis(_post("j1", "bildschirm", wert="an"))
     assert _an("j1") is False
 
 
 def test_schalter_csrf_und_rolle_lesen(scharf):
     _akte("j1", plattform="jitsi", status="geplant")
-    assert _post("j1", "bildschirm", csrf=False).status_code == 403
+    assert _post("j1", "bildschirm", csrf=False, wert="an").status_code == 403
     assert _an("j1") is False
     client = _anmelden("lena", "lesen")
-    assert _post("j1", "bildschirm", client=client).status_code == 403
+    assert _post("j1", "bildschirm", client=client, wert="an").status_code == 403
     assert _an("j1") is False
     assert "Bildschirm auswerten:" not in _get(_pfad("j1"), client).text
 
@@ -725,7 +746,7 @@ def test_schalter_csrf_und_rolle_lesen(scharf):
 def test_reiter_bildschirm_nur_mit_schalter_oder_bildern():
     _akte("j1", plattform="jitsi", status="geplant")
     assert "reiter=bildschirm" not in _get(_pfad("j1")).text
-    _post("j1", "bildschirm")
+    _post("j1", "bildschirm", wert="an")
     assert "reiter=bildschirm" in _get(_pfad("j1")).text
 
 
