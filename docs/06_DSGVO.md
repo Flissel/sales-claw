@@ -146,6 +146,9 @@ Checkliste für den Dienst `sales-auge` („Laura (Bildschirm)“, Runbook: Absc
 - [ ] **Löschung mit der Mitschrift:** Bilder, Beschreibungen und Vektoren verschwinden auf jedem Löschweg der
       Mitschrift (`mitschrift_entfernen`, Sicherheitsnetz `_mitschriften_abraeumen`, `loeschantrag_vermerken`). Einzelne
       Bilder löscht der Betreiber in der Akte („Löschen“).
+- [ ] **Agent bekommt keinen Bildinhalt:** das MCP-Werkzeug `termin_bilder_suchen` liefert dem Agenten (Cloud-Modell)
+      nur Fundstellen (id, uid, Zeit, score, Link auf die Akte), **keine Beschreibung** und keine Bilddaten. Den Inhalt
+      sieht nur der Betreiber in der Akte.
 - [ ] **Auskunft:** `kontakt_auskunft` enthält **keine** Standbilder und keine Beschreibungen (nur Mitschrift und
       Auswertung). Bei einem Auskunftsersuchen prüft der Betreiber die Bilder der betroffenen Termine in der Akte und
       gibt sie von Hand mit, Bilder anderer Teilnehmer geschwärzt (Art. 15 Abs. 4). Offen: Export in

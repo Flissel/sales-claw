@@ -10586,11 +10586,11 @@ def termin_akte_lesen(uid: str) -> str:
 
 @_gesichert
 def termin_bilder_suchen(text: str, uid: str = "", limit: int = 10) -> str:
-    """Bildschirm-Standbilder aus Terminen durchsuchen (Bildauswertung live):
-    findet per Textsuche die Bilder, deren Beschreibung zum `text` passt.
-    `uid` (Kalender-UID des Termins) begrenzt auf einen Termin, leer = alle
-    Termine. Liefert eine JSON-Liste mit id, uid, aufgenommen_am, beschreibung
-    und score - nie die Bildbytes. Nur lesen."""
+    """Findet Bildschirm-Standbilder aus Terminen per Textsuche (Bildauswertung
+    live); der Inhalt steht nur in der Akte. `uid` (Kalender-UID des Termins)
+    begrenzt auf einen Termin, leer = alle Termine. Liefert eine JSON-Liste von
+    Fundstellen mit id, uid, aufgenommen_am, score und link (Bildschirm-Reiter
+    der Akte) - nie Beschreibung oder Bildbytes. Nur lesen."""
     import bildschirm   # erst hier: bildschirm importiert server (Ringimport)
     text = " ".join(str(text or "").split())
     if not text:
@@ -10599,8 +10599,15 @@ def termin_bilder_suchen(text: str, uid: str = "", limit: int = 10) -> str:
         treffer = bildschirm.suchen(text, uid.strip() or None, limit)
     except bildschirm.SucheFehler as e:
         return _json({"fehler": str(e)})
-    erlaubt = ("id", "uid", "aufgenommen_am", "beschreibung", "score")
-    return _json([{k: t.get(k) for k in erlaubt} for t in treffer])
+    # Ruling R15: der Agent laeuft ueber ein Cloud-Modell und bekommt keinen
+    # Termininhalt (vgl. termin_akte.fuer_agenten), also keine Beschreibung.
+    aus = []
+    for t in treffer:
+        tuid = str(t.get("uid") or "")
+        aus.append({"id": t.get("id"), "uid": tuid, "aufgenommen_am": t.get("aufgenommen_am"),
+                    "score": t.get("score"),
+                    "link": f"{UI_BASIS_URL}/termine/{quote(tuid, safe='')}?reiter=bildschirm"})
+    return _json(aus)
 
 
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
