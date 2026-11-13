@@ -3959,6 +3959,72 @@ prüft Absturzschleife und `/api/tags` (kein echter Claude-Aufruf).
 `sales-termine` neu erzeugen, `docker compose stop sales-ki`, in `sales-mcp/server.py` den Satz „Die Mitschrift bleibt
 auf unseren eigenen Servern.“ wieder in `EINLADUNG_MITSCHRIFT_HINWEIS` aufnehmen.
 
+## Meeting-Mittelpunkt: Bildauswertung `sales-auge` (seit 13.11.2026)
+
+Der Dienst `sales-auge` (`sales-mcp/auge.py`, Abbild aus `sales-mcp/Dockerfile.auge`, Container
+`${LADEN_PRAEFIX:-sales}-auge`) tritt einem Jitsi-Termin als stummer Teilnehmer „Laura (Bildschirm)“ bei
+(`startSilent`, sendet 0 Byte) und legt Standbilder des **geteilten Bildschirms** in der Termin-Akte ab. Er liest nur
+entfernte Tracks mit `mediaType` `screenshare`, nie Kameras und nie Ton. Es entsteht kein Video.
+
+**Schalter.** Beobachtet wird nur, wo der Betreiber in der Termin-Akte „Bildschirm auswerten“ eingeschaltet hat
+(`termin_akten.bildschirm_auswerten`, Vorgabe aus). Stufe 1: nur interne Termine, Kundentermine kommen später (siehe
+`docs/06_DSGVO.md`). Schalter aus, und der Beobachter verlässt den Termin binnen einer Runde (`AUGE_RUNDE_S`, Vorgabe 2 s).
+
+**Was entsteht.** Bei spürbarer Änderung (dHash) ein Standbild: höchstens eines alle 5 s, Breite höchstens 1600 px; ab
+150 Bildern je Akte nur noch bei starker Änderung. Ablage in `termin_bilder` (Bild, Beschreibung, pgvector
+`vektor_bild` 512 und `vektor_text` 384) in der eigenen Datenbank des Ladens. Die Beschreibung kommt über das KI-Tor
+`sales-ki` (`OLLAMA_URL`, eigene Bildspur, `KI_BILD_TIMEOUT_S` Vorgabe 60; im Übergang also Claude Code / Anthropic,
+siehe Abschnitt KI-Tor und `docs/06_DSGVO.md`). Die Vektoren rechnet fastembed lokal im Container; kein Bild geht
+anderswohin.
+
+**Grenzen und Aufbau.** `mem_limit` 2048m, `cpus` 1,5 (Chromium mit einem Termin ≈ 0,5 GB), läuft als uid 10001. Der
+HTTP-Teil (`GET /gesund`, `POST /suche`, Port `AUGE_PORT`, Vorgabe 8790) ist nur im Compose-Netz erreichbar. Die
+Umgebung ist bewusst schmal (DB, KI-Tor, Jitsi-Hosts), ohne den Anker `x-sales-mcp-umgebung`: keine Kanal-Schlüssel,
+Passwörter oder Token. `deploy/update.sh` baut ihn nur neu, wenn er schon lief (`KERN_OPTIONAL`).
+
+**Ausrollen** (VM, `~/sales-claw`; vorher Claim in `00_Meta/002_Koordination_Live.md`):
+
+    # 1. Schema: db/provision.sql gegen "sales" einspielen, Weg und DSN-Regel siehe
+    #    Abschnitt "Kollegen-Kalender ... db/provision.sql zuerst" (DSN nie in die Kommandozeile)
+    cd ~/sales-claw
+    docker compose build sales-ki sales-termine sales-auge
+    docker compose up -d --no-deps sales-ki sales-termine sales-mcp sales-ui sales-auge
+    bash deploy/smoke.sh        # Abschnitt 25 muss gruen sein; Ende: ALLE PRUEFUNGEN GRUEN
+
+Nie ein blankes `docker compose up -d`, nie `--remove-orphans`.
+
+**Not-Aus:** `docker stop sales-auge`. Der Beobachter verlässt die Termine, bereits abgelegte Bilder bleiben bis zur
+Löschung der Mitschrift. Wieder an: `docker compose up -d --no-deps sales-auge`.
+
+**Logs:** `docker logs --since 10m sales-auge`. Sie enthalten keine Inhalte (keine Bilder, Beschreibungen, Titel,
+Namen oder Links), nur gekürzte uid (8 Zeichen), Zähler und die Art von Fehlern.
+
+**Löschen.** Bilder, Beschreibungen und Vektoren gehen mit der Mitschrift weg: `termin_akte.bilder_entfernen` in
+`mitschrift_entfernen`, das Sicherheitsnetz `server._mitschriften_abraeumen` und damit auch `loeschantrag_vermerken`.
+Einzelne Bilder löscht der Betreiber in der Akte (Knopf „Löschen“, Aktion `bild_loeschen`).
+
+**Wenn etwas hakt**
+
+- Kein Beobachter im Termin: Schalter in der Akte an? Termin auf Jitsi, nicht abgesagt, Bot nicht ausgeschaltet?
+  Link-Host in `JITSI_HOSTS`? `docker ps --filter name=auge`, `docker logs --since 10m sales-auge`.
+- Bilder ohne Beschreibung: KI-Tor `sales-ki` läuft? (`smoke.sh` Abschnitt 24), `OLLAMA_URL` gesetzt?
+  Zeitüberschreitung: `KI_BILD_TIMEOUT_S` anheben.
+- Container startet immer neu: Speicher (`docker stats --no-stream sales-auge`), Datenbank erreichbar, Log lesen.
+- Suche liefert nichts: `docker exec sales-auge python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8790/gesund',timeout=5).status)"`.
+- Tonmitschrift leidet: `docker stop sales-auge` (Not-Aus) und Log von `sales-termine` prüfen.
+
+**Abnahme (Spec §Abnahme 1–7)** — von Felix auszufüllen:
+
+| # | Prüfung | Ergebnis |
+|---|---------|----------|
+| 1 | Interner Termin, Bildschirm geteilt, Fenster wechseln: Bilder live in der Akte, Beschreibungen folgen, stehendes Bild erzeugt keine weiteren | |
+| 2 | Zweiter Teilnehmer teilt: auch dessen Bildschirm erscheint | |
+| 3 | Kameras an: kein Kamerabild irgendwo (Speicher, Akte, KI-Tor-Aufrufe) | |
+| 4 | Tonmitschrift vollständig wie ohne Beobachter | |
+| 5 | Nach dem Termin: Verlauf benennt Gezeigtes und verweist auf Bilder; Textsuche findet Bilder | |
+| 6 | Schalter aus: kein Beobachter; Schalter während des Termins aus: Beobachter geht binnen einer Runde | |
+| 7 | Löschen der Mitschrift entfernt Bilder, Beschreibungen und Vektoren | |
+
 ## Video-Werkbank: Betrieb (seit 12.11.2026)
 
 Lange Erklärvideos (3 bis 5 Minuten) für den Laden. Der Betreiber bestellt im Chat ("Video zu Thema X"),

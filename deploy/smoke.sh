@@ -892,6 +892,23 @@ else
   fi
 fi
 
+# 25) Bildauswertung (sales-auge, 13.11.2026): stummer Beobachter fuer geteilte Bildschirme.
+# Nur wenn er laeuft (optional, KERN_OPTIONAL). Geprueft wird nur, dass er nicht in
+# einer Absturzschleife haengt und /gesund antwortet - kein Termin, kein KI-Aufruf.
+auge_zustand="$(docker inspect -f '{{.State.Status}}' sales-auge 2>/dev/null | tr -d '[:space:]' || true)"
+if [ "$auge_zustand" != "running" ]; then
+  melde "sales-auge" "uebersprungen (Container laeuft nicht)"
+else
+  read -r auge_restarting auge_zaehler < <(docker inspect -f '{{.State.Restarting}} {{.RestartCount}}' sales-auge 2>/dev/null || true)
+  if [ "${auge_restarting:-}" = "true" ] || ! [[ "${auge_zaehler:-x}" =~ ^[0-9]+$ ]] || [ "$auge_zaehler" -ge 3 ]; then
+    fehl "sales-auge laeuft" "Absturzschleife? (Restarting=${auge_restarting:-?} RestartCount=${auge_zaehler:-?}) — docker logs sales-auge"
+  elif docker exec sales-auge python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('AUGE_PORT','8790')+'/gesund',timeout=5)" >/dev/null 2>&1; then
+    gut "sales-auge laeuft"
+  else
+    fehl "sales-auge laeuft" "/gesund antwortet nicht — docker logs sales-auge"
+  fi
+fi
+
 echo "---"
 if [ "$ROT" -eq 0 ]; then echo "ALLE PRUEFUNGEN GRUEN"; else echo "$ROT PRUEFUNG(EN) ROT"; fi
 exit "$ROT"
