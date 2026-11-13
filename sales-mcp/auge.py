@@ -69,6 +69,10 @@ MAX_SEITENFEHLER = 5         # so viele Fehler am Stueck -> Seite schliessen, ne
 SUCHE_MAX_TEXT = 1000
 SUCHE_MAX_LIMIT = 50
 SUCHE_MAX_BYTES = 16 * 1024
+# Beitritt (goto) blockiert die Runde aller Termine: kurz halten (T6a).
+BEITRITT_TIMEOUT_MS = 15_000
+# Lese-Timeout je HTTP-Verbindung: ein langsamer Client haelt keinen Thread (T6b).
+HTTP_LESE_TIMEOUT_S = 10
 
 CHROMIUM_ARGS = (
     "--mute-audio",
@@ -364,6 +368,7 @@ def http_dienst(einbetter: bild_arbeit.Einbetter, host: str, port: int,
     class Handler(BaseHTTPRequestHandler):
         server_version = "sales-auge"
         sys_version = ""
+        timeout = HTTP_LESE_TIMEOUT_S      # Socket-Timeout fuer Kopf und Rumpf
 
         def log_message(self, *_a) -> None:   # keine Zugriffszeilen
             return
@@ -444,7 +449,7 @@ def _oeffner(browser: Any) -> Callable[[str], _Seite]:
         try:
             kontext.add_init_script(script=skript)
             seite = kontext.new_page()
-            seite.goto(url, wait_until="domcontentloaded", timeout=45_000)
+            seite.goto(url, wait_until="domcontentloaded", timeout=BEITRITT_TIMEOUT_MS)
         except Exception:
             kontext.close()
             raise

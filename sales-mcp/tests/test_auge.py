@@ -456,6 +456,53 @@ def test_suche_endpunkt_fehler_ohne_inhalt(dienst, monkeypatch, caplog):
     assert GEHEIM not in caplog.text and "RuntimeError" in caplog.text
 
 
+def test_http_lese_timeout_schliesst_haengende_verbindung(monkeypatch):
+    """T6b: ein Client, der den Rumpf nicht schickt, haelt keinen Thread fest."""
+    import socket
+    import time
+    assert auge.HTTP_LESE_TIMEOUT_S == 10
+    monkeypatch.setattr(auge, "HTTP_LESE_TIMEOUT_S", 1)
+    srv = auge.http_dienst(Attrappe(), "127.0.0.1", 0, lambda: {})
+    assert srv.RequestHandlerClass.timeout == 1
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        with socket.create_connection(srv.server_address, timeout=10) as s:
+            s.sendall(b"POST /suche HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{\"te")
+            beginn = time.monotonic()
+            assert s.recv(1024) == b""            # Server schliesst ohne Antwort
+            assert time.monotonic() - beginn < 5
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_beitritt_goto_timeout_kurz():
+    """T6a: ein haengender Beitritt blockiert die Runde hoechstens ~15 s."""
+    gesehen = {}
+
+    class Seite:
+        def goto(self, url, **kw):
+            gesehen.update(kw, url=url)
+
+    class Kontext:
+        def add_init_script(self, script):
+            pass
+
+        def new_page(self):
+            return Seite()
+
+        def close(self):
+            pass
+
+    class Browser:
+        def new_context(self, **kw):
+            return Kontext()
+
+    auge._oeffner(Browser())("https://meet.invalid/r")
+    assert gesehen["timeout"] == auge.BEITRITT_TIMEOUT_MS == 15_000
+
+
 # ---------- Seiten-Skript (statisch) ----------
 
 def test_seitenskript_liest_nur_desktop_tracks():
