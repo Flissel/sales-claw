@@ -553,3 +553,48 @@ def test_kundenfassung_ohne_verlauf_und_ideen():
     assert "VERLAUF-GEHEIM" not in text and "IDEE-GEHEIM" not in text
     assert "Segment" not in text and "[" not in text
     assert "Pilot startet im Januar" in text and "- Zahlen liefern" in text
+
+
+# ---------- Bildzeilen (Bildauswertung live, Task 5) ----------
+
+def _seg(i, beginn, text="Hallo", sprecher="A"):
+    return {"sprecher": sprecher, "beginn": beginn, "text": text, "sprache": "de"}
+
+
+def test_zeilen_ohne_bilder_unveraendert():
+    seg = _fixture()
+    assert auswertung._zeilen(seg) == auswertung._zeilen(seg, None) == auswertung._zeilen(seg, [])
+    assert all(z.startswith("[") and not z.startswith("[Bild") for z in auswertung._zeilen(seg))
+
+
+def test_bildzeile_vor_passendem_segment():
+    from datetime import datetime, timezone
+    seg = [_seg(0, "2099-01-10T10:00:00Z", "eins"), _seg(1, "2099-01-10T10:02:00Z", "zwei"),
+           _seg(2, "2099-01-10T10:05:00Z", "drei")]
+    bilder = [(datetime(2099, 1, 10, 10, 1, tzinfo=timezone.utc), "Folie mit Preisen"),
+              (datetime(2099, 1, 10, 10, 9, tzinfo=timezone.utc), "Spaetes Bild")]
+    z = auswertung._zeilen(seg, bilder)
+    # 10:01 UTC = 11:01 Berlin (Winter), vor Segment 1
+    assert z == ["[0] A: eins", "[Bild 11:01] Folie mit Preisen", "[1] A: zwei",
+                 "[2] A: drei", "[Bild 11:09] Spaetes Bild"]
+
+
+def test_bildzeilen_ohne_nummer():
+    from datetime import datetime, timezone
+    seg = [_seg(0, "2099-01-10T10:00:00Z", "eins"), _seg(1, "", "ohne Zeit"),
+           _seg(2, "2099-01-10T10:05:00Z", "drei")]
+    bilder = [(datetime(2099, 1, 10, 9, 0, tzinfo=timezone.utc), "Ganz frueh")]
+    z = auswertung._zeilen(seg, bilder)
+    assert z[0] == "[Bild 10:00] Ganz frueh"
+    # Segmentnummern unveraendert, Segment ohne Beginn behaelt Platz
+    assert [x for x in z if not x.startswith("[Bild")] == ["[0] A: eins", "[1] A: ohne Zeit",
+                                                           "[2] A: drei"]
+
+
+def test_auswerten_reicht_bilder_in_den_prompt(stub):
+    from datetime import datetime, timezone
+    s = stub(VOLL)
+    assert "[Bild HH:MM]" in auswertung.SYSTEM_PROMPT
+    auswertung.auswerten(_fixture(), bilder=[
+        (datetime(2026, 11, 12, 9, 0, 8, tzinfo=timezone.utc), "Tabelle mit Zahlen")])
+    assert "[Bild 10:00] Tabelle mit Zahlen" in s.aufrufe[0]["nutzer"]

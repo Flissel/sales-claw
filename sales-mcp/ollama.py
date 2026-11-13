@@ -9,6 +9,7 @@ Fehlertexten, nur Methode, Pfad und Statuscode.
 """
 from __future__ import annotations
 
+import base64
 import http.client
 import json
 import logging
@@ -106,13 +107,16 @@ def erreichbar() -> bool:
 
 
 def chat(system: str, nutzer: str, *, als_json: bool = False,
-         timeout_s: float | None = None) -> str:
+         timeout_s: float | None = None, bilder: list[bytes] | None = None) -> str:
     """POST /api/chat; gibt `message.content` zurueck. `timeout_s` ersetzt
-    `OLLAMA_TIMEOUT_S` fuer diesen Aufruf (Briefing: `briefing_timeout()`)."""
+    `OLLAMA_TIMEOUT_S` fuer diesen Aufruf (Briefing: `briefing_timeout()`).
+    `bilder` (JPEG-Bytes) gehen Base64-kodiert als `images` an die Nutzer-Nachricht."""
+    nutzer_nachricht: dict = {"role": "user", "content": nutzer}
+    if bilder:
+        nutzer_nachricht["images"] = [base64.b64encode(b).decode("ascii") for b in bilder]
     body: dict = {
         "model": _modell(),
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": nutzer}],
+        "messages": [{"role": "system", "content": system}, nutzer_nachricht],
         "stream": False,
         "options": {"temperature": TEMPERATUR, "num_ctx": _num_ctx()},
     }

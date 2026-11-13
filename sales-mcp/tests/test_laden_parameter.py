@@ -417,12 +417,12 @@ def test_ohne_umgebung_bleibt_alles_wie_heute():
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
         "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
         "sales-auto", "sales-ui", "sales-post", "freigabe-bote",
-        "sales-kalender", "auftrag-bote", "sales-termine", "sales-ki"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
+        "sales-kalender", "auftrag-bote", "sales-termine", "sales-ki", "sales-auge"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {d["container_name"] for d in cfg["services"].values()} == {
         "sales-claw", "sales-mcp", "sales-dispatch", "sales-inbox",
         "sales-mail", "sales-telegram", "sales-linkedin", "sales-kanaele",
         "sales-auto", "sales-ui", "sales-post", "sales-freigabe-bote",
-        "sales-kalender", "sales-auftrag-bote", "sales-termine", "sales-ki"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
+        "sales-kalender", "sales-auftrag-bote", "sales-termine", "sales-ki", "sales-auge"}  # sales-stt seit 20.10.2026 am PC (Profil stt-lokal)
     assert {v["name"] for v in cfg["volumes"].values()} == {
         "sales-claw-state", "sales-claw-keys",
         "sales-sprachnachrichten"}

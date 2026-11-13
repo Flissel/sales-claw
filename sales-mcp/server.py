@@ -8903,6 +8903,8 @@ def _mitschriften_abraeumen(lead_id: str) -> None:
     # eine Akte durch akten_eines_leads, geht die Mitschrift hier trotzdem.
     _q("delete from termin_mitschriften where uid in (select uid from "
        f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning id", (lead_id, lead_id))
+    _q("delete from termin_bilder where uid in (select uid from "
+       f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning id", (lead_id, lead_id))
     # Von Gesperrten bleibt nur die Adresse (Final-Review I6).
     _q("update termin_teilnehmer set lead_id = null, grund = 'gesperrt', name = null "
        f"where {_TEILNAHME_DES_LEADS} returning uid", (lead_id, lead_id))
@@ -10582,6 +10584,32 @@ def termin_akte_lesen(uid: str) -> str:
     return _json(termin_akte.fuer_agenten(akte))
 
 
+@_gesichert
+def termin_bilder_suchen(text: str, uid: str = "", limit: int = 10) -> str:
+    """Findet Bildschirm-Standbilder aus Terminen per Textsuche (Bildauswertung
+    live); der Inhalt steht nur in der Akte. `uid` (Kalender-UID des Termins)
+    begrenzt auf einen Termin, leer = alle Termine. Liefert eine JSON-Liste von
+    Fundstellen mit id, uid, aufgenommen_am, score und link (Bildschirm-Reiter
+    der Akte) - nie Beschreibung oder Bildbytes. Nur lesen."""
+    import bildschirm   # erst hier: bildschirm importiert server (Ringimport)
+    text = " ".join(str(text or "").split())
+    if not text:
+        return _json({"fehler": "Suchtext fehlt."})
+    try:
+        treffer = bildschirm.suchen(text, uid.strip() or None, limit)
+    except bildschirm.SucheFehler as e:
+        return _json({"fehler": str(e)})
+    # Ruling R15: der Agent laeuft ueber ein Cloud-Modell und bekommt keinen
+    # Termininhalt (vgl. termin_akte.fuer_agenten), also keine Beschreibung.
+    aus = []
+    for t in treffer:
+        tuid = str(t.get("uid") or "")
+        aus.append({"id": t.get("id"), "uid": tuid, "aufgenommen_am": t.get("aufgenommen_am"),
+                    "score": t.get("score"),
+                    "link": f"{UI_BASIS_URL}/termine/{quote(tuid, safe='')}?reiter=bildschirm"})
+    return _json(aus)
+
+
 WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              kontakt_anlegen,
              kontakt_aktualisieren,
@@ -10734,7 +10762,9 @@ WERKZEUGE = (kontakt_suchen, kontakt_aehnlich, gespraeche_suchen,
              # M8 Auftragsbuch: Meldungen an den Betreiber (antworten-pruefen). tests/test_auftrag_meldung.py.
              auftraege_melden,
              # Meeting-Mittelpunkt: Termin-Akte lesen. tests/test_termin_akte_mcp.py.
-             termin_akte_lesen)
+             termin_akte_lesen,
+             # Bildauswertung live: Standbilder der Termine suchen. tests/test_termin_akte_mcp.py.
+             termin_bilder_suchen)
 
 def bedarfsanalyse_an() -> bool:
     """Schalter SALES_BEDARFSANALYSE (je Aufruf gelesen): nur "an" schaltet

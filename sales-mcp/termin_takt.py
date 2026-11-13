@@ -46,6 +46,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import auswertung
+import bildschirm
 import betreiber_hinweis
 import briefing
 import ollama
@@ -464,7 +465,7 @@ def _zusammenfassung(uid: str, akte: dict, a: dict, lead: tuple[str, str]) -> st
 def _auswerten_eine(m: dict, jetzt: datetime) -> None:
     uid = m["uid"]
     try:
-        a = auswertung.auswerten(m["segmente"])
+        a = auswertung.auswerten(m["segmente"], bilder=bildschirm.bilder_zeilen(uid))
         md = auswertung.markdown(a)
         akte = termin_akte.lesen(uid)
         leads = _leads(akte) if akte else []

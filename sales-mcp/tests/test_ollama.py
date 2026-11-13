@@ -210,3 +210,23 @@ def test_i7c_eigenes_zeitlimit_je_aufruf(stub, monkeypatch):
     for kaputt in ("", "abc", "0", "nan"):
         monkeypatch.setenv("OLLAMA_BRIEFING_TIMEOUT_S", kaputt)
         assert ollama.briefing_timeout() == 60
+
+
+def test_ollama_chat_haengt_bilder_an(stub):
+    import base64
+    stub.antworten[("POST", "/api/chat")] = _antwort("ok")
+    assert ollama.chat("S", "N", bilder=[b"\xff\xd8abc", b"\x00\x01"]) == "ok"
+    body = json.loads(stub.anfragen[0][2])
+    assert body["messages"][0] == {"role": "system", "content": "S"}
+    assert body["messages"][1] == {
+        "role": "user", "content": "N",
+        "images": [base64.b64encode(b"\xff\xd8abc").decode(),
+                   base64.b64encode(b"\x00\x01").decode()]}
+
+
+def test_ollama_chat_ohne_bilder_hat_kein_images_feld(stub):
+    stub.antworten[("POST", "/api/chat")] = _antwort("ok")
+    ollama.chat("S", "N", bilder=None)
+    ollama.chat("S", "N", bilder=[])
+    for _m, _p, k in stub.anfragen:
+        assert "images" not in json.loads(k)["messages"][1]

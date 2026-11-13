@@ -57,7 +57,9 @@ KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw s
 # zieht ihn jedes Update mit.
 # sales-termine (11.11.2026): Taktgeber der Meeting-Mitte, das erste Mal von Hand
 # starten (VEXA_API_KEY, OLLAMA_URL, TELEGRAM_* gesetzt), danach zieht ihn jedes Update mit.
-KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote sales-termine sales-ki"
+# sales-auge (13.11.2026): Beobachter "Laura (Bildschirm)", eigenes Image aus
+# sales-mcp/Dockerfile.auge (eigener Build); erstes Mal von Hand starten.
+KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote sales-termine sales-ki sales-auge"
 
 # Dienstliste ohne die optionalen Dienste (Reihenfolge bleibt).
 ohne_optionale() { # dienstliste

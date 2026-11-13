@@ -19,12 +19,15 @@ import json
 import re
 import uuid
 from datetime import date
+from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import psycopg
-from starlette.responses import RedirectResponse
+from starlette.responses import FileResponse, RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Route
 
+import bildschirm
 import historie
 import post_struktur
 import server
@@ -38,7 +41,11 @@ STATUS_TEXT = {"geplant": "geplant", "wartet_auf_einlass": "wartet auf Einlass",
 VORSCHLAG_TEXT = {"offen": "offen", "bestaetigt": "übernommen", "verworfen": "verworfen"}
 WOCHENTAGE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 FELD_NAMEN = {"title": "Position", "company": "Firma"}   # Whitelist der Spalten
-_REITER = ("details", "briefing", "verlauf", "mitschrift")
+_REITER = ("details", "briefing", "verlauf", "mitschrift", "bildschirm")
+STATIK = Path(__file__).resolve().parent / "static" / "termin_bilder"
+STATIK_DATEIEN = {"bilder.js": "text/javascript"}
+_BILDSTATUS_LIVE = ("wartet_auf_einlass", "laeuft")
+_SCHALTER_STATUS = ("geplant", "kein_link", "wartet_auf_einlass", "laeuft")
 MELDUNGEN = {
     "unbekannte_aktion": "Unbekannte Aktion.",
     "kein_bot_gesperrt": "„Kein Bot“ lässt sich nach dem Start nicht mehr ändern.",
@@ -54,6 +61,10 @@ MELDUNGEN = {
     # Final-Review C1: die Oberflaeche setzt nur den Status; den Bot holt der
     # Taktgeber in seiner naechsten Runde aus dem Termin.
     "aufnahme_beendet": "Aufnahme beendet – der Bot verlässt den Termin in Kürze.",
+    "bildschirm_nur_jitsi": "Bildschirm auswerten geht in Stufe 1 nur bei Jitsi-Terminen.",
+    "bildschirm_gesperrt": "Bildschirm auswerten lässt sich bei diesem Terminstatus nicht mehr ändern.",
+    "bildschirm_wert": "Unklar, ob Bildschirm auswerten an oder aus sein soll – nichts geändert.",
+    "bild_unbekannt": "Dieses Bild gibt es nicht (mehr).",
 }
 _VERLAUF_MAX = 20
 _TEXT_MAX = 300
@@ -167,6 +178,13 @@ def _schalter(akte: dict) -> str:
     if akte["status"] in ("geplant", "kein_link"):
         teile.append(_knopf(uid, "kein_bot", "Kein Bot: " + ("an" if akte["kein_bot"]
                                                              else "aus")))
+    if akte["status"] in _SCHALTER_STATUS:
+        # Das Formular traegt den Zielzustand (idempotent: doppelt absenden
+        # oder ein alter Tab schaltet nicht zurueck).
+        an = bool(akte["bildschirm_auswerten"])
+        teile.append(_knopf(uid, "bildschirm", "Bildschirm auswerten: " + ("an" if an else "aus"),
+                            extra=f'<input type="hidden" name="wert" '
+                                  f'value="{"aus" if an else "an"}">'))
     return f'<div class="termin-aktionen">{"".join(teile)}</div>' if teile else ""
 
 
@@ -279,6 +297,7 @@ def _mitschrift(akte: dict, schreiben: bool) -> str:
                           f'<span class="meta">({_e(VORSCHLAG_TEXT.get(v["status"], v["status"]))})</span>'
                           f'<div class="termin-aktionen">{knoepfe}</div></li>')
         teile.append(f'<h2>Vorschläge fürs CRM</h2><ul class="termin-liste">{"".join(zeilen)}</ul>')
+    teile.append(_bilder_je_thema(akte))
     segmente = m["segmente"] if isinstance(m["segmente"], list) else []
     if segmente:
         zeilen = "".join(f'<p><b>{_e(s.get("sprecher") or "?")}:</b> {_e(s.get("text"))}</p>'
@@ -289,12 +308,138 @@ def _mitschrift(akte: dict, schreiben: bool) -> str:
     return "".join(teile)
 
 
+def _bildschirm_sichtbar(akte: dict) -> bool:
+    return bool(akte["bildschirm_auswerten"] or akte["bilder_anzahl"])
+
+
+def _zone_der(akte: dict):
+    from zoneinfo import ZoneInfo
+    try:
+        return ZoneInfo(akte.get("zeitzone") or "Europe/Berlin")
+    except Exception:
+        from kalender_sicht import _zone
+        return _zone()
+
+
+def _bild_json(uid: str, b: dict, zone, score=None) -> dict:
+    """Ein Bild fuer JSON und Seite - ohne Bytes und Hash."""
+    t = b["aufgenommen_am"].astimezone(zone)
+    d = {"id": str(b["id"]), "zeit": b["aufgenommen_am"].isoformat(),
+         "uhr": f"{t:%H:%M:%S}", "geteilt_von": b["geteilt_von"],
+         "beschreibung": b["beschreibung"] if b["beschreibung_status"] == "fertig" else None,
+         "status": b["beschreibung_status"], "breite": b["breite"], "hoehe": b["hoehe"],
+         "url": f"{_pfad(uid)}/bild/{b['id']}.jpg"}
+    if score is not None:
+        d["score"] = score
+    return d
+
+
+def _beschreibung_text(b: dict) -> str:
+    if b["beschreibung"]:
+        return _e(b["beschreibung"])
+    return "keine Beschreibung möglich" if b["status"] == "fehler" else "wird beschrieben …"
+
+
+def _loeschen_formular(uid: str, bild_id: str) -> str:
+    return _knopf(uid, "bild_loeschen", "Löschen", "gefahr",
+                  f'<input type="hidden" name="bild_id" value="{_e(bild_id)}">')
+
+
+def _karte(uid: str, b: dict, schreiben: bool) -> str:
+    wer = f" · geteilt von {_e(b['geteilt_von'])}" if b["geteilt_von"] else ""
+    loeschen = _loeschen_formular(uid, b["id"]) if schreiben else ""
+    return (f'<li class="bild-karte karte" data-id="{_e(b["id"])}">'
+            f'<a href="{_e(b["url"])}" target="_blank" rel="noopener">'
+            f'<img class="bild-gross" src="{_e(b["url"])}" loading="lazy" '
+            f'alt="Bildschirm um {_e(b["uhr"])}"></a>'
+            f'<p class="meta bild-zeit">{_e(b["uhr"])}{wer}</p>'
+            f'<p class="bild-text">{_beschreibung_text(b)}</p>{loeschen}</li>')
+
+
+_BILD_STIL = ("<style>.bild-raster{list-style:none;margin:0;padding:0;display:grid;gap:12px;"
+              "grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}"
+              ".bild-gross{width:100%;height:auto;display:block;border-radius:6px}"
+              ".bild-vorschau{width:120px;height:auto;border-radius:4px;margin:2px 6px 2px 0}"
+              ".bild-suche{width:100%;max-width:28rem;min-height:44px;margin:8px 0}"
+              ".bild-karte p{margin:4px 0}</style>")
+
+
+def _bildschirm(akte: dict, schreiben: bool) -> str:
+    uid = akte["uid"]
+    zone = _zone_der(akte)
+    bilder = [_bild_json(uid, b, zone) for b in bildschirm.bilder(uid)]
+    live = akte["status"] in _BILDSTATUS_LIVE
+    if akte["bildschirm_auswerten"]:
+        kopf = ('<p class="meta">Laura (Bildschirm) wertet geteilte Bildschirme dieses '
+                'Termins aus.</p>')
+    else:
+        kopf = ('<p class="meta">Bildschirm auswerten ist aus; schon erfasste Bilder '
+                'bleiben sichtbar.</p>')
+    if (akte["bilder_anzahl"] or 0) >= bildschirm.OBERGRENZE:
+        kopf += (f'<p class="meta bild-obergrenze">Obergrenze von {bildschirm.OBERGRENZE} '
+                 'Standbildern erreicht – weitere nur noch bei starker Änderung.</p>')
+    karten = "".join(_karte(uid, b, schreiben) for b in reversed(bilder))
+    leer = "" if bilder else '<p class="meta bild-leer">Noch keine Bilder.</p>'
+    vorlage = ""
+    if schreiben:
+        vorlage = f'<template id="bild-loeschen-vorlage">{_loeschen_formular(uid, "")}</template>'
+    return (_BILD_STIL + kopf
+            + '<input type="search" class="bild-suche" id="bild-suche" '
+              'placeholder="Bilder durchsuchen …" aria-label="Bilder durchsuchen" '
+              'autocomplete="off">'
+            + '<p class="meta" id="bild-meldung" role="status"></p>'
+            + f'<div id="bilder" data-json="{_e(_pfad(uid))}/bilder.json" '
+              f'data-live="{1 if live else 0}">{leer}'
+              f'<ul class="bild-raster" id="bild-raster">{karten}</ul></div>'
+            + vorlage
+            + '<script src="/static/termin_bilder/bilder.js" defer></script>')
+
+
+def _bilder_je_thema(akte: dict) -> str:
+    """Je Verlaufseintrag der Auswertung (auswertung_json["verlauf"]) die Bilder,
+    die in dessen Segmentbereich von..bis entstanden. Eintraege ohne gueltigen
+    Bereich oder ohne Bilder fehlen."""
+    m = akte["mitschrift"]
+    aj = m.get("auswertung_json")
+    if isinstance(aj, str):
+        try:
+            aj = json.loads(aj)
+        except ValueError:
+            aj = None
+    verlauf = aj.get("verlauf") if isinstance(aj, dict) else None
+    segmente = m["segmente"] if isinstance(m["segmente"], list) else []
+    if not akte["bilder_anzahl"] or not isinstance(verlauf, list) or not segmente:
+        return ""
+    bilder = bildschirm.bilder(akte["uid"])
+    basis = _e(_pfad(akte["uid"]))
+    teile = []
+    for e in verlauf:
+        if not isinstance(e, dict):
+            continue
+        von, bis = e.get("von"), e.get("bis")
+        if (not isinstance(von, int) or not isinstance(bis, int) or isinstance(von, bool)
+                or isinstance(bis, bool) or von < 0 or bis < von or bis >= len(segmente)):
+            continue
+        ids = bildschirm.bilder_zu_abschnitt(segmente, von, bis, bilder)
+        if not ids:
+            continue
+        vorschau = "".join(f'<a href="{basis}/bild/{_e(b)}.jpg" target="_blank" rel="noopener">'
+                   f'<img class="bild-vorschau" loading="lazy" alt="Bildschirm" '
+                   f'src="{basis}/bild/{_e(b)}.jpg"></a>' for b in ids)
+        teile.append(f'<h3>{_e(e.get("thema") or "Thema")}</h3><p>{vorschau}</p>')
+    if not teile:
+        return ""
+    return _BILD_STIL + '<h2>Bilder je Thema</h2>' + "".join(teile)
+
+
 def _reiter_leiste(akte: dict, aktiv: str) -> str:
     import ui_muster
     eintraege = [("details", "Details", None), ("briefing", "Briefing", None),
                  ("verlauf", "Verlauf", None)]
     if akte["mitschrift"]:
         eintraege.append(("mitschrift", "Mitschrift", None))
+    if _bildschirm_sichtbar(akte):
+        eintraege.append(("bildschirm", "Bildschirm", akte["bilder_anzahl"] or None))
     return ui_muster.reiter(eintraege, aktiv,
                             lambda k: f"{_pfad(akte['uid'])}?reiter={k}")
 
@@ -405,6 +550,23 @@ def _aktion(uid: str, form) -> str:
             if fehler:
                 _zurueck(vid)
                 return fehler
+    elif aktion == "bildschirm":
+        ziel = {"an": True, "aus": False}.get(str(form.get("wert") or ""))
+        if ziel is None:
+            return "bildschirm_wert"
+        z = server._q("select plattform from termin_akten where uid = %s", (uid,))
+        if not z or z[0]["plattform"] != "jitsi":
+            return "bildschirm_nur_jitsi"
+        if not server._q(
+                "update termin_akten set bildschirm_auswerten = %s, "
+                "geaendert_am = now() where uid = %s and plattform = 'jitsi' "
+                "and status in ('geplant', 'kein_link', 'wartet_auf_einlass', 'laeuft') "
+                "returning uid", (ziel, uid)):
+            return "bildschirm_gesperrt"
+    elif aktion == "bild_loeschen":
+        bid = _uuid(form.get("bild_id"))
+        if not bid or not bildschirm.bild_loeschen(uid, bid):
+            return "bild_unbekannt"
     elif aktion == "mitschrift_verwerfen":
         if not server._q("select 1 from termin_mitschriften where uid = %s", (uid,)):
             return "keine_mitschrift"
@@ -435,15 +597,21 @@ def routen(ui) -> list:
             return ui._fehlerseite(404, "Nicht gefunden", "Zu diesem Termin gibt es keine Akte.")
         schreiben = ui._AKTIVE_ROLLE.get() not in ("lesen", "kalender")
         aktiv = str(request.query_params.get("reiter") or "")
-        if aktiv not in _REITER or (aktiv == "mitschrift" and not akte["mitschrift"]):
+        if (aktiv not in _REITER or (aktiv == "mitschrift" and not akte["mitschrift"])
+                or (aktiv == "bildschirm" and not _bildschirm_sichtbar(akte))):
             aktiv = "mitschrift" if akte["mitschrift"] else "details"
         inhalt = {"details": lambda: _details(akte), "briefing": lambda: _briefing(akte),
                   "verlauf": lambda: _verlauf(akte, ui._AKTIVER_BENUTZER.get() or None),
-                  "mitschrift": lambda: _mitschrift(akte, schreiben)}[aktiv]()
+                  "mitschrift": lambda: _mitschrift(akte, schreiben),
+                  "bildschirm": lambda: _bildschirm(akte, schreiben)}[aktiv]()
         rumpf = (_hinweis(request) + _kopf(akte, _kunden(akte), schreiben)
                  + _reiter_leiste(akte, aktiv) + f'<div class="termin-inhalt">{inhalt}</div>')
         antwort = ui._seite(akte["titel"] or "Kundentermin", rumpf, titel_zeigen=False)
         antwort.headers["Cache-Control"] = "no-store"
+        if aktiv == "bildschirm":
+            # Eigenes Skript und Abrufe an dieselbe Herkunft, sonst nichts.
+            antwort.headers["Content-Security-Policy"] = (
+                ui._CSP + "; script-src 'self'; connect-src 'self'")
         return antwort
 
     def _gibt(uid: str) -> bool:
@@ -476,8 +644,57 @@ def routen(ui) -> list:
         if not server._q("select 1 from termin_akten where uid = %s", (uid,)):
             return ui._fehlerseite(404, "Nicht gefunden", "Zu diesem Termin gibt es keine Akte.")
         meldung = _aktion(uid, form)
-        ziel = _pfad(uid) + (f"?m={meldung}" if meldung else "")
+        parameter = []
+        if str(form.get("aktion") or "") in ("bildschirm", "bild_loeschen"):
+            parameter.append("reiter=bildschirm")
+        if meldung:
+            parameter.append(f"m={meldung}")
+        ziel = _pfad(uid) + ("?" + "&".join(parameter) if parameter else "")
         return RedirectResponse(ziel, status_code=303)
 
-    return [Route("/termine/{kennung:path}", lesen, methods=["GET"]),
+    @_gesichert_json
+    async def bilder_json(request):
+        uid = request.path_params["kennung"]
+        akte_z = server._q("select status, zeitzone from termin_akten where uid = %s", (uid,))
+        if not akte_z:
+            return _grund(404, "Keine Akte zu dieser uid.")
+        zone = _zone_der(akte_z[0])
+        live = akte_z[0]["status"] in _BILDSTATUS_LIVE
+        q = " ".join(str(request.query_params.get("q") or "").split())[:200]
+        alle = {str(b["id"]): b for b in bildschirm.bilder(uid)}
+        if not q:
+            return _ok({"bilder": [_bild_json(uid, b, zone) for b in alle.values()],
+                        "live": live})
+        try:
+            treffer = await run_in_threadpool(bildschirm.suchen, q, uid, 20)
+        except bildschirm.SucheFehler as e:
+            return _ok({"bilder": [], "live": live, "fehler": str(e)})
+        aus = []
+        for t in treffer:
+            b = alle.get(str(t.get("id")))
+            if b is not None and t.get("uid", uid) == uid:   # nur dieser Termin, nur Vorhandenes
+                aus.append(_bild_json(uid, b, zone, t.get("score")))
+        return _ok({"bilder": aus, "live": live})
+
+    @ui._gesichert_seite
+    async def bild_jpg(request):
+        uid, bild_id = request.path_params["kennung"], _uuid(request.path_params["bild_id"])
+        daten = bildschirm.bild_daten(uid, bild_id) if bild_id else None
+        if daten is None:
+            return ui._fehlerseite(404, "Nicht gefunden", "Dieses Bild gibt es nicht.")
+        return Response(daten, media_type="image/jpeg",
+                        headers={"Cache-Control": "private, no-store"})
+
+    async def statik(request):
+        datei = request.path_params["datei"]
+        typ = STATIK_DATEIEN.get(datei)
+        pfad = STATIK / datei
+        if not typ or not pfad.is_file():
+            return Response("Nicht gefunden", status_code=404, media_type="text/plain")
+        return FileResponse(pfad, media_type=typ, headers={"Cache-Control": "no-cache"})
+
+    return [Route("/static/termin_bilder/{datei}", statik, methods=["GET"]),
+            Route("/termine/{kennung:path}/bilder.json", bilder_json, methods=["GET"]),
+            Route("/termine/{kennung:path}/bild/{bild_id}.jpg", bild_jpg, methods=["GET"]),
+            Route("/termine/{kennung:path}", lesen, methods=["GET"]),
             Route("/termine/{kennung:path}", aktion, methods=["POST"])]

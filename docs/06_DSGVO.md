@@ -126,6 +126,36 @@ Checkliste für Transkripte:
       nicht darin. Der Betreiber prüft den Export und schwärzt Fremdes vor der
       Weitergabe (Art. 15 Abs. 4: Rechte Dritter).
 
+## Standbilder geteilter Bildschirme (Bildauswertung, seit 13.11.2026)
+
+Checkliste für den Dienst `sales-auge` („Laura (Bildschirm)“, Runbook: Abschnitt Bildauswertung):
+
+- [ ] **Was gespeichert wird:** Standbilder des geteilten Bildschirms (JPEG, Breite höchstens 1600 px), eine
+      Beschreibung je Bild und zwei Vektoren (`termin_bilder`, `vektor_bild`, `vektor_text`). Höchstens ein Bild alle
+      5 s und nur bei spürbarer Änderung. Kein Video, keine Rohdatei.
+- [ ] **Wo:** nur im eigenen Schema des Ladens (Datenbank auf unserem Server). Die Vektoren rechnet fastembed lokal
+      im Container. Ein Bild geht nur an das KI-Tor `sales-ki` (siehe Übergang).
+- [ ] **Nur interne Termine, nur per Schalter:** „Bildschirm auswerten“ in der Termin-Akte, vorbelegt aus, je Termin
+      bewusst einzuschalten. Stufe 1 läuft in keinem Kundentermin.
+- [ ] **Keine Kameras, kein Ton:** gelesen werden nur entfernte Bildschirm-Tracks (`screenshare`). Der Beobachter tritt
+      stumm bei und sendet nichts. Wer teilt, ist egal; was die Kamera zeigt, wird nie erfasst.
+- [ ] **Beschreibung über Anthropic (Übergang):** die Beschreibung entsteht über das KI-Tor `sales-ki`, im Übergang
+      also bei **Claude Code (Anthropic)**; das Bild selbst geht dafür an diesen Cloud-Anbieter. Es gilt derselbe
+      Vorbehalt wie im Absatz „Übergang seit 12.11.2026“ im Abschnitt Mitschriften (AV-Vertrag, Drittland, Hinweis;
+      vor echten Kundengesprächen klären).
+- [ ] **Löschung mit der Mitschrift:** Bilder, Beschreibungen und Vektoren verschwinden auf jedem Löschweg der
+      Mitschrift (`mitschrift_entfernen`, Sicherheitsnetz `_mitschriften_abraeumen`, `loeschantrag_vermerken`). Einzelne
+      Bilder löscht der Betreiber in der Akte („Löschen“).
+- [ ] **Agent bekommt keinen Bildinhalt:** das MCP-Werkzeug `termin_bilder_suchen` liefert dem Agenten (Cloud-Modell)
+      nur Fundstellen (id, uid, Zeit, score, Link auf die Akte), **keine Beschreibung** und keine Bilddaten. Den Inhalt
+      sieht nur der Betreiber in der Akte.
+- [ ] **Auskunft:** `kontakt_auskunft` enthält **keine** Standbilder und keine Beschreibungen (nur Mitschrift und
+      Auswertung). Bei einem Auskunftsersuchen prüft der Betreiber die Bilder der betroffenen Termine in der Akte und
+      gibt sie von Hand mit, Bilder anderer Teilnehmer geschwärzt (Art. 15 Abs. 4). Offen: Export in
+      `kontakt_auskunft` aufnehmen.
+- [ ] **Offen, vor Kundenterminen:** Hinweis in der Einladung („bitte keine persönlichen Daten zeigen, sonst wird die
+      Aufzeichnung gelöscht“) und Schalter auch dort. **Noch nicht umgesetzt**; bis dahin kein Kundentermin.
+
 ## Werbe-Einwilligung (§ 7 UWG, seit 31.08.2026)
 
 Neben der DSGVO (Datenverarbeitung) gilt das UWG (Ansprache): elektronische

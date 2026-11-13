@@ -379,14 +379,38 @@ begin
           check (status in ('offen','bestaetigt','verworfen')),
         erstellt_am timestamptz not null default now(),
         erledigt_am timestamptz)$ddl$, s, s, s);
+    -- Bildauswertung live (13.11.2026): Standbilder der Bildschirmfreigabe je Akte.
+    execute format('alter table %I.termin_akten add column if not exists bildschirm_auswerten boolean not null default false', s);
+    execute format($ddl$
+      create table if not exists %I.termin_bilder (
+        id uuid primary key default gen_random_uuid(),
+        uid text not null references %I.termin_akten(uid) on delete cascade,
+        aufgenommen_am timestamptz not null,
+        bis timestamptz null,
+        geteilt_von text null,
+        bild bytea not null,
+        breite int not null,
+        hoehe int not null,
+        dhash bigint not null,
+        beschreibung text null,
+        beschreibung_status text not null default 'offen'
+          check (beschreibung_status in ('offen','fertig','fehler')),
+        beschreibung_versuche int not null default 0,
+        vektor_bild public.vector(512) null,
+        vektor_text public.vector(384) null,
+        erstellt_am timestamptz not null default now())$ddl$, s, s);
+    execute format('create index if not exists termin_bilder_uid_idx on %I.termin_bilder (uid, aufgenommen_am)', s);
+    -- Ruling R16: Zeitpunkt des letzten Beschreib-Versuchs; der naechste wartet
+    -- 30 s (nach Versuch 1) bzw. 5 min (nach Versuch 2), sales-mcp/bild_arbeit.py.
+    execute format('alter table %I.termin_bilder add column if not exists versucht_am timestamptz null', s);
     -- Rechte: sales_test bekommt select/insert/update/delete/truncate ueber den
     -- Sammel-Grant nach der Schleife (er laeuft nach dieser Zeile).
     if s = 'sales' then
-      execute 'grant select, insert, update, delete on sales.termin_akten, sales.termin_teilnehmer, sales.termin_mitschriften, sales.termin_vorschlaege to sales_app';
+      execute 'grant select, insert, update, delete on sales.termin_akten, sales.termin_teilnehmer, sales.termin_mitschriften, sales.termin_vorschlaege, sales.termin_bilder to sales_app';
     elsif s <> 'sales_test' and exists (
         select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
-      execute format('grant select, insert, update, delete on %I.termin_akten, %I.termin_teilnehmer, %I.termin_mitschriften, %I.termin_vorschlaege to %I',
-                     s, s, s, s, 'sales_app_' || substr(s, 7));
+      execute format('grant select, insert, update, delete on %I.termin_akten, %I.termin_teilnehmer, %I.termin_mitschriften, %I.termin_vorschlaege, %I.termin_bilder to %I',
+                     s, s, s, s, s, 'sales_app_' || substr(s, 7));
     end if;
     -- Postfach aufraeumen + durchsuchen (28.10.2026, Sales-UI-Rundgang):
     -- je gesehene Mail eine Zeile. art: 'spam' (Betrug, sofort verschoben),

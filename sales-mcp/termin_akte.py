@@ -310,7 +310,7 @@ def lesen(uid: str) -> dict | None:
               "order by (rolle = 'organisator') desc, adresse", (uid,))
           # Eine Sperre NACH dem Verknuepfen zaehlt auch: live pruefen.
           if not teilnehmer.sperrgrund(t["adresse"]) and not lead_weg(t["lead_id"])]
-    mit = server._q("select id, segmente, auswertung_status, auswertung_md "
+    mit = server._q("select id, segmente, auswertung_status, auswertung_md, auswertung_json "
                     "from termin_mitschriften where uid = %s", (uid,))
     mitschrift = None
     vorschlaege: list[dict] = []
@@ -318,7 +318,8 @@ def lesen(uid: str) -> dict | None:
         m = mit[0]
         mitschrift = {"id": str(m["id"]), "segmente": m["segmente"],
                       "auswertung_status": m["auswertung_status"],
-                      "auswertung_md": m["auswertung_md"]}
+                      "auswertung_md": m["auswertung_md"],
+                      "auswertung_json": m["auswertung_json"]}
         for v in server._q(
                 "select id, art, lead_id, daten, status from termin_vorschlaege "
                 "where mitschrift_id = %s order by erstellt_am", (m["id"],)):
@@ -341,7 +342,10 @@ def lesen(uid: str) -> dict | None:
         "teilnehmer": tn, "status": a["status"], "status_grund": a["status_grund"],
         "kein_bot": a["kein_bot"], "will_zusammenfassung": a["will_zusammenfassung"],
         "abgesagt": a["abgesagt_am"] is not None, "briefing": briefing,
-        "mitschrift": mitschrift, "vorschlaege": vorschlaege}
+        "mitschrift": mitschrift, "vorschlaege": vorschlaege,
+        "bildschirm_auswerten": bool(a["bildschirm_auswerten"]),
+        "bilder_anzahl": int(server._q(
+            "select count(*) as n from termin_bilder where uid = %s", (uid,))[0]["n"])}
 
 
 def status_setzen(uid: str, status: str, grund: str = "", **felder) -> None:
@@ -445,6 +449,12 @@ def mitschrift_entfernen(uid: str) -> None:
                 (str(m["entwurf_id"]),)):
             server.entwurf_ablehnen(str(m["entwurf_id"]))
     server._q("delete from termin_mitschriften where uid = %s returning id", (uid,))
+    bilder_entfernen(uid)  # Bilder entstehen live, auch ohne Mitschrift
+
+
+def bilder_entfernen(uid: str) -> int:
+    """Alle Standbilder der Akte loeschen; gibt die Anzahl zurueck."""
+    return len(server._q("delete from termin_bilder where uid = %s returning id", (uid,)))
 
 
 _PASSCODE_PARAMETER = ("pwd", "passcode", "pw", "password", "pass")

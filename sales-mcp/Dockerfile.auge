@@ -1,0 +1,25 @@
+# Beobachter sales-auge ("Laura (Bildschirm)", Bildauswertung live): Abbild wie
+# sales-mcp (gleicher Code, gleiche requirements.txt) plus Playwright-Chromium
+# und fastembed. Zusatzpakete fest gepinnt in requirements-auge.txt.
+# Die Embedding-Modelle werden beim BAUEN geladen und liegen im Abbild; zur
+# Laufzeit laedt der Dienst nichts nach (HF_HUB_OFFLINE=1).
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt requirements-auge.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-auge.txt
+# Chromium samt Systembibliotheken in der Version, die zum gepinnten Playwright gehoert.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
+# Modelle vorladen (Namen und Masse siehe einbetter_fastembed.py: 512/512/384).
+ENV FASTEMBED_CACHE_PATH=/opt/fastembed
+COPY einbetter_fastembed.py ./
+RUN python -c "from einbetter_fastembed import FastEmbedEinbetter as E; e = E(); \
+assert len(e.text_clip('x')) == 512 and len(e.text('x')) == 384"
+ENV HF_HUB_OFFLINE=1
+COPY . .
+# Ohne Root laufen (der Dienst fuehrt einen Browser auf fremden Seiten aus).
+# Code, Modelle und Browser gehoeren root und sind fuer den Dienst nur lesbar.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin auge \
+ && chmod -R a+rX /opt/fastembed /opt/ms-playwright /app
+USER auge
+CMD ["python", "auge.py"]
