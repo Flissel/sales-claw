@@ -22,6 +22,23 @@ protokoll = os.environ["ATTRAPPE_PROTOKOLL"]
 with open(protokoll, "w", encoding="utf-8") as f:
     json.dump({"args": args, "stdin": eingabe, "cwd": os.getcwd()}, f)
 modus = os.environ.get("ATTRAPPE_MODUS", "text")
+if "--input-format" in args:  # Bild-Spur: stream-json
+    zeile = json.loads(eingabe.strip().splitlines()[0])
+    bloecke = zeile["message"]["content"]
+    text = [b["text"] for b in bloecke if b["type"] == "text"][0]
+    print(json.dumps({"type": "system", "subtype": "init"}))
+    print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "zwischen"}]}}))
+    if modus == "bild-fehler":
+        print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True, "result": "x"}))
+        sys.exit(1)
+    if modus == "bild-ohne-result":
+        sys.exit(0)
+    if modus == "bild-warten":
+        import time
+        time.sleep(30)
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                      "result": "Bild: %d Bilder, Text %s" % (sum(b["type"] == "image" for b in bloecke), text[:12])}))
+    sys.exit(0)
 if modus == "fehler":
     print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True}))
     sys.exit(1)
@@ -179,3 +196,112 @@ def test_ollama_client_spricht_mit_dem_tor(attrappe, monkeypatch):
         assert json.loads(ollama.chat("sys", "nutzer", als_json=True)) == {"a": 1, "b": ["x"]}
     finally:
         server.shutdown()
+
+
+BILD_A = "QUFB"  # Base64-Platzhalter; das Tor reicht nur durch
+BILD_B = "QkJC"
+
+
+def _chat_bild(nutzer: str, bilder: list[str], *, als_json: bool = False) -> dict:
+    body = _chat(nutzer, als_json=als_json)
+    body["messages"][1]["images"] = bilder
+    return body
+
+
+def test_chat_mit_bild_nutzt_stream_json(tor, attrappe):
+    status, antwort = tor("POST", "/api/chat", _chat_bild("Beschreibe das Bild", [BILD_A]))
+    assert status == 200
+    assert antwort["message"]["content"] == "Bild: 1 Bilder, Text Beschreibe d"
+    lauf = attrappe()
+    args = lauf["args"]
+    assert args[:1] == ["-p"]
+    assert args[args.index("--input-format") + 1] == "stream-json"
+    assert args[args.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in args
+    assert args[args.index("--tools") + 1] == ""
+    assert args[args.index("--model") + 1] == "sonnet"
+    assert args[args.index("--system-prompt") + 1] == "Du bist knapp."
+    for schalter in ("--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"):
+        assert schalter in args
+    assert args[args.index("--setting-sources") + 1] == ""
+    zeilen = lauf["stdin"].strip().splitlines()
+    assert len(zeilen) == 1
+    nachricht = json.loads(zeilen[0])
+    assert nachricht["type"] == "user" and nachricht["message"]["role"] == "user"
+    assert nachricht["message"]["content"] == [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": BILD_A}},
+        {"type": "text", "text": "Beschreibe das Bild"},
+    ]
+    assert "Beschreibe das Bild" not in " ".join(args)
+
+
+def test_mehrere_bilder_in_reihenfolge_vor_dem_text(tor, attrappe):
+    body = {"model": "m", "stream": False, "messages": [
+        {"role": "user", "content": "erst", "images": [BILD_A]},
+        {"role": "user", "content": "dann", "images": [BILD_B]}]}
+    status, _ = tor("POST", "/api/chat", body)
+    assert status == 200
+    bloecke = json.loads(attrappe()["stdin"].strip())["message"]["content"]
+    assert [b["type"] for b in bloecke] == ["image", "image", "text"]
+    assert [b["source"]["data"] for b in bloecke[:2]] == [BILD_A, BILD_B]
+    assert bloecke[2]["text"] == "erst\n\ndann"
+
+
+def test_bild_json_hinweis_und_extraktion(tor, attrappe):
+    status, _ = tor("POST", "/api/chat", _chat_bild("x", [BILD_A], als_json=True))
+    assert status == 200
+    args = attrappe()["args"]
+    assert "ausschliesslich mit einem einzigen JSON-Objekt" in args[args.index("--system-prompt") + 1]
+
+
+@pytest.mark.parametrize("modus", ["bild-fehler", "bild-ohne-result"])
+def test_bild_fehler_ist_502_ohne_inhalt(tor, attrappe, monkeypatch, caplog, modus):
+    monkeypatch.setenv("ATTRAPPE_MODUS", modus)
+    with caplog.at_level(logging.DEBUG):
+        status, antwort = tor("POST", "/api/chat", _chat_bild(GEHEIM, [BILD_A]))
+    assert status == 502
+    assert GEHEIM not in json.dumps(antwort) and BILD_A not in json.dumps(antwort)
+    assert GEHEIM not in caplog.text and BILD_A not in caplog.text
+
+
+def test_bild_zeitlimit_ist_502(tor, attrappe, monkeypatch):
+    monkeypatch.setenv("ATTRAPPE_MODUS", "bild-warten")
+    monkeypatch.setenv("KI_BILD_TIMEOUT_S", "1")
+    status, antwort = tor("POST", "/api/chat", _chat_bild("x", [BILD_A]))
+    assert status == 502
+    assert "Zeitlimit" in antwort["error"]
+
+
+def test_bild_timeout_standard_60(monkeypatch):
+    monkeypatch.delenv("KI_BILD_TIMEOUT_S", raising=False)
+    assert ki_tor._bild_timeout() == 60.0
+    monkeypatch.setenv("KI_BILD_TIMEOUT_S", "nan")
+    assert ki_tor._bild_timeout() == 60.0
+
+
+def test_bild_spur_wartet_nicht_auf_text_sperre(tor, attrappe):
+    with ki_tor._sperre:  # Text-Spur belegt
+        status, antwort = tor("POST", "/api/chat", _chat_bild("x", [BILD_A]))
+    assert status == 200
+    assert antwort["message"]["content"].startswith("Bild: 1 Bilder")
+
+
+def test_text_spur_wartet_nicht_auf_bild_sperre(tor, attrappe):
+    with ki_tor._sperre_bild:
+        status, _ = tor("POST", "/api/chat", _chat("x"))
+    assert status == 200
+
+
+def test_bild_log_ohne_inhalt(tor, attrappe, caplog):
+    with caplog.at_level(logging.DEBUG):
+        status, _ = tor("POST", "/api/chat", _chat_bild(GEHEIM, [BILD_A]))
+    assert status == 200
+    assert "POST /api/chat -> 200" in caplog.text
+    assert BILD_A not in caplog.text and "Erika" not in caplog.text and "Bild:" not in caplog.text
+
+
+@pytest.mark.parametrize("bilder", ["QUFB", [1], [""], []])
+def test_bilder_unbrauchbar_oder_leer(tor, attrappe, bilder):
+    status, _ = tor("POST", "/api/chat", _chat_bild("x", bilder))
+    # leere Liste = Textpfad (200); alles andere ist eine unbrauchbare Anfrage
+    assert status == (200 if bilder == [] else 400)
