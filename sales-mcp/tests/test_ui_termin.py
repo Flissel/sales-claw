@@ -809,7 +809,8 @@ def test_bild_jpg_und_fremde_uid_404():
     b = _bild("j1")
     a = _get(f"/termine/j1/bild/{b}.jpg")
     assert a.status_code == 200 and a.headers["content-type"] == "image/jpeg"
-    assert a.headers["cache-control"] == "private, max-age=3600"
+    # geloeschte Bilder sollen nicht im Browser-Cache weiterleben (M6)
+    assert a.headers["cache-control"] == "private, no-store"
     assert a.content.startswith(b"\xff\xd8")
     assert _get(f"/termine/j2/bild/{b}.jpg").status_code == 404
     assert _get(f"/termine/j1/bild/{_neue_uuid()}.jpg").status_code == 404

@@ -683,7 +683,7 @@ def routen(ui) -> list:
         if daten is None:
             return ui._fehlerseite(404, "Nicht gefunden", "Dieses Bild gibt es nicht.")
         return Response(daten, media_type="image/jpeg",
-                        headers={"Cache-Control": "private, max-age=3600"})
+                        headers={"Cache-Control": "private, no-store"})
 
     async def statik(request):
         datei = request.path_params["datei"]
