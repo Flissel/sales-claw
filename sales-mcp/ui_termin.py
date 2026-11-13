@@ -377,7 +377,7 @@ def _bildschirm(akte: dict, schreiben: bool) -> str:
                 'bleiben sichtbar.</p>')
     if (akte["bilder_anzahl"] or 0) >= bildschirm.OBERGRENZE:
         kopf += (f'<p class="meta bild-obergrenze">Obergrenze von {bildschirm.OBERGRENZE} '
-                 'Standbildern erreicht – weitere werden nicht aufgenommen.</p>')
+                 'Standbildern erreicht – weitere nur noch bei starker Änderung.</p>')
     karten = "".join(_karte(uid, b, schreiben) for b in reversed(bilder))
     leer = "" if bilder else '<p class="meta bild-leer">Noch keine Bilder.</p>'
     vorlage = ""

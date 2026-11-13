@@ -775,7 +775,7 @@ def test_reiter_bildschirm_vermerkt_obergrenze(monkeypatch):
     assert "Obergrenze" not in t
     _bild(minuten=1)
     t = _get(_pfad("j1") + "?reiter=bildschirm").text
-    assert ("Obergrenze von 2 Standbildern erreicht – weitere werden nicht aufgenommen."
+    assert ("Obergrenze von 2 Standbildern erreicht – weitere nur noch bei starker Änderung."
             in t)
 
 
