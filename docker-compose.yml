@@ -237,6 +237,8 @@ services:
       MARKETING_MANDANT: ${MARKETING_MANDANT:-}
       # Auftragsbuch (M8): auftrag_geben schreibt den Laden in den Auftrag.
       LADEN_PRAEFIX: ${LADEN_PRAEFIX:-sales}
+      # Bildsuche ueber alle Termine (MCP-Werkzeug) fragt den Beobachter.
+      AUGE_URL: http://${LADEN_PRAEFIX:-sales}-auge:8790
       # Bewerbungs-Eingang (29.10.2026, bewerbungs_eingang.py): der Timer
       # sales-bewerbungs-eingang startet ihn per `docker exec` in DIESEM
       # Dienst, weil hier die Postfach-Zugaenge schon liegen. Der Schluessel
@@ -786,6 +788,115 @@ services:
       GOOGLE_KALENDER_CLIENT_ID: ${GOOGLE_KALENDER_CLIENT_ID:-}
       GOOGLE_KALENDER_CLIENT_SECRET: ${GOOGLE_KALENDER_CLIENT_SECRET:-}
 
+  # Taktgeber der Meeting-Mitte (11.11.2026, sales-mcp/termin_takt.py): alle
+  # TERMIN_TAKT_S Sekunden gleicht er die Termin-Akten ab, schickt 30 Minuten
+  # vorher Briefing und Telegram-Hinweis, 1 Minute vorher den Vexa-Bot, holt
+  # danach die Mitschrift, loescht sie bei Vexa und wertet sie mit dem lokalen
+  # Ollama aus. Kein Port. VEXA_URL zeigt auf vexa-lite im Netz sales-claw_default
+  # (der Vexa-Stack haengt sich dort an, kein eigenes Netz hier). Ohne
+  # VEXA_API_KEY schickt er keinen Bot; deploy/update.sh baut ihn nur neu, wenn
+  # er vorher schon lief.
+  sales-termine:
+    build: ./sales-mcp
+    image: sales-claw-sales-mcp:local
+    container_name: ${LADEN_PRAEFIX:-sales}-termine
+    command: python termin_takt.py
+    restart: unless-stopped
+    environment:
+      <<: *sales_mcp_umgebung
+      TERMIN_TAKT_S: ${TERMIN_TAKT_S:-30}
+      VEXA_URL: ${VEXA_URL:-http://vexa-lite:8056}
+      VEXA_API_KEY: ${VEXA_API_KEY:-}
+      VEXA_TIMEOUT_S: ${VEXA_TIMEOUT_S:-20}
+      VEXA_LOBBY_WARTEN_MS: ${VEXA_LOBBY_WARTEN_MS:-1800000}
+      VEXA_STILLE_NACH_ENDE_MIN: ${VEXA_STILLE_NACH_ENDE_MIN:-10}
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      OLLAMA_MODELL: ${OLLAMA_MODELL:-}
+      OLLAMA_TIMEOUT_S: ${OLLAMA_TIMEOUT_S:-300}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-}
+      OLLAMA_BRIEFING_TIMEOUT_S: ${OLLAMA_BRIEFING_TIMEOUT_S:-}
+      AUSWERTUNG_STUECK_ZEICHEN: ${AUSWERTUNG_STUECK_ZEICHEN:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      UI_BASIS_URL: ${UI_BASIS_URL:-}
+      JITSI_BASIS: ${JITSI_BASIS:-}
+      JITSI_HOSTS: ${JITSI_HOSTS:-}
+      TERMIN_TEAM_ADRESSEN: ${TERMIN_TEAM_ADRESSEN:-}
+
+  # KI-Tor (12.11.2026, sales-ki/ki_tor.py): Uebergang des Betreibers - bis
+  # eigene Server mit lokalem Modell da sind, beantwortet Claude Code (Abo,
+  # CLAUDE_CODE_OAUTH_TOKEN) Briefing und Mitschrift-Auswertung hinter einer
+  # Ollama-kompatiblen Schnittstelle. sales-termine bekommt dafuer
+  # OLLAMA_URL=http://sales-ki:11434; zurueck zum lokalen Ollama nur OLLAMA_URL
+  # umstellen. Kein Port nach aussen. deploy/update.sh baut ihn nur neu, wenn
+  # er vorher schon lief.
+  sales-ki:
+    build: ./sales-ki
+    image: sales-claw-sales-ki:local
+    container_name: ${LADEN_PRAEFIX:-sales}-ki
+    restart: unless-stopped
+    environment:
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      KI_MODELL: ${KI_MODELL:-sonnet}
+      KI_TIMEOUT_S: ${KI_TIMEOUT_S:-280}
+      # Eigene, kurze Zeitgrenze der Bild-Spur (Bildauswertung live); sales-auge
+      # liest denselben Wert und wartet etwas laenger.
+      KI_BILD_TIMEOUT_S: ${KI_BILD_TIMEOUT_S:-60}
+
+  # Beobachter "Laura (Bildschirm)" (13.11.2026, sales-mcp/auge.py, Bildauswertung
+  # live): tritt internen Jitsi-Terminen bei, deren Akte den Schalter "Bildschirm
+  # auswerten" traegt und deren Vexa-Bot laeuft, holt Standbilder NUR des
+  # geteilten Bildschirms (nie Kameras), legt sie in termin_bilder ab und
+  # beschreibt sie ueber das KI-Tor (OLLAMA_URL, Bild-Spur); Embeddings lokal
+  # (fastembed, Modelle im Abbild). HTTP (/gesund, /suche) nur im Compose-Netz,
+  # kein Port nach aussen, keine Einhaengung (Bilder nur in der DB). Harte
+  # Grenzen, damit Vexa nicht leidet (gemessen 13.11.: Modelle ~1,15 GB plus
+  # Chromium mit einem Termin ~0,5 GB, darum 2048m). Not-Aus: `docker stop sales-auge`.
+  # deploy/update.sh baut ihn nur neu, wenn er vorher schon lief.
+  # BEWUSST OHNE den Anker x-sales-mcp-umgebung: der Dienst fuehrt einen Browser
+  # auf fremden Seiten aus und bekommt deshalb NUR, was er braucht (DB, KI-Tor,
+  # Jitsi-Hosts) - keine Kanal-Schluessel, Passwoerter oder Token.
+  sales-auge:
+    build:
+      context: ./sales-mcp
+      dockerfile: Dockerfile.auge
+    image: sales-claw-sales-auge:local
+    container_name: ${LADEN_PRAEFIX:-sales}-auge
+    command: python auge.py
+    restart: unless-stopped
+    cpus: "1.5"
+    mem_limit: 2048m
+    # Kein Auslagern: die Grenze ist hart (M2).
+    memswap_limit: 2048m
+    # Haertung (Ruling R17): keine Linux-Capabilities, keine neuen Rechte per
+    # setuid. Chromium laeuft ohnehin ohne eigene Sandbox (Playwright-Vorgabe)
+    # als uid 10001; geprueft auf der VM mit genau diesen Optionen.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Chromium legt sein Shared Memory wegen --disable-dev-shm-usage nach /tmp:
+    # im RAM statt auf der Overlay-Platte, begrenzt und im mem_limit enthalten (M1).
+    tmpfs:
+      - /tmp:size=256m
+    environment:
+      SALES_DB_URL: ${SALES_DB_URL}
+      SALES_DB_SCHEMA: ${SALES_DB_SCHEMA:-sales}
+      TZ: ${TZ:-Europe/Berlin}
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      OLLAMA_MODELL: ${OLLAMA_MODELL:-}
+      AUGE_PORT: ${AUGE_PORT:-8790}
+      AUGE_RUNDE_S: ${AUGE_RUNDE_S:-2}
+      KI_BILD_TIMEOUT_S: ${KI_BILD_TIMEOUT_S:-60}
+      # Nur Links auf diese Jitsi-Hosts werden betreten (wie sales-termine).
+      JITSI_BASIS: ${JITSI_BASIS:-}
+      JITSI_HOSTS: ${JITSI_HOSTS:-}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # Post-Sammelstelle Stufe 1 (03.11.2026, sales-mcp/post_abholen.py): holt die
   # Mails aller aktiven Postfaecher NUR LESEND (IMAP readonly) und ordnet sie
   # mit niedriger Prioritaet ueber den Agenten `post` des eigenen Gateways ein.
@@ -1014,6 +1125,13 @@ services:
       # "Bewerbungen" auf /freigaben.
       - BEWERBUNG_PULT_URL=${BEWERBUNG_PULT_URL:-}
       - BEWERBUNG_PULT_KEY=${BEWERBUNG_PULT_KEY:-}
+      # Portal-Fenster (Portal-Abgabe): WebSocket-Adresse des Fensters im Container
+      # bewerbung-portal (ws://bewerbung-portal:6080) und der
+      # gemeinsame Schluessel (= PORTAL_FENSTER_SCHLUESSEL in der bot.env). NUR in der
+      # Haupt-.env des Basis-Ladens. Leer = kein Fenster. Das Netz haengt NICHT hier,
+      # sondern nur im Basis-Laden an (docker-compose.fenster.yml).
+      - BEWERBUNG_FENSTER_WS=${BEWERBUNG_FENSTER_WS:-}
+      - BEWERBUNG_FENSTER_SCHLUESSEL=${BEWERBUNG_FENSTER_SCHLUESSEL:-}
       # Newsletter an Kontakte (15.10.2026, E4): dieser Laden sendet nur Newsletter dieser Marketing-Firma.
       - MARKETING_MANDANT=${MARKETING_MANDANT:-}
       # Aussehen je Laden (Paket C4, 19.10.2026, laden_marke.py): LADEN_MARKE waehlt die Firma, deren
@@ -1042,6 +1160,8 @@ services:
       # Freigabe und sales-mail. Ohne sie scheiterte live am 14.10.2026 jede
       # Einladung aus dem Kalender mit "Kein Absender konfiguriert".
       - EMAIL_ABSENDER=${EMAIL_ABSENDER:-}
+      # Bildsuche in der Termin-Akte fragt den Beobachter (nur Compose-Netz).
+      - AUGE_URL=http://${LADEN_PRAEFIX:-sales}-auge:8790
     volumes:
       # DER MEDIENORDNER — und hier OHNE `:ro`, als einziger Dienst im Stack.
       #
@@ -1148,6 +1268,9 @@ services:
       - MARKETING_PULT_URL=${MARKETING_PULT_URL:-}
       - MARKETING_PULT_KEY=${MARKETING_PULT_KEY:-}
       - LINKEDIN_POST_LEAD_ID=${LINKEDIN_POST_LEAD_ID:-}
+      # Videos (Video-Werkbank): der Link auf die Videoseite im Freigabe-Eintrag. Ohne UI_BASIS_URL
+      # wird ein fertiges Video zu `fehler` statt zu einem Eintrag.
+      - UI_BASIS_URL=${UI_BASIS_URL:-}
     volumes:
       - ${MEDIEN_ORDNER:-./media}:/media:ro
       - ${MEDIEN_ERZEUGT_ORDNER:-./media-erzeugt}:/media-erzeugt:ro

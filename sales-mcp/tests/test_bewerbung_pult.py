@@ -307,6 +307,7 @@ FEHLER = [
     (401, "unauthorized", "nicht_verbunden", "401"),
     (503, "misconfigured: BEWERBUNG_PULT_KEY", "nicht_verbunden", "503"),
     (503, "datenbank_nicht_erreichbar", "nicht_erreichbar", "503"),
+    (503, "befehl_nicht_geschrieben", "nicht_erreichbar", "503"),    # die Karte erkennt es am Koerper
     (404, "unbekannt", "abgelehnt", "unbekannt"),
     (409, "fassung_veraltet", "abgelehnt", "fassung_veraltet"),
     (409, "schon_entschieden", "abgelehnt", "schon_entschieden"),

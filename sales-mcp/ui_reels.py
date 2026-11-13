@@ -301,7 +301,8 @@ def routen(ui) -> list:
         karten = "".join(karte(a) for a in je_reiter[reiter])
         inhalt = (f'<div class="reel-raster">{karten}</div>' if karten
                   else '<p class="meta">Noch keine Reels in diesem Bereich.</p>')
-        rumpf = (kopf(m, firmen) + f'<div class="reel-kopf"><a class="knopf" href="{NEU_SEITE}">Neues Reel</a>'
+        rumpf = (kopf(m, firmen) + f'<div class="reel-kopf"><a class="knopf" href="{NEU_SEITE}">Neues Reel</a> '
+                 '<a class="knopf sek" href="/marketing/werkbank">Lange Videos</a>'
                  '<p class="meta">Gebaut wird am PC mit Laura, das dauert einige Minuten. Versendet wird nichts '
                  'ohne deine Freigabe.</p></div>' + nav + inhalt)
         return ui._seite("Reels", rumpf, refresh=REFRESH_S if any(a.get("status") in LAUFEND for a in aktuell)

@@ -31,7 +31,8 @@ def kundenzeilen(limit: int = 200) -> tuple[list, dict]:
     """-> (nicht abgesagte `termin`-Aktivitaeten, neueste zuerst, mit Lead-Name;
     {uid: payload} der Absagen)."""
     zeilen = server._q(
-        "select a.payload, a.created_at, l.id as lead_id, l.name "
+        "select a.id::text as activity_id, a.payload, a.created_at, "
+        "l.id as lead_id, l.name, l.email "
         "from activities a left join leads l on l.id = a.lead_id "
         "where a.type = 'termin' order by a.created_at desc limit %s", (limit,))
     # Abgesagte fallen aus der Ansicht — sie stehen in ihrem eigenen Abschnitt.
@@ -39,9 +40,12 @@ def kundenzeilen(limit: int = 200) -> tuple[list, dict]:
                 for z in server._q(
                     "select payload from activities "
                     " where type = 'termin_abgesagt' order by created_at")}
+    # `aus_kalender`: Termin-Zeilen, die Felix aus einem Kalendertermin
+    # bestaetigt hat - der Kalender zeigt den Termin schon, hier waere er doppelt.
     return ([z for z in zeilen
-             if str((z["payload"] or {}).get("uid") or "") not in abgesagt
-             or not (z["payload"] or {}).get("uid")], abgesagt)
+             if not (z["payload"] or {}).get("aus_kalender")
+             and (str((z["payload"] or {}).get("uid") or "") not in abgesagt
+                  or not (z["payload"] or {}).get("uid"))], abgesagt)
 
 
 def _beginn(payload: dict):

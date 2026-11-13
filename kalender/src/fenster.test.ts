@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { koerperAendern, koerperAnlegen, mitSperre, pruefen, startWerte, type Werte } from './fenster';
+import { aktenLink, zeigtAktenLink, koerperAendern, koerperAnlegen, mitSperre, pruefen, startWerte, type Werte } from './fenster';
 
 const basis: Werte = {
   art: 'eigen', titel: 'Steuerberater', datum: '2026-10-26', zeit: '14:00', dauer: 60,
@@ -98,5 +98,30 @@ describe('startWerte (Vorgabe aus dem Link)', () => {
   });
   it('beim Bearbeiten gilt weiter die Art des Termins', () => {
     expect(startWerte({ modus: 'bearbeiten' }, { art: 'kunde', lead_id: 'x' }).art).toBe('kunde');
+  });
+});
+
+describe('aktenLink', () => {
+  it('kodiert # und @ der Kalender-UID', () => {
+    expect(aktenLink('abc@google.com#2026-11-12T09:00:00+00:00'))
+      .toBe('/termine/abc%40google.com%232026-11-12T09%3A00%3A00%2B00%3A00');
+  });
+  it('einfache UID bleibt lesbar', () => {
+    expect(aktenLink('u1')).toBe('/termine/u1');
+  });
+});
+
+describe('zeigtAktenLink', () => {
+  it('Kundentermin mit uid zeigt die Termin-Seite', () => {
+    expect(zeigtAktenLink('kunde:1', 'u1', 'voll')).toBe(true);
+    expect(zeigtAktenLink('kalender:1', 'u1', 'lesen')).toBe(true);
+  });
+  it('Rolle kalender sieht keinen Link auf die Termin-Seite (wie Zum Kontakt)', () => {
+    expect(zeigtAktenLink('kunde:1', 'u1', 'kalender')).toBe(false);
+    expect(zeigtAktenLink('kalender:1', 'u1', 'kalender')).toBe(false);
+  });
+  it('ohne uid oder ohne Akte kein Link', () => {
+    expect(zeigtAktenLink('kunde:1', '', 'voll')).toBe(false);
+    expect(zeigtAktenLink('handy:1', 'u1', 'voll')).toBe(false);
   });
 });

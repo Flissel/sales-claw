@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "models": [
+    {
+      "type": "cli",
+      "command": "node",
+      "args": ["/home/node/.openclaw/stt/sprachnotiz.mjs", "{{MediaPath}}"],
+      "timeoutSeconds": 60
+    }
+  ]
+}

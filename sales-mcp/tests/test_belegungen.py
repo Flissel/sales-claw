@@ -261,7 +261,7 @@ def test_fehlende_quellentabelle_reisst_termin_konflikte_nicht_ab(
     termin_bestaetigen/termin_einladen) insgesamt tot statt nur die
     Kollisionspruefung gegen Kollegen-Kalender."""
     monkeypatch.setattr(kalender, "termine_lesen", lambda *a, **k: ([], None))
-    antwort = json.loads(server.termin_konflikte("2026-10-01", "09:00"))
+    antwort = json.loads(server.termin_konflikte("2099-10-01", "09:00"))
     assert "fehler" not in antwort, antwort
     assert antwort["frei"] is False
     assert [l["quelle"] for l in antwort["quellen_luecken"]] == [

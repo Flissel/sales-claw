@@ -1,0 +1,219 @@
+# Vexa (Meeting-Bot + Mitschrift) als EIGENES Compose-Projekt "vexa"
+# (Meeting-Mittelpunkt, Spec 2026-11-10 §5.4, Plan Task 15). Gehoert nicht zum
+# Basis-Stack von sales-claw: eigener Projektname, eigenes Netz vexa_default,
+# eigene Volumes (alle mit Praefix vexa-). Rueckbau trifft nur dieses Projekt.
+#
+# Vorlage: Vexa v0.12.28, deploy/lite/Makefile (Ziele storage-up, up und
+# LOCAL_STT=1) — Umgebung, Volumes und Pruefungen sind von dort uebernommen.
+# Ein Container "vexa-lite" mit Prozess-Backend: die Bots laufen als
+# Kindprozesse im Container, kein Docker-Socket. Postgres und Speicher
+# (versitygw) sind Beistellcontainer, die Spracherkennung (faster-whisper,
+# CPU) ebenfalls.
+#
+#   cd ~/sales-claw/deploy/vexa
+#   bash ../vexa-anbinden.sh                 # 1. Aufruf legt nur die .env an
+#   docker compose -f docker-compose.yml -p vexa up -d   # nur nach Felix' OK (Task 17)
+#   bash ../vexa-anbinden.sh                 # 2. Aufruf: Nutzer, Token, sales-claw
+# (Jeder Compose-Aufruf fuer Vexa braucht -f deploy/vexa/docker-compose.yml
+# oder den Wechsel in deploy/vexa; aus ~/sales-claw heraus ohne -f laedt
+# Compose die Datei des Basis-Stacks.)
+#
+# Netz (Entscheidung R3, Tor-Dienst nach Review): sales-claw erreicht Vexa als
+# http://vexa-lite:8056 (VEXA_URL). Dafuer haengt NICHT vexa-lite selbst, sondern
+# nur der schmale Tor-Dienst vexa-tor (nginx, nginx-tor.conf) am bestehenden
+# externen Netz sales-claw_default und traegt dort den Alias "vexa-lite". Er
+# reicht ausschliesslich Port 8056 an vexa-lite:8056 weiter. Alle anderen Ports
+# von vexa-lite (Admin-API, Terminal, Agent-API, noVNC ...) sind damit aus dem
+# Basis-Stack nicht erreichbar. Postgres, Speicher und Whisper bleiben NUR in
+# vexa_default. Existiert sales-claw_default nicht (Basis-Stack nie gestartet),
+# scheitert `up` laut.
+#
+# Ports: nur Loopback, und nur das Gateway. Terminal (3001), Agent-API (8100)
+# und noVNC bleiben unveroeffentlicht. Agent-Funktionen aus (Spec 5.4): kein
+# ANTHROPIC_*, keine Claude-Zugangsdaten, kein Docker-Socket.
+#
+# Images per Index-Digest gepinnt (Mehrarchitektur-Index, abgefragt am
+# 11.11.2026 aus der Registry). Aktualisieren heisst: neuen Tag pruefen,
+# neuen Digest eintragen, deploy/tests/test_vexa_compose.sh laufen lassen.
+name: vexa
+
+services:
+  # Speicher: versitygw (S3 auf Dateien), Volume vexa-storagedata. Aufnahmen
+  # sind aus (recording_enabled=false); Vexa verlangt den Speicher trotzdem,
+  # und meeting-api haelt seine MINIO_*-Namen. Kein veroeffentlichter Port.
+  vexa-lite-storage:
+    image: versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
+    container_name: vexa-lite-storage
+    restart: unless-stopped
+    environment:
+      ROOT_ACCESS_KEY: ${VEXA_S3_ACCESS_KEY:?in deploy/vexa/.env setzen}
+      ROOT_SECRET_KEY: ${VEXA_S3_SECRET_KEY:?in deploy/vexa/.env setzen}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mkdir -p /srv/vexa-storage/data /srv/vexa-storage/iam && exec versitygw --port :9000 --health /health --iam-dir /srv/vexa-storage/iam --quiet posix /srv/vexa-storage/data
+    volumes:
+      - vexa-storagedata:/srv/vexa-storage
+    healthcheck:
+      # Wortgleich Vexa v0.12.28 deploy/compose/docker-compose.yml (Speicherdienst);
+      # das Image basiert auf alpine, busybox-wget ist da.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  # Einmal-Dienst: legt den Bucket an (Makefile: `versitygw admin
+  # create-bucket`; "existiert schon" zaehlt als fertig).
+  vexa-lite-storage-init:
+    image: versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
+    container_name: vexa-lite-storage-init
+    restart: "no"
+    depends_on:
+      vexa-lite-storage:
+        condition: service_healthy
+    environment:
+      ADMIN_ACCESS_KEY: ${VEXA_S3_ACCESS_KEY:?in deploy/vexa/.env setzen}
+      ADMIN_SECRET_KEY: ${VEXA_S3_SECRET_KEY:?in deploy/vexa/.env setzen}
+      VEXA_S3_ACCESS_KEY: ${VEXA_S3_ACCESS_KEY}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - out=$$(versitygw admin --endpoint-url http://vexa-lite-storage:9000 create-bucket --bucket vexa --owner "$$VEXA_S3_ACCESS_KEY" 2>&1) || echo "$$out" | grep -q BucketAlreadyOwnedByYou || { echo "Bucket vexa nicht angelegt:" "$$out"; exit 1; }
+
+  vexa-lite-postgres:
+    image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    container_name: vexa-lite-postgres
+    restart: unless-stopped
+    command: ["postgres", "-c", "idle_in_transaction_session_timeout=60000"]
+    environment:
+      POSTGRES_DB: vexa
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${VEXA_DB_PASSWORD:?in deploy/vexa/.env setzen}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - vexa-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vexa -q"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # Spracherkennung: faster-whisper auf der CPU, Modell small (Spec 5.4). Der
+  # Client schickt model=whisper-1, der Server liefert WHISPER__MODEL. Kein
+  # Port; vexa-lite erreicht ihn als http://vexa-lite-whisper:8000. Das Modell
+  # wird erst bei der ersten Anfrage geladen (Download von HuggingFace, danach im
+  # Volume vexa-whisper-modelle). Darum vor dem ersten echten Termin einmal
+  # aufwaermen: deploy/vexa/whisper-aufwaermen.py (Runbook).
+  # Das Image (Tag latest-cpu = Commit caba05a, Dockerfile.cpu) ist ubuntu:22.04,
+  # laeuft als root (Cache /root/.cache/huggingface), hat kein curl aber python3
+  # (Abhaengigkeit von software-properties-common) und python3.12.
+  vexa-lite-whisper:
+    image: fedirz/faster-whisper-server:latest-cpu@sha256:760e5e43d427dc6cfbbc4731934b908b7de9c7e6d5309c6a1f0c8c923a5b6030
+    container_name: vexa-lite-whisper
+    restart: unless-stopped
+    environment:
+      WHISPER__MODEL: Systran/faster-whisper-small
+      WHISPER__INFERENCE_DEVICE: cpu
+      WHISPER__TTL: "-1"
+    volumes:
+      - vexa-whisper-modelle:/root/.cache/huggingface
+    healthcheck:
+      # /health antwortet ohne geladenes Modell. Kein curl im Image: eigenes python.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)\" || python3.12 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+
+  # Alles in einem Container (Gateway, Admin-API, meeting-api, runtime, Bots
+  # als Prozesse). RUNTIME_BACKEND steht in supervisord.conf ohnehin fest auf
+  # "process"; hier zusaetzlich gesetzt, damit die Datei es sagt.
+  vexa-lite:
+    image: vexaai/vexa-lite:v0.12.28@sha256:9eebb534fdab4079baf11af678968ac8d9679e20ce48db206bcf5a62b85eb538
+    container_name: vexa-lite
+    restart: unless-stopped
+    shm_size: 2gb
+    depends_on:
+      vexa-lite-postgres:
+        condition: service_healthy
+      vexa-lite-storage-init:
+        condition: service_completed_successfully
+      vexa-lite-whisper:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8056:8056"
+    # Eindeutiger Name nur in vexa_default: Ziel von vexa-tor (nginx-tor.conf).
+    # "vexa-lite" taugt dafuer nicht, das ist in sales-claw_default der Alias von vexa-tor.
+    networks:
+      default:
+        aliases:
+          - vexa-gateway
+    environment:
+      RUNTIME_BACKEND: process
+      # Jitsi-Hosts, in die der Bot darf (deploy/vexa/.env, Vorgabe meet.ffmuc.net).
+      VEXA_JITSI_HOSTS: ${VEXA_JITSI_HOSTS:-meet.ffmuc.net}
+      ADMIN_API_TOKEN: ${ADMIN_TOKEN:?in deploy/vexa/.env setzen}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      DB_HOST: vexa-lite-postgres
+      DB_PORT: "5432"
+      DB_NAME: vexa
+      DB_USER: postgres
+      DB_PASSWORD: ${VEXA_DB_PASSWORD:?in deploy/vexa/.env setzen}
+      TRANSCRIPTION_SERVICE_URL: http://vexa-lite-whisper:8000
+      TRANSCRIPTION_SERVICE_TOKEN: ""
+      MINIO_ENDPOINT: vexa-lite-storage:9000
+      MINIO_ACCESS_KEY: ${VEXA_S3_ACCESS_KEY:?in deploy/vexa/.env setzen}
+      MINIO_SECRET_KEY: ${VEXA_S3_SECRET_KEY:?in deploy/vexa/.env setzen}
+      MINIO_BUCKET: vexa
+      MINIO_SECURE: "false"
+      VEXA_PUBLIC_API_URL: http://localhost:8056
+      TERMINAL_PUBLIC_URL: http://localhost:3001
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -o /dev/null http://localhost:8056/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+
+  # Tor-Dienst (siehe Kopf): einziger Teilnehmer von sales-claw_default, Alias
+  # vexa-lite. nginx reicht nur :8056 an vexa-lite weiter. Kein veroeffentlichter
+  # Port, kein Zugriffslog (Anfragen tragen Tokens). Healthcheck mit busybox-wget
+  # (alpine) fragt /health ueber den Proxy, prueft also auch vexa-lite.
+  vexa-tor:
+    image: nginx:1.30.6-alpine@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
+    container_name: vexa-tor
+    restart: unless-stopped
+    depends_on:
+      vexa-lite:
+        condition: service_started
+    volumes:
+      - ./nginx-tor.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      default: {}
+      salesclaw:
+        aliases:
+          - vexa-lite
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8056/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      # Der Healthcheck geht ueber den Proxy bis vexa-lite (start_period 120 s dort):
+      # 150 s Schonfrist plus 6 x 15 s, damit das Tor nicht vor dem Gateway aufgibt.
+      start_period: 150s
+
+volumes:
+  vexa-pgdata:
+    name: vexa-pgdata
+  vexa-storagedata:
+    name: vexa-storagedata
+  vexa-whisper-modelle:
+    name: vexa-whisper-modelle
+
+networks:
+  default:
+    name: vexa_default
+  salesclaw:
+    name: sales-claw_default
+    external: true

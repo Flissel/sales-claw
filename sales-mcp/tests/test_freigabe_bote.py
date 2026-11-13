@@ -78,6 +78,19 @@ def test_vorschlagstext_form_und_label():
     assert kein_link == f"[Debugger-Claw] Titel · [Sales]({BASIS}/freigaben#{K})"
 
 
+def test_video_zeile_sagt_freigabe_nur_in_sales():
+    """M6: "Annehmen" in Rowboat gibt ein Video nicht frei; die Zeile sagt das. Andere Herkuenfte unveraendert."""
+    v = eintrag(herkunft="marketing-video", art="marketing_video", titel="Video: KI im Vertrieb",
+                quelle_ref="0123abcd-0000-4000-8000-000000000001", link="https://s/marketing/werkbank/x/video")
+    t = fb.vorschlagstext(v, BASIS)
+    assert t == (f"[Marketing-Video] Video: KI im Vertrieb · Freigabe nur in Sales /freigaben · "
+                 f"[Ansehen](https://s/marketing/werkbank/x/video) · [Sales]({BASIS}/freigaben#{K})")
+    assert fb.kennung_in(t) == K
+    for herkunft, art in (("debugger-claw", "debugger_pr"), ("selbstbild", "selbstbild_rueckfrage"),
+                          ("werkstatt", "kursfreigabe"), ("sales", "entwurf"), ("marketing", "entwurf")):
+        assert "Freigabe nur in Sales" not in fb.vorschlagstext(eintrag(herkunft=herkunft, art=art), BASIS)
+
+
 def test_neuer_eintrag_wird_vorgeschlagen():
     p = fb.planen([eintrag()], [], fb.RowboatStand(), BASIS)
     assert p.hinzufuegen == [text_zu()] and not p.staende

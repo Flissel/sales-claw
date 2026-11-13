@@ -7,7 +7,7 @@ offenen Zahlen; leere Reiter blass, aber sichtbar. Nur die Anordnung ändert
 sich: Freigeben, Ablehnen, Bearbeiten bleiben, wie sie sind.
 
   Nachrichten  E-Mail · WhatsApp · LinkedIn · Mails aufräumen   (Vorgabe)
-  Marketing    LinkedIn-Beiträge · Kanäle · Newsletter · Marketing-Pult
+  Marketing    LinkedIn-Beiträge · Kanäle · Newsletter · Marketing-Pult · Videos
   Bewerbungen
   Kurse
   Technik      Debugger-PRs · Rückfragen
@@ -207,10 +207,33 @@ def test_kanal_beitrag_bekommt_seinen_unterreiter_unter_marketing():
     seite = _get("/freigaben?tab=marketing").text
     unter = [(n, z) for n, z, _, _ in _unterreiter(seite)]
     # Unverbundene Kanaele ohne Inhalt bleiben weg (wie bisher die Bloecke).
-    assert unter == [("LinkedIn-Beiträge", "0"), ("Bluesky", "1"), ("Newsletter", "0")]
+    # „Videos" (Herkunft Marketing-Video, Werkbank) steht immer da, hier leer.
+    assert unter == [("LinkedIn-Beiträge", "0"), ("Bluesky", "1"), ("Newsletter", "0"),
+                     ("Videos", "0")]
     assert _aktiv(_unterreiter(seite)) == "Bluesky"
     assert "Grüße vom Bluesky-Test" in seite
     assert "Grüße vom Bluesky-Test" not in _get("/freigaben").text
+    assert "Grüße vom Bluesky-Test" not in _get("/freigaben?tab=marketing&art=video").text
+
+
+def test_marketing_video_steht_nur_unter_videos():
+    fe.eintragen("marketing-video", "marketing_video", "0123abcd-0000-4000-8000-000000000001",
+                 "Video: Reiter-Probe", "https://laden.example/marketing/werkbank/"
+                 "0123abcd-0000-4000-8000-000000000001/video",
+                 {"auftrag": "0123abcd-0000-4000-8000-000000000001", "fassung": 1})
+    videos = _get("/freigaben?tab=marketing&art=video").text
+    assert "Video: Reiter-Probe" in videos
+    assert _aktiv(_reiter(videos)) == "Marketing"
+    assert _aktiv(_unterreiter(videos)) == "Videos"
+    assert [(n, z) for n, z, _, _ in _unterreiter(videos)] == [
+        ("LinkedIn-Beiträge", "0"), ("Newsletter", "0"), ("Videos", "1")]
+    assert {n: z for n, z, _, _ in _reiter(videos)} == {
+        "Nachrichten": "0", "Marketing": "1", "Kurse": "0", "Technik": "0"}
+    for pfad in ("/freigaben", "/freigaben?tab=marketing&art=linkedin",
+                 "/freigaben?tab=marketing&art=newsletter", "/freigaben?tab=kurse",
+                 "/freigaben?tab=technik&art=debugger",
+                 "/freigaben?tab=technik&art=rueckfragen"):
+        assert "Video: Reiter-Probe" not in _get(pfad).text, pfad
 
 
 def test_ohne_offenes_ist_der_unterreiter_mit_inhalt_gewaehlt():

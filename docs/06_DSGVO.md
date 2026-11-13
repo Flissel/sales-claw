@@ -17,6 +17,12 @@ Eine Person will wissen, was über sie gespeichert ist.
 3. Verlangt der Kontakt die Auskunft im Chat, sagt der Bot es dem
    Betreiber; er stellt den Export nie selbst in den Chat.
 
+- **Mitschriften von Videotreffen** (Meeting-Mittelpunkt, seit 11.11.2026) stehen im
+  Abschnitt `Termine` der Auskunft: je Termin des Kontakts Titel, Beginn, Status,
+  Mitschrift-Segmente und Auswertung. Das ist der volle Wortlaut, auch mit Äußerungen
+  und Sprechernamen anderer Teilnehmer: der Betreiber prüft und schwärzt Fremdes vor der
+  Weitergabe (Art. 15 Abs. 4). Adressen anderer Teilnehmer stehen nicht darin.
+
 - **Terminkarten** (seit 24.09.2026) stehen in der Auskunft als Aktivität `terminkarte`
   mit Dateiname, eingesetzten Werten und Fassung der Vorlage. Die Datei selbst liegt in
   `media-erzeugt` des Ladens (Basis-Laden: `media-erzeugt/`, weitere Läden:
@@ -61,11 +67,94 @@ DELETE FROM sales.leads WHERE id = '<LEAD>';
    - **Terminkarten-Dateien** des Kontakts: `terminkarte-<kunde>-*.pdf` in `media-erzeugt`
      des Ladens — die Namen stehen in den Aktivitäten `terminkarte` des Kontakts. Gedruckte
      Karten beim Teamleiter sind Papier und gehören in die Rückfrage an ihn.
+   - **Termin-Akten** (Meeting-Mittelpunkt): `termin_teilnehmer` hängt NICHT per
+     Kaskade am Kontakt — die Zeilen mit seiner Adresse (`lower(adresse) =
+     '<adresse>'`, nach dem Löschantrag `grund = 'gesperrt'`, Name schon leer)
+     stehen weiter da; die Adresse bleibt bewusst, solange sie auf der
+     Sperrliste steht (der Kalenderabgleich legt die Person sonst neu an).
+     Zusätzlich `termin_akten.titel`/`thema`/`beschreibung` dieser Termine
+     prüfen: nennen sie die Person (z. B. „Gespräch mit …“), Titel neutral
+     setzen bzw. Beschreibung leeren. Mitschrift, Auswertung und Briefing hat
+     der Löschantrag schon entfernt.
 4. Sicherungen: die rotierenden Volume-Sicherungen (7 Tage) und
    DB-Sicherungen laufen aus; bis dahin gilt die Verarbeitung als
    eingestellt (Vermerk-Vollstopp). Nicht einzeln in Archive hineinoperieren.
 5. Löschprotokoll führen OHNE Personenbezug: Datum, wer (beide Namen),
    Fundstellen geprüft ja/nein. Ablage beim Betreiber, nicht im Repo.
+
+## Mitschriften von Videotreffen (Meeting-Mittelpunkt, seit 11.11.2026)
+
+Checkliste für Transkripte:
+
+- [ ] **Was gespeichert wird:** Mitschrift (Segmente mit Sprecher und Text),
+      Auswertung (JSON und Markdown), Vorschläge und das Briefing in der Termin-Akte
+      (`termin_mitschriften`, `termin_vorschlaege`, `termin_akten.briefing_*`). Nur im
+      eigenen Schema des Ladens, nie in `activities` (die bleibt append-only; dort steht
+      nur, was der Betreiber bestätigt).
+- [ ] **Wo:** Mitschrift auf unseren eigenen Servern (Vexa auf der VM, Datenbank des
+      Ladens). Kundentext geht nur an `OLLAMA_URL`. Die Einladung mit Videolink trägt
+      einen Hinweis auf die Mitschrift.
+- [ ] **Übergang seit 12.11.2026 (Betreiber-Entscheid, noch kein produktiver Betrieb):**
+      `OLLAMA_URL` zeigt auf das KI-Tor `sales-ki`, also auf **Claude Code (Anthropic)**
+      mit dem Abo des Betreibers. Briefing-Fakten und Mitschrift-Stücke gehen damit an
+      einen Cloud-Anbieter. Vor echten Kundengesprächen klären: Auftragsverarbeitung mit
+      Anthropic (AV-Vertrag, Drittland), Hinweis in der Einladung und in der
+      Datenschutzerklärung. Der Satz „Die Mitschrift bleibt auf unseren eigenen Servern“
+      ist deshalb aus der Einladung gestrichen. Zurück: `OLLAMA_URL` auf ein eigenes
+      Modell, `sales-ki` stoppen, Satz wieder aufnehmen.
+- [ ] **Kein Rohmitschnitt bei Vexa (Abnahme 12.11.2026):** Vexa legt ab Werk von jedem
+      Meeting einen „captured-signal“-Mitschnitt (Signal, Spracherkennung, Mitschrift) als
+      Testmaterial im eigenen Speicher ab (Bucket `vexa`, Präfix `signal/`, Budget 50 GB) und
+      löscht ihn beim Löschen des Meetings **nicht**. `deploy/vexa-anbinden.sh` setzt deshalb
+      bei jedem Lauf den Not-Aus `diagnostics.capture_signal=false`. Die vier Mitschnitte der
+      Abnahme-Termine vom 12.11.2026 (nur Betreiber-Testgespräche) sind gelöscht. Prüfen nach
+      jedem Vexa-Update: Speicher unter `signal/` bleibt leer (Runbook, Vexa-Betrieb).
+- [ ] **Löschweg:** `loeschantrag_vermerken` räumt zuerst ab (scheitert das, kommt ein
+      Fehler, der Kontakt wird nicht vermerkt, der Aufruf ist wiederholbar), dann der
+      Vermerk. Es beendet einen anstehenden oder laufenden Bot (Status
+      `ohne_aufnahme`; den Bot holt der Taktgeber `sales-termine` binnen einer Runde aus
+      dem Termin — nur er spricht mit dem Transkriptionsdienst), löscht die Mitschriften
+      **aller** Termine, an denen der Kontakt teilnahm (auch wo er schon entknüpft ist —
+      Abgleich über seine E-Mail-Adresse), lehnt einen offenen Zusammenfassungs-Entwurf ab,
+      leert das Briefing dieser Akten und löst den Kontakt aus der Teilnehmerliste
+      (`grund = 'gesperrt'`, Name geleert, nur die Adresse bleibt). Das beim
+      Transkriptionsdienst liegende Meeting löscht ebenfalls der Taktgeber.
+      Sicherungen laufen wie oben aus.
+- [ ] **Auskunft:** `kontakt_auskunft` enthält Abschnitt `Termine` mit Mitschrift und
+      Auswertung. Die Mitschrift ist vollständig und enthält damit auch Äußerungen
+      und Sprechernamen **anderer Teilnehmer**; Adressen anderer Teilnehmer stehen
+      nicht darin. Der Betreiber prüft den Export und schwärzt Fremdes vor der
+      Weitergabe (Art. 15 Abs. 4: Rechte Dritter).
+
+## Standbilder geteilter Bildschirme (Bildauswertung, seit 13.11.2026)
+
+Checkliste für den Dienst `sales-auge` („Laura (Bildschirm)“, Runbook: Abschnitt Bildauswertung):
+
+- [ ] **Was gespeichert wird:** Standbilder des geteilten Bildschirms (JPEG, Breite höchstens 1600 px), eine
+      Beschreibung je Bild und zwei Vektoren (`termin_bilder`, `vektor_bild`, `vektor_text`). Höchstens ein Bild alle
+      5 s und nur bei spürbarer Änderung. Kein Video, keine Rohdatei.
+- [ ] **Wo:** nur im eigenen Schema des Ladens (Datenbank auf unserem Server). Die Vektoren rechnet fastembed lokal
+      im Container. Ein Bild geht nur an das KI-Tor `sales-ki` (siehe Übergang).
+- [ ] **Nur interne Termine, nur per Schalter:** „Bildschirm auswerten“ in der Termin-Akte, vorbelegt aus, je Termin
+      bewusst einzuschalten. Stufe 1 läuft in keinem Kundentermin.
+- [ ] **Keine Kameras, kein Ton:** gelesen werden nur entfernte Bildschirm-Tracks (`screenshare`). Der Beobachter tritt
+      stumm bei und sendet nichts. Wer teilt, ist egal; was die Kamera zeigt, wird nie erfasst.
+- [ ] **Beschreibung über Anthropic (Übergang):** die Beschreibung entsteht über das KI-Tor `sales-ki`, im Übergang
+      also bei **Claude Code (Anthropic)**; das Bild selbst geht dafür an diesen Cloud-Anbieter. Es gilt derselbe
+      Vorbehalt wie im Absatz „Übergang seit 12.11.2026“ im Abschnitt Mitschriften (AV-Vertrag, Drittland, Hinweis;
+      vor echten Kundengesprächen klären).
+- [ ] **Löschung mit der Mitschrift:** Bilder, Beschreibungen und Vektoren verschwinden auf jedem Löschweg der
+      Mitschrift (`mitschrift_entfernen`, Sicherheitsnetz `_mitschriften_abraeumen`, `loeschantrag_vermerken`). Einzelne
+      Bilder löscht der Betreiber in der Akte („Löschen“).
+- [ ] **Agent bekommt keinen Bildinhalt:** das MCP-Werkzeug `termin_bilder_suchen` liefert dem Agenten (Cloud-Modell)
+      nur Fundstellen (id, uid, Zeit, score, Link auf die Akte), **keine Beschreibung** und keine Bilddaten. Den Inhalt
+      sieht nur der Betreiber in der Akte.
+- [ ] **Auskunft:** `kontakt_auskunft` enthält **keine** Standbilder und keine Beschreibungen (nur Mitschrift und
+      Auswertung). Bei einem Auskunftsersuchen prüft der Betreiber die Bilder der betroffenen Termine in der Akte und
+      gibt sie von Hand mit, Bilder anderer Teilnehmer geschwärzt (Art. 15 Abs. 4). Offen: Export in
+      `kontakt_auskunft` aufnehmen.
+- [ ] **Offen, vor Kundenterminen:** Hinweis in der Einladung („bitte keine persönlichen Daten zeigen, sonst wird die
+      Aufzeichnung gelöscht“) und Schalter auch dort. **Noch nicht umgesetzt**; bis dahin kein Kundentermin.
 
 ## Werbe-Einwilligung (§ 7 UWG, seit 31.08.2026)
 
@@ -196,6 +285,39 @@ auf `/team/kalender` einstuft.
 
   Vorher mit `select count(*)` zählen. Dafür braucht es die Owner-Rolle
   (`supabase_admin`), die Dienst-Rolle löscht nur Quellen über die Oberfläche.
+
+## Wartelisten-Kontakte (vibemind.space, seit 13.11.2026)
+
+Der Wartelisten-Abgleich (`docs/03_RUNBOOK.md`) legt Menschen als Kontakte an,
+die sich auf der Website auf die Warteliste gesetzt haben.
+
+- **Was übernommen wird:** E-Mail-Adresse, Zeitpunkt der Anmeldung, Zeitpunkt
+  der Bestätigung (falls vorhanden) und die Herkunft der Zeile. Sonst nichts;
+  die Warteliste kennt keinen Namen, als Name steht der Teil vor dem @.
+- **Wer übernommen wird:** die Einträge aus der Zeit vor dem Double-Opt-in
+  und alle, die ihre Adresse seither bestätigt haben. Unbestätigte neue
+  Anmeldungen kommen nicht an; die Website liefert sie nicht aus.
+- **Keine Werbe-Einwilligung:** eine Wartelisten-Anmeldung ist keine
+  Einwilligung in Werbung. Der Abgleich bucht deshalb NICHTS — der Kontakt
+  bleibt auf `consent_status = 'unknown'`, das Tor oben verweigert die
+  Erstansprache. Die Betreiber-Vorgabe vom 30.10.2026 gilt für
+  `kontakt_anlegen`; der Abgleich geht bewusst nicht über dieses Werkzeug.
+  Wer Wartelisten-Kontakte anschreiben will, entscheidet das als Betreiber
+  je Kontakt oder per Sammelbestätigung und trägt die Grundlage selbst.
+- **Verbotsliste:** vor dem Anlegen wird `compliance.sperrliste` gefragt.
+  Wer sich abgemeldet, widerrufen oder Löschung verlangt hat, wird über die
+  Warteliste nicht erneut erfasst.
+- **Löschbegehren:** der Ablauf oben gilt unverändert. Zusätzlich muss die
+  Zeile in der Warteliste der Website gelöscht werden — das ist ein eigener
+  Bestand mit eigenem Schritt, den der Abgleich nicht anfasst (er schreibt
+  nie zurück). Bleibt sie dort stehen, verhindert nur die Verbotsliste das
+  Wiederanlegen.
+- **Austragung:** wer die Warteliste verlässt, bleibt als Kontakt stehen
+  (`enrichment.waitinglist.auf_liste = false`). Eine Löschfrist für
+  Wartelisten-Kontakte, die nie Kunde wurden, ist noch nicht festgelegt —
+  Entscheidung des Betreibers.
+- **Zugang:** der Abholschlüssel darf bei der Website nur die Warteliste
+  lesen. Er liegt in der `.env` des Wirts, nicht im Container.
 
 ## Grenze
 

@@ -21,6 +21,22 @@ export LC_ALL=C
 WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BETRIEB="${SALES_BETRIEB:-$HOME/sales-betrieb}"
 STATUS="$BETRIEB/update-status.json"
+
+# SPERRE (12.11.2026): zwei gleichzeitige Updates (Timer + Handlauf) bauen
+# und starten dieselben Container gegeneinander. Die Sperre gilt bis zum Ende
+# dieses Prozesses (fd 9 bleibt offen); ein zweiter Lauf bricht hier ab, bevor
+# er irgendetwas anfasst - kein docker, kein git, kein Statuseintrag.
+mkdir -p "$BETRIEB"
+SPERRE="$BETRIEB/update.lock"
+if ! command -v flock >/dev/null 2>&1; then
+  echo "ABBRUCH: flock fehlt (Paket util-linux) - ohne Sperre laeuft kein Update." >&2
+  exit 1
+fi
+exec 9>"$SPERRE"
+if ! flock -n 9; then
+  echo "ABBRUCH: ein anderes Update laeuft bereits (Sperre $SPERRE) - dieser Lauf aendert nichts." >&2
+  exit 1
+fi
 # NIEMALS nacktes `docker compose up -d`: es wuerde sales-auto starten
 # (zweiter Antwortpfad neben dem Cron-Job). Dienste immer namentlich.
 #
@@ -39,7 +55,11 @@ KERN_ALLE="sales-mcp sales-ui sales-inbox sales-dispatch sales-mail sales-claw s
 # und jedes Update ueberspraenge Abnahme und automatischen Rueckbau.
 # auftrag-bote (10.11.2026, M8): das erste Mal von Hand starten, danach
 # zieht ihn jedes Update mit.
-KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote"
+# sales-termine (11.11.2026): Taktgeber der Meeting-Mitte, das erste Mal von Hand
+# starten (VEXA_API_KEY, OLLAMA_URL, TELEGRAM_* gesetzt), danach zieht ihn jedes Update mit.
+# sales-auge (13.11.2026): Beobachter "Laura (Bildschirm)", eigenes Image aus
+# sales-mcp/Dockerfile.auge (eigener Build); erstes Mal von Hand starten.
+KERN_OPTIONAL="sales-post sales-kalender freigabe-bote auftrag-bote sales-termine sales-ki sales-auge"
 
 # Dienstliste ohne die optionalen Dienste (Reihenfolge bleibt).
 ohne_optionale() { # dienstliste
@@ -61,6 +81,9 @@ ohne_optionale() { # dienstliste
 # also GENAU den bisherigen Stand.
 LADEN_PRAEFIXE=("sales")
 LADEN_ENVARGS=("")
+# Compose-Dateien je Laden, parallel zu LADEN_ENVARGS. Nur der Basis-Laden (Index 0) bekommt
+# docker-compose.fenster.yml dazu (Netz zum Portal-Container, siehe dort); zweite Laeden nie.
+LADEN_DATEIEN=("-f docker-compose.yml -f docker-compose.fenster.yml")
 # W3 (Schlussprüfung 2026-09-16, Bereich B): eine Umgebungsdatei ohne
 # brauchbares LADEN_PRAEFIX (Tippfehler im Schluessel, auskommentierte
 # Zeile, oder unter Debian ein mitkopiertes CRLF -> "ivan\r") ist ein
@@ -103,6 +126,7 @@ for e in "$WURZEL"/deploy/laeden/*.env; do
   done
   LADEN_PRAEFIXE+=("$p")
   LADEN_ENVARGS+=("--env-file $e")
+  LADEN_DATEIEN+=("")
 done
 if [ "$LADEN_ENV_FEHLER" -gt 0 ]; then
   echo "ABBRUCH: $LADEN_ENV_FEHLER Umgebungsdatei(en) in deploy/laeden/ fehlerhaft (LADEN_PRAEFIX oder eigene Medienordner) - siehe FEHLER-Zeilen oben." >&2
@@ -260,6 +284,12 @@ fi
 if echo "$GEAENDERT" | grep -E '^sales-stt/' >/dev/null; then
   STT_GEAENDERT=true
 fi
+# sales-ki (12.11.2026) hat wie sales-stt ein eigenes Image: eine Aenderung nur
+# an sales-ki/ baut ihn neu, aber nur in einem Laden, in dem er laeuft.
+KI_GEAENDERT=false
+if echo "$GEAENDERT" | grep -E '^sales-ki/' >/dev/null; then
+  KI_GEAENDERT=true
+fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
   GATEWAY_NEU=true
 fi
@@ -278,6 +308,80 @@ chat_eingang_sichern() { # envargs
   # shellcheck disable=SC2086
   bash "$WURZEL/deploy/chat-eingang-anlegen.sh" $1 || \
     echo "HINWEIS: Chat-Eingang (media/inbound) nicht angelegt - siehe oben." >&2
+}
+
+# Portal-Fenster: das Netz bewerbung-fenster (deploy/fenster-netz-anlegen.sh, idempotent) vor
+# JEDEM `up` des Basis-Ladens (Index 0), auch im Rueckbau. Ein Fehlschlag bricht das Update nicht
+# ab: dann bleibt FENSTER_NETZ_OK falsch, compose_dateien liefert nichts, der Basis-Laden kommt
+# OHNE Override hoch und das Fenster bleibt aus (ein `up` mit fehlendem external-Netz scheiterte
+# sonst laut und nahme sales-ui mit).
+FENSTER_NETZ_OK=false
+fenster_netz_sichern() { # laden-index
+  FENSTER_NETZ_OK=false
+  [ "$1" -eq 0 ] || return 0
+  [ -f "$WURZEL/deploy/fenster-netz-anlegen.sh" ] || return 0
+  if bash "$WURZEL/deploy/fenster-netz-anlegen.sh"; then
+    FENSTER_NETZ_OK=true
+  else
+    echo "HINWEIS: Netz bewerbung-fenster nicht angelegt - Basis-Laden startet ohne Portal-Fenster." >&2
+  fi
+  return 0
+}
+# Die -f-Argumente eines Ladens (Override nur mit angelegtem Netz und vorhandener Datei).
+compose_dateien() { # laden-index
+  if [ "$1" -eq 0 ] && $FENSTER_NETZ_OK && [ -f "$WURZEL/docker-compose.fenster.yml" ]; then
+    echo "${LADEN_DATEIEN[0]}"
+  fi
+  return 0
+}
+
+# EIN BAU JE KONTEXT (12.11.2026). Am 11.11.2026 stuerzte dockerd auf der VM
+# ab (BuildKit: "concurrent map iteration and map write"), alle Container
+# standen. Ausloeser war `docker compose ... up -d --build <dienste>`: die
+# ~14 Dienste mit `build: ./sales-mcp` und demselben Image baute Compose
+# einzeln und GLEICHZEITIG (12 identische Builds in derselben Sekunde).
+# Deshalb hier: Dienste nach Build-Abschnitt UND Image gruppieren (aus
+# `docker compose <dieselben args> config`, also nie ohne die --env-file des
+# Ladens), je Gruppe einen Vertreter bauen - nacheinander, in einer Schleife -
+# und danach `up -d --no-build` mit ALLEN Diensten in der bisherigen
+# Reihenfolge. Dienste ohne build: werden nicht gebaut (wie vorher).
+# Die Dienstnamen gehen an `config` mit, damit Dienste hinter einem Profil
+# (sales-stt, Profil stt-lokal) wie beim `up` dabei sind.
+# Fehlschlaege (config, build, up) beenden das Skript wie vorher das
+# `up --build` (set -euo pipefail; `local` steht bewusst getrennt von der
+# Zuweisung, `local x="$(...)"` wuerde den Fehlerstatus verschlucken).
+#   bauen_und_starten <compose-argumente...> -- <dienste...>
+bauen_und_starten() {
+  local args=() dienste=() vertreter v
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    args+=("$1")
+    shift
+  done
+  [ "$#" -gt 0 ] && shift
+  dienste=("$@")
+  [ "${#dienste[@]}" -gt 0 ] || return 0
+  vertreter="$(docker compose ${args[@]+"${args[@]}"} config --format json "${dienste[@]}" \
+    | python3 -c '
+import json, sys
+dienste = json.load(sys.stdin).get("services") or {}
+gesehen, aus = set(), []
+for name in sys.argv[1:]:
+    if name not in dienste:
+        sys.exit("FEHLER: Dienst %s fehlt in docker compose config" % name)
+    bau = dienste[name].get("build")
+    if not bau:
+        continue
+    schluessel = (json.dumps(bau, sort_keys=True), dienste[name].get("image") or "dienst:" + name)
+    if schluessel not in gesehen:
+        gesehen.add(schluessel)
+        aus.append(name)
+print(" ".join(aus), end="")
+' "${dienste[@]}")"
+  for v in $vertreter; do
+    echo "Baue $v (ein Build je Kontext, nacheinander)"
+    docker compose ${args[@]+"${args[@]}"} build "$v"
+  done
+  docker compose ${args[@]+"${args[@]}"} up -d --no-build "${dienste[@]}"
 }
 
 gateway_neustarten() {
@@ -301,8 +405,9 @@ rueckbau() {
     k="${LADEN_KERN[$i]}"
     [ -n "$k" ] || continue
     chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
-    # shellcheck disable=SC2086
-    docker compose ${LADEN_ENVARGS[$i]} up -d --build $k
+    fenster_netz_sichern "$i"
+    # shellcheck disable=SC2046,SC2086
+    bauen_und_starten ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") -- $k
   done
   gateway_neustarten
   sleep 30
@@ -339,6 +444,12 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
       BAUEN="$BAUEN sales-stt"
     fi
   fi
+  if $KI_GEAENDERT; then
+    c="$(containername sales-ki "$P")"
+    if [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ]; then
+      BAUEN="$BAUEN sales-ki"
+    fi
+  fi
   # sales-linkedin und sales-telegram TEILEN SICH das sales-mcp-Image und
   # stehen seit 16.09.2026 auch in KERN_ALLE (damit schon in $K enthalten,
   # wenn sie laufen und BAUEN_BEI_MCP/-COMPOSE zutrifft). Dieser Block
@@ -357,8 +468,9 @@ for i in "${!LADEN_PRAEFIXE[@]}"; do
 
   if [ -n "$BAUEN" ]; then
     chat_eingang_sichern "${LADEN_ENVARGS[$i]}"
-    # shellcheck disable=SC2086
-    docker compose ${LADEN_ENVARGS[$i]} up -d --build $BAUEN
+    fenster_netz_sichern "$i"
+    # shellcheck disable=SC2046,SC2086
+    bauen_und_starten ${LADEN_ENVARGS[$i]} $(compose_dateien "$i") -- $BAUEN
   fi
 done
 
@@ -460,7 +572,7 @@ if $OPENWA_BAUEN; then
     fi
 
     # shellcheck disable=SC2086
-    docker compose ${LADEN_ENVARGS[$i]} -f docker-compose.openwa.yml up -d --build openwa
+    bauen_und_starten ${LADEN_ENVARGS[$i]} -f docker-compose.openwa.yml -- openwa
   done
 fi
 if echo "$GEAENDERT" | grep -E '^config/workspace/' >/dev/null; then
@@ -474,6 +586,39 @@ fi
 if $GATEWAY_NEU; then
   gateway_neustarten
   sleep 30   # Gateway, Kanal und MCP brauchen einen Moment (gemessen 5-20s).
+fi
+
+# Nach einem openwa-Neubau auf die WhatsApp-Sitzung warten, bevor die
+# Abnahme sie prueft. Gemessen 11.11.2026: die Sitzung brauchte nach dem
+# Neustart ~2 min (mehrere "event bridge"-Neuladungen ueber "authenticating"),
+# die Abnahme lief vorher und baute dreimal zurueck, obwohl der neue Stand
+# in Ordnung war. Wartet hoechstens OPENWA_WARTE_S (Standard 240 s) und
+# entscheidet nichts selbst: ist die Sitzung dann nicht "ready", bleibt die
+# Abnahme rot wie bisher.
+# Zweiter Befund 12.11.2026: nach dem Neubau endet der Auto-Start oft in
+# "failed" ("event bridge never attached"), ein Endzustand. Dann einmal
+# POST /api/sessions/{id}/start wie in docs/08_PAIRING_ANLEITUNG.md (kein
+# neues Pairing) - von Hand mehrfach gemessen: binnen ~20 s "ready".
+if $OPENWA_BAUEN; then
+  openwa_sitzung() {
+    docker exec sales-dispatch python -c "import os,json,urllib.request as u;q=u.Request(os.environ['OPENWA_URL']+'/api/sessions',headers={'X-Api-Key':os.environ['OPENWA_API_KEY']});print(json.loads(u.urlopen(q,timeout=20).read())[0]['status'])" 2>/dev/null || echo unerreichbar
+  }
+  openwa_sitzung_starten() {
+    docker exec sales-dispatch python -c "import os,json,urllib.request as u;H={'X-Api-Key':os.environ['OPENWA_API_KEY']};B=os.environ['OPENWA_URL'];s=json.loads(u.urlopen(u.Request(B+'/api/sessions',headers=H),timeout=20).read())[0];print(u.urlopen(u.Request(B+'/api/sessions/'+s['id']+'/start',headers=H,method='POST'),timeout=60).status)" 2>/dev/null || echo fehlgeschlagen
+  }
+  WARTE_BIS=$(( $(date +%s) + ${OPENWA_WARTE_S:-240} ))
+  NEU_GESTARTET=false
+  while :; do
+    SITZUNG="$(openwa_sitzung)"
+    [ "$SITZUNG" = "ready" ] && break
+    if [ "$SITZUNG" = "failed" ] && ! $NEU_GESTARTET; then
+      echo "openwa-Sitzung 'failed' nach dem Neubau - einmal neu starten: $(openwa_sitzung_starten)"
+      NEU_GESTARTET=true
+    fi
+    [ "$(date +%s)" -ge "$WARTE_BIS" ] && break
+    sleep 10
+  done
+  echo "openwa-Sitzung vor der Abnahme: $SITZUNG"
 fi
 
 # Die Abnahme prueft den VOLLEN Stack — auf einem absichtlich unvollstaendigen

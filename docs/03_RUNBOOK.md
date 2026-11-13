@@ -2100,8 +2100,9 @@ Kontakte samt Verlauf/Bedarf/Verträgen, Posteingang, die Einordnung
 unbekannter Absender und offene Wiedervorlagen — ohne den Chat zu bemühen.
 
 ```powershell
-# Start (Rest des Stacks bleibt unberührt)
-docker compose up -d sales-ui
+# Start (Rest des Stacks bleibt unberührt). Der Basis-Laden mit Portal-Fenster, immer über das Skript
+# (ein schlichtes `up -d sales-ui` erzeugt ihn ohne das Netz bewerbung-fenster neu):
+bash deploy/sales-ui-neu.sh
 # dann im Browser: http://127.0.0.1:8791
 ```
 
@@ -2248,7 +2249,7 @@ Adresse jederzeit erreichbar, und „Wiederherstellen" holt ihn zurück.
 * **Die beiden neuen Chat-Werkzeuge stehen erst nach einem Neustart von
   `sales-mcp` zur Verfügung** (`docker compose up -d --build sales-mcp`) — die
   Werkzeugliste entsteht beim Prozessstart. Das Ausrollen der Oberfläche
-  (`docker compose up -d --build sales-ui`) ändert daran nichts und lässt den
+  (`docker compose build sales-ui && bash deploy/sales-ui-neu.sh`) ändert daran nichts und lässt den
   laufenden MCP-Container bewusst in Ruhe; der Posteingang-Filter für
   archivierte Kontakte greift im Chat also ebenfalls erst nach diesem Neustart.
   **Bis dahin sehen Chat und Oberfläche verschieden:** ein in der Oberfläche
@@ -2283,7 +2284,7 @@ Fall ausdrücklich, dass kein Sammelkontakt eingerichtet ist. Nach dem Ziehen
 dieser Änderung deshalb einmal ausrollen:
 
 ```powershell
-docker compose up -d --build sales-ui
+docker compose build sales-ui; bash deploy/sales-ui-neu.sh
 ```
 
 `--build` ist nötig, weil `ui.py` im Image liegt; es baut das gemeinsame Image
@@ -2492,7 +2493,7 @@ Agententext über Kundennachrichten).
 `entwurf_verwerfen`) stehen erst nach einem Neustart von `sales-mcp` zur
 Verfügung (`docker compose up -d --build sales-mcp`) — die Werkzeugliste
 entsteht beim Prozessstart. Die Oberfläche braucht
-`docker compose up -d --build sales-ui`. `AGENTS.md` muss der Betreiber
+`docker compose build sales-ui && bash deploy/sales-ui-neu.sh`. `AGENTS.md` muss der Betreiber
 zusätzlich per `docker compose cp` ins Volume legen, sonst kennt der Agent die
 neuen Werkzeuge nicht (kein Neustart nötig, siehe „Agent-Regeln ändern").
 `--remove-orphans` bleibt TABU.
@@ -3294,6 +3295,28 @@ laeuft deshalb am PC des Betreibers, nicht mehr als Container auf der VM.
 - Rueckweg (nur ausdruecklich): `STT_URL`/`STT_SCHLUESSEL` in der VM-`.env` leeren, dann
   `docker compose --profile stt-lokal up -d --build sales-stt` und sales-mcp neu erzeugen.
 
+### Sprachnachrichten im Selbst-Chat (seit 11.11.2026)
+
+Bis dahin schrieb sales-stt nur Kunden-Sprachnachrichten ab (Routine
+`sprachnachrichten_transkribieren`). Eine Sprachnachricht des Betreibers im Selbst-Chat
+kam beim Agenten nur als `<media:audio>` an - er konnte sie nicht hoeren.
+
+- `tools.media.audio` im Gateway ruft vor dem Agenten die CLI `stt/sprachnotiz.mjs` im
+  Volume auf. Die schickt die Datei an dasselbe sales-stt (`STT_URL`, `X-STT-Key`) und gibt
+  nur den Text zurueck. OpenClaw ersetzt den Anhang durch einen `[Audio]`-Block mit der
+  Abschrift.
+- Einrichten bzw. nachziehen: `bash deploy/stt-anbinden.sh` (nur Basis-Laden, ohne
+  Neustart, Schluessel nie in Ausgabe oder Kommandozeile). Am Ende steht eine Probe mit
+  1 s Stille ueber genau diese CLI.
+- Bewusst ein ausdruecklicher CLI-Eintrag: ohne eingetragene Modelle erkennt OpenClaw
+  selbst einen Anbieter und naehme einen Cloud-Dienst, sobald dessen Schluessel in der
+  Umgebung liegt. Block: `deploy/stt/media-audio.json` (= Saat in `config/openclaw.json`).
+- PC aus: die CLI scheitert nach Sekunden, die Sprachnachricht bleibt Anhang, der Agent
+  sagt, dass er sie nicht abhoeren konnte.
+- Abschrift zur Kontrolle zurueck in den Chat: `echoTranscript: true` im Block (aus).
+- Rueckweg: `docker exec sales-claw openclaw config unset tools.media.audio` (dann
+  greift wieder die Auto-Erkennung) oder `... config set tools.media.audio '{"enabled":false}'`.
+
 ## Newsletter-Einwilligung: fragen und selbst anmelden (seit 20.10.2026)
 
 Ein Newsletter geht nur an `consent_status = 'opt_in'` (E1). Zwei Wege dorthin, beide auf
@@ -3352,8 +3375,8 @@ Ausrollen - Reihenfolge, jeder Schritt nur mit Betreiber-OK:
    ein kostenloses Fremdmodell schicken. Dann nicht weiter ausrollen.
 5. Hat `post-anbinden.sh` ein NEUES Schluesselpaar erzeugt (es sagt es), bekommt `sales-ui` den
    oeffentlichen Schluessel erst beim Neuerzeugen:
-   `docker compose up -d --no-deps --force-recreate sales-ui` (andere Laeden mit
-   `--env-file deploy/laeden/<laden>.env`). Ohne das meldet "Postfach hinzufuegen" einen Fehler.
+   `bash deploy/sales-ui-neu.sh` (Basis-Laden; es haelt das Netz bewerbung-fenster) - andere Laeden:
+   `docker compose --env-file deploy/laeden/<laden>.env up -d --no-deps --force-recreate sales-ui`. Ohne das meldet "Postfach hinzufuegen" einen Fehler.
 6. Sitzungskopien aufraeumen einrichten (R17): das Gateway legt je eingeordneter Mail eine
    Sitzungsdatei mit dem Mailinhalt an (`agents/post/sessions/*.jsonl`, ebenso
    `agents/post-pruefer/sessions/` fuer den Pruefer).
@@ -3518,7 +3541,7 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
     Felix' OK - `bash deploy/post-neu-einordnen.sh [laden] anwenden` (ohne Modell; Mails mit menschlicher
     Korrektur bleiben). Pruefen: Ausgabe nennt die Zahl, danach `bericht` noch einmal.
 11. **Einschalten, Stufe 1: nur verschieben.** In die `.env`: `POST_AUFRAEUMEN_AB=<heutiges Datum, ISO>` und
-   `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post sales-ui`.
+   `POST_ORDNEN=verschieben`, dann `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh`.
    **`POST_ORDNEN` ausser `aus` nie ohne `POST_AUFRAEUMEN_AB`:** ohne Stichtag gilt jede Mail als
    Altbestand und die 90-Tage-Regel stuft Posteingangs-Mails ab. Pruefen:
    `docker exec ${PRAEFIX}-post printenv POST_ORDNEN POST_AUFRAEUMEN_AB` (beide gesetzt). Dann **eine
@@ -3528,15 +3551,15 @@ Die Schalter (in der `.env` des Ladens, durchgereicht in `docker-compose.yml`):
 12. **Sichtpruefung vor `voll`:** In der UI unter `/post/aufraeumen` je Jahr ansehen, was geloescht
     wuerde (Vorschau je Jahr; ein Klick auf den Absender listet dessen Mails mit Datum, Konto und
     Betreff; Reiter To-Review). Erst danach, mit Felix' OK: `POST_ORDNEN=voll` in die
-    `.env`, `docker compose up -d --no-deps --force-recreate sales-post sales-ui`. `voll` loescht nur
+    `.env`, `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh`. `voll` loescht nur
     **freigegebene Jahre** und **To-Review-Mails, die aelter als 30 Tage sind**; ohne Freigabe bleibt die
     Mail, wo sie ist.
 13. **Jahre freigeben** durch Felix in der UI (`/post/aufraeumen`), das neueste Jahr zuerst, je Jahr einzeln;
     Absender, die bleiben sollen, vorher herausnehmen. Nach jeder Freigabe eine Runde abwarten und die
     Zahlen pruefen, bevor das naechste Jahr dran ist.
 
-**Rueckweg.** `POST_ORDNEN=aus` in der `.env` und `docker compose up -d --no-deps --force-recreate
-sales-post sales-ui` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
+**Rueckweg.** `POST_ORDNEN=aus` in der `.env` und
+`docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh` stoppt jedes Verschieben und Loeschen ab der naechsten Runde (Pruefen:
 `printenv POST_ORDNEN` im Container = `aus`). Schon verschobene Mails bleiben im Zielordner und lassen
 sich per Handy zurueckziehen. **Geloeschte Mails sind endgueltig weg**; nur ihre Kopfzeile bleibt in
 `post_mails` (Absender, Betreff, Datum - kein Inhalt). Darum nie `voll` ohne Sichtpruefung (Schritt 12).
@@ -3565,7 +3588,7 @@ Alle Schritte nur mit Felix' ausdruecklichem OK (der Deploy selbst braucht es; k
    (fail closed), und die alten E-Mail-Zeilen im Kontakt-Verlauf bleiben fuer alle verborgen.
    Pruefen: `bash deploy/smoke.sh`, `docker exec ${PRAEFIX}-ui printenv POST_BESITZER` ist nicht leer.
 4. **`POST_AUFRAEUMEN_AB=<ISO-Datum>` setzen** (Felix' Entscheidung; `POST_BESITZER` muss gesetzt bleiben), dann
-   nur `docker compose up -d --no-deps --force-recreate sales-post sales-ui` (beide: `sales-ui` zeigt die Mails und liest den
+   nur `docker compose up -d --no-deps --force-recreate sales-post && bash deploy/sales-ui-neu.sh` (beide: `sales-ui` zeigt die Mails und liest den
    Stichtag ebenfalls; ohne ihn steht in `/posteingang` "Stichtag nicht gesetzt"; nie nacktes `up -d`).
    Pruefen: `docker exec ${PRAEFIX}-post printenv POST_AUFRAEUMEN_AB POST_BESITZER` und `docker exec ${PRAEFIX}-ui printenv POST_AUFRAEUMEN_AB`.
    **Jede Aenderung des Stichtags** braucht dieselbe Neuerzeugung von `sales-post` und `sales-ui`.
@@ -3677,7 +3700,7 @@ nie in der UI), `GOOGLE_KALENDER_CLIENT_ID` und `GOOGLE_KALENDER_CLIENT_SECRET`.
    ein. Ist der private Schlüssel schon da, ändert es nichts (ein zweites Paar machte alle
    versiegelten Zugänge unlesbar).
 3. Die Dienste lesen die `.env` erst nach Neuerzeugen:
-   `docker compose up -d --no-deps --force-recreate sales-ui sales-kalender`
+   `bash deploy/sales-ui-neu.sh && docker compose up -d --no-deps --force-recreate sales-kalender`
    (andere Läden mit `--env-file deploy/laeden/<laden>.env`).
    Prüfen (jeweils nur „da“, nie die Werte selbst ausgeben):
    `docker exec ${PRAEFIX}-ui sh -c 'test -n "$GOOGLE_KALENDER_CLIENT_ID" && echo da'` (ebenso für
@@ -3841,3 +3864,373 @@ dann 401.
 - Eine Kursfreigabe ohne Inhaltsänderung braucht `neu_ausliefern: true` in den Details des Eintrags. Fehlt es,
   bereitet der Knopf „Freigabe-Seite schicken“ eine Seite mit grauem Knopf vor (Learning 3a86283).
 - Ein Entwurf steht beim Versand kurz auf `failed`. Das ist die Claim-Marke von `kanal_dispatch`, kein Fehler.
+
+## Meeting-Mittelpunkt: Vexa-Betrieb (Spec 2026-11-10 §5.4, Plan Task 15)
+
+Vexa (Meeting-Bot und Mitschrift) läuft als **eigenes Compose-Projekt `vexa`** unter `deploy/vexa/`, getrennt vom
+Basis-Stack. Dateien: `deploy/vexa/docker-compose.yml`, `deploy/vexa/nginx-tor.conf`, `deploy/vexa/.env.example`,
+`deploy/vexa/whisper-aufwaermen.py`, `deploy/vexa-anbinden.sh`. Vorlage ist Vexa v0.12.28, `deploy/lite/` (Makefile).
+Alle Images sind per Digest gepinnt (Digests und Abfragedatum stehen im Kopf der Compose-Datei bzw. im Task-Bericht).
+**Nichts davon startet von selbst; Start erst nach Felix' OK.**
+
+**Wichtig: Jeder Compose-Aufruf für Vexa braucht `-f` und `-p`.** Aus `~/sales-claw` heraus lädt ein bloßes
+`docker compose -p vexa …` die Compose-Datei des Basis-Stacks, nicht die von Vexa. Darum in diesem Abschnitt überall
+`docker compose -f ~/sales-claw/deploy/vexa/docker-compose.yml -p vexa …` (kurz: `VEXA_C`):
+
+    VEXA_C="docker compose -f $HOME/sales-claw/deploy/vexa/docker-compose.yml -p vexa"
+
+**Dienste** (Container, Volumes):
+
+| Dienst | Aufgabe | Volume |
+|---|---|---|
+| `vexa-lite` | Gateway, Admin-API, meeting-api, Bots als Prozesse. `127.0.0.1:8056` | – |
+| `vexa-tor` | nginx, reicht nur :8056 an `vexa-lite` weiter, einziger Teilnehmer von `sales-claw_default` | – |
+| `vexa-lite-whisper` | Spracherkennung `Systran/faster-whisper-small`, CPU, kein Port | `vexa-whisper-modelle` |
+| `vexa-lite-postgres` | Datenbank, kein Port | `vexa-pgdata` |
+| `vexa-lite-storage` (+ `vexa-lite-storage-init`) | versitygw (S3), Bucket `vexa`, kein Port | `vexa-storagedata` |
+
+**Netz und Tor-Dienst.** `sales-termine` erreicht Vexa als `VEXA_URL=http://vexa-lite:8056` (Standardwert). Dafür hängt
+**nicht `vexa-lite` selbst**, sondern nur der schmale Dienst `vexa-tor` am bestehenden Netz `sales-claw_default`
+(`external: true`) und trägt dort den Netz-Alias `vexa-lite`. Er leitet ausschließlich Port 8056 an `vexa-lite:8056` weiter
+(`deploy/vexa/nginx-tor.conf`, ohne Zugriffslog, weil Anfragen API-Schlüssel tragen). Grund: Jeder Container in
+`sales-claw_default` (auch die Läden, OpenWA, Rowboat-Anbindungen) kann sonst alle Ports von `vexa-lite` erreichen, also
+Admin-API (8001), Terminal (3001), Agent-API (8100), noVNC. Mit dem Tor sieht der Basis-Stack nur das Gateway, das mit
+API-Schlüsseln geschützt ist. Postgres, Speicher und Whisper hängen nur an `vexa_default`. Heißt der Basis-Stack anders
+(zweiter Laden, `LADEN_PROJEKT`), muss `networks.salesclaw.name` in der Compose-Datei passen. Existiert
+`sales-claw_default` nicht, bricht `up` mit „network … not found“ ab: erst den Basis-Stack starten.
+
+**Start** (VM, nur nach OK):
+
+    cd ~/sales-claw
+    VEXA_C="docker compose -f $HOME/sales-claw/deploy/vexa/docker-compose.yml -p vexa"
+    bash deploy/vexa-anbinden.sh            # 1. Aufruf: legt deploy/vexa/.env (600) mit Zufallswerten an, Exit 4
+    $VEXA_C up -d
+    $VEXA_C ps                              # alle Dienste "healthy" (vexa-lite braucht bis zu 2 Minuten)
+
+Die `.env` in `deploy/vexa/` wird **nicht** neu erzeugt, solange das Volume `vexa-pgdata` existiert und die `.env` fehlt
+(Exit 5): ein neues Datenbankpasswort passte nicht zu den vorhandenen Daten. Die `.env` also sichern (Backup/`sicherung.sh`
+des Basis-Stacks deckt `deploy/vexa/` nicht ab) und bei Verlust entweder die alte wiederherstellen oder das Volume bewusst
+einzeln entfernen (Datenverlust, siehe Rückbau). Enthält die `.env` irgendwo das Wort `PLATZHALTER`, bricht das Skript ab.
+
+**Whisper aufwärmen** (einmal nach dem ersten Start und nach jedem Löschen von `vexa-whisper-modelle`). Das Modell wird
+erst bei der **ersten Anfrage** geladen (Download von HuggingFace, einige Minuten). Ohne Aufwärmen bekäme der erste echte
+Termin keine Mitschrift oder eine sehr späte:
+
+    docker exec -i vexa-lite-whisper python3 - < ~/sales-claw/deploy/vexa/whisper-aufwaermen.py
+    # erwartet: "whisper warm: HTTP 200"
+
+**Anbinden** (nach dem Start, idempotent, gibt keine Geheimnisse aus):
+
+    bash deploy/vexa-anbinden.sh            # 2. Aufruf
+
+setzt zuerst den **Mitschnitt-Not-Aus** (`PUT /internal/settings/diagnostics {"capture_signal":"false"}`; Vexa legt
+sonst ab Werk von jedem Meeting einen Rohmitschnitt samt Mitschrift im eigenen Speicher ab und löscht ihn nie, gefunden
+bei der Abnahme 12.11.2026; das interne Geheimnis erzeugt `entrypoint.sh` bei jedem Start, das Skript liest es aus der
+Umgebung des admin-api-Prozesses und gibt es nie aus), dann
+legt es in Vexa den Nutzer `sales` an, holt einen Token mit den Rechten `bot,tx`, setzt `PUT /user/transcription` mit
+Platzhalter-Token (ohne das scheitert laut Spike die Spracherkennung) und trägt `VEXA_API_KEY=` in `~/sales-claw/.env`
+ein (Sicherung `.env.vor-vexa-<Zeit>`, Rechte 600). Ein weiterer Aufruf prüft den vorhandenen Schlüssel mit demselben
+`PUT`: ist er gültig, wird weder ein Token geholt noch die `.env` angefasst. Danach `sales-termine` neu erzeugen, damit er
+die `.env` neu liest:
+
+    cd ~/sales-claw && docker compose up -d --no-deps --force-recreate sales-termine
+
+**Smoke** (nur lesen, ohne Geheimnis auf dem Bildschirm):
+
+    curl -sf http://127.0.0.1:8056/health && echo gateway-ok
+    docker exec vexa-lite supervisorctl status                       # alle RUNNING
+    docker exec vexa-lite-whisper python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3).status)"
+    docker network inspect sales-claw_default --format '{{range .Containers}}{{.Name}} {{end}}' | tr ' ' '\n' | grep -x -e vexa-tor
+    docker network inspect sales-claw_default --format '{{range .Containers}}{{.Name}} {{end}}' | tr ' ' '\n' | grep -cx vexa-lite   # muss 0 sein
+    docker exec sales-termine python -c "import urllib.request;print(urllib.request.urlopen('http://vexa-lite:8056/health',timeout=5).status)"
+    docker logs --since 5m sales-termine | tail -5
+    # Kein Rohmitschnitt (muss 0 sein; signal/ fehlt oder ist leer):
+    docker exec vexa-lite-storage sh -c 'ls /srv/vexa-storage/data/vexa/signal 2>/dev/null | wc -l'
+
+Ein echter Probe-Bot (Termin mit Jitsi-Link auf `meet.ffmuc.net`) gehört zu den Abnahmetests (Spec §10).
+
+**Bot geht nicht von selbst (Jitsi, Abnahme 12.11.2026).** Auf Jitsi merkt Vexa nicht, dass alle gegangen sind: der Bot
+bleibt allein im Raum, das Meeting `active`, Mitschrift und Auswertung kommen nicht. Darum stoppt `sales-termine` den
+Bot, sobald das Terminende vorbei ist und seit `VEXA_STILLE_NACH_ENDE_MIN` Minuten (Vorgabe 10) niemand mehr gesprochen
+hat (Log: `Bot nach Terminende und Stille gestoppt`). Wer überzieht, verliert nichts, solange gesprochen wird. Endet ein
+Gespräch früh, kommt die Auswertung also spätestens 10 Minuten nach dem geplanten Ende.
+
+**Rückbau** (trifft nur das Projekt `vexa`):
+
+    VEXA_C="docker compose -f $HOME/sales-claw/deploy/vexa/docker-compose.yml -p vexa"
+    $VEXA_C down                                 # Container und Netz vexa_default; Volumes bleiben
+    docker volume rm vexa-pgdata                 # einzeln, jeder Name für sich (löscht die Vexa-Daten!)
+    docker volume rm vexa-storagedata
+    docker volume rm vexa-whisper-modelle        # optional; das Modell lädt sonst neu
+    # dann in ~/sales-claw/.env die Zeile VEXA_API_KEY= leeren und sales-termine neu erzeugen;
+    # deploy/vexa/.env löschen, wenn auch pgdata gelöscht wurde
+
+Nie `docker system prune` oder `docker volume prune`, nie `--remove-orphans`, nie `-v` an `down` anderer Projekte. Das
+externe Netz `sales-claw_default` gehört dem Basis-Stack und bleibt unberührt.
+
+**Prüfung der Dateien** (ohne Daemon, ohne Netz): `bash deploy/tests/test_vexa_compose.sh` — jedes `image:` mit Digest,
+alle `ports:` auf `127.0.0.1`, Projektname `vexa`, Volumes mit Präfix `vexa-`, nur `vexa-tor` auf `sales-claw_default`;
+`docker compose config` läuft mit, wenn Docker am Ort vorhanden ist. `bash deploy/tests/test_vexa_anbinden.sh` prüft das
+Anbinde-Skript gegen Attrappen für `docker` und `curl`.
+
+## Meeting-Mittelpunkt: KI-Tor `sales-ki` (Übergang seit 12.11.2026)
+
+Betreiber-Entscheid 12.11.2026: Bis eigene Server mit lokalem Modell da sind, beantwortet **Claude Code** (Abo des
+Betreibers, kein API-Budget) Briefing-Kurztext und Mitschrift-Auswertung. Der Dienst `sales-ki` (`sales-ki/ki_tor.py`)
+spricht dieselbe Schnittstelle wie Ollama (`GET /api/tags`, `POST /api/chat`), deshalb bleibt `sales-mcp/ollama.py`
+unverändert; nur `OLLAMA_URL` zeigt auf ihn. Je Anfrage läuft `claude -p` ohne Werkzeuge, ohne MCP, ohne
+Einstellungsdateien und ohne Sitzungsspeicher; der Kundentext geht über stdin. Geloggt werden nur Pfad, Status,
+Dauer. Datenschutz: siehe `docs/06_DSGVO.md` (Abschnitt Mitschriften, „Übergang“).
+
+**Auswertung am Stück:** `sales-mcp/auswertung.py` teilt die Mitschrift in Stücke von `AUSWERTUNG_STUECK_ZEICHEN`
+Zeichen (Vorgabe 12000, passend zu `OLLAMA_NUM_CTX=8192` eines kleinen lokalen Modells). Mit dem KI-Tor auf der VM
+`AUSWERTUNG_STUECK_ZEICHEN=80000` setzen: ein Gespräch von gut einer Stunde (Abnahme 12.11.2026: 269 Segmente,
+11 835 Zeichen) geht dann in einem Aufruf an Claude, Gesprächsverlauf und Kurzfassung entstehen aus dem ganzen
+Gespräch statt aus Teilen. Bricht die Auswertung langer Gespräche mit Zeitüberschreitung ab (Log
+`sales-termine`), `KI_TIMEOUT_S` und `OLLAMA_TIMEOUT_S` gemeinsam anheben (KI_TIMEOUT_S kleiner lassen).
+
+**Einrichten** (VM, `~/sales-claw/.env`, nie ausgeben):
+
+    CLAUDE_CODE_OAUTH_TOKEN=…        # am PC: `claude setup-token`, Betreiber klickt „Authorize“
+    OLLAMA_URL=http://sales-ki:11434
+    OLLAMA_BRIEFING_TIMEOUT_S=120
+    OLLAMA_MODELL=claude-sonnet      # nur Beschriftung in der Akte; gerechnet wird mit KI_MODELL
+    AUSWERTUNG_STUECK_ZEICHEN=80000  # Mitschrift am Stueck statt in 12000er-Stuecken (Vorgabe fuer kleine lokale Modelle)
+    # optional: KI_MODELL (Vorgabe sonnet), KI_TIMEOUT_S (Vorgabe 280)
+
+    cd ~/sales-claw
+    docker compose up -d --build --no-deps sales-ki
+    docker compose up -d --no-deps --force-recreate sales-termine
+
+`deploy/update.sh` baut `sales-ki` danach nur neu, wenn er läuft (`KERN_OPTIONAL`); `deploy/smoke.sh` Abschnitt 24
+prüft Absturzschleife und `/api/tags` (kein echter Claude-Aufruf).
+
+**Probe** (ein echter Aufruf, kostet Abo-Kontingent):
+
+    docker exec sales-termine python -c "import ollama;print(ollama.chat('Antworte knapp.','Sag nur: ok'))"
+
+**Zurück zum lokalen Modell:** `OLLAMA_URL` auf den eigenen Ollama-Server, `OLLAMA_MODELL` auf das lokale Modell
+(oder leer), `OLLAMA_BRIEFING_TIMEOUT_S` und `AUSWERTUNG_STUECK_ZEICHEN` wieder leer,
+`sales-termine` neu erzeugen, `docker compose stop sales-ki`, in `sales-mcp/server.py` den Satz „Die Mitschrift bleibt
+auf unseren eigenen Servern.“ wieder in `EINLADUNG_MITSCHRIFT_HINWEIS` aufnehmen.
+
+## Meeting-Mittelpunkt: Bildauswertung `sales-auge` (seit 13.11.2026)
+
+Der Dienst `sales-auge` (`sales-mcp/auge.py`, Abbild aus `sales-mcp/Dockerfile.auge`, Container
+`${LADEN_PRAEFIX:-sales}-auge`) tritt einem Jitsi-Termin als stummer Teilnehmer „Laura (Bildschirm)“ bei
+(`startSilent`, sendet 0 Byte) und legt Standbilder des **geteilten Bildschirms** in der Termin-Akte ab. Er liest nur
+entfernte Tracks mit `mediaType` `screenshare`, nie Kameras und nie Ton. Es entsteht kein Video.
+
+**Schalter.** Beobachtet wird nur, wo der Betreiber in der Termin-Akte „Bildschirm auswerten“ eingeschaltet hat
+(`termin_akten.bildschirm_auswerten`, Vorgabe aus). Stufe 1: nur interne Termine, Kundentermine kommen später (siehe
+`docs/06_DSGVO.md`). Schalter aus, und der Beobachter verlässt den Termin binnen einer Runde (`AUGE_RUNDE_S`, Vorgabe 2 s).
+
+**Was entsteht.** Bei spürbarer Änderung (dHash) ein Standbild: höchstens eines alle 5 s, Breite höchstens 1600 px; ab
+150 Bildern je Akte nur noch bei starker Änderung. Ablage in `termin_bilder` (Bild, Beschreibung, pgvector
+`vektor_bild` 512 und `vektor_text` 384) in der eigenen Datenbank des Ladens. Die Beschreibung kommt über das KI-Tor
+`sales-ki` (`OLLAMA_URL`, eigene Bildspur, `KI_BILD_TIMEOUT_S` Vorgabe 60; im Übergang also Claude Code / Anthropic,
+siehe Abschnitt KI-Tor und `docs/06_DSGVO.md`). Die Vektoren rechnet fastembed lokal im Container; kein Bild geht
+anderswohin.
+
+**Grenzen und Aufbau.** `mem_limit` 2048m, `cpus` 1,5 (Chromium mit einem Termin ≈ 0,5 GB), läuft als uid 10001. Der
+HTTP-Teil (`GET /gesund`, `POST /suche`, Port `AUGE_PORT`, Vorgabe 8790) ist nur im Compose-Netz erreichbar. Die
+Umgebung ist bewusst schmal (DB, KI-Tor, Jitsi-Hosts), ohne den Anker `x-sales-mcp-umgebung`: keine Kanal-Schlüssel,
+Passwörter oder Token. `deploy/update.sh` baut ihn nur neu, wenn er schon lief (`KERN_OPTIONAL`).
+
+**Härtung.** `cap_drop: [ALL]` (keine Linux-Capabilities) und `security_opt: no-new-privileges:true`; Chromium läuft
+ohne eigene Sandbox (Playwright-Vorgabe) als uid 10001. `/tmp` ist ein `tmpfs` mit 256m: Chromium legt sein Shared
+Memory wegen `--disable-dev-shm-usage` dorthin, also in den RAM statt auf die Overlay-Platte; es zählt zum `mem_limit`.
+`memswap_limit` 2048m: kein Auslagern, die Speichergrenze ist hart. Der Start von Chromium mit genau diesen Optionen
+ist auf der VM geprüft (13.11.2026).
+
+**Offen vor Kundenterminen** (Stufe 1 läuft nur in internen Terminen):
+
+- eigene Datenbank-Rolle für `sales-auge` (heute dieselbe `SALES_DB_URL` wie `sales-mcp`; nötig wären nur
+  `termin_akten` lesen und `termin_bilder` schreiben),
+- Hinweis in der Einladung („bitte keine persönlichen Daten zeigen, sonst wird die Aufzeichnung gelöscht“) und der
+  Schalter auch dort,
+- Auskunft: `kontakt_auskunft` enthält keine Standbilder und Beschreibungen, sie gehen bisher nur von Hand mit
+  (siehe `docs/06_DSGVO.md`).
+
+**Ausrollen** (VM, `~/sales-claw`; vorher Claim in `00_Meta/002_Koordination_Live.md`):
+
+    # 1. Schema: db/provision.sql gegen "sales" einspielen, Weg und DSN-Regel siehe
+    #    Abschnitt "Kollegen-Kalender ... db/provision.sql zuerst" (DSN nie in die Kommandozeile)
+    cd ~/sales-claw
+    docker compose build sales-ki sales-termine sales-auge
+    docker compose up -d --no-deps sales-ki sales-termine sales-mcp sales-auge && bash deploy/sales-ui-neu.sh
+    bash deploy/smoke.sh        # Abschnitt 25 muss gruen sein; Ende: ALLE PRUEFUNGEN GRUEN
+
+sales-ui geht über `deploy/sales-ui-neu.sh` (behält das Netz bewerbung-fenster; ein schlichtes `up` von sales-ui verlöre es). Nie ein blankes `docker compose up -d`, nie `--remove-orphans`.
+
+**Not-Aus:** `docker stop sales-auge`. Der Beobachter verlässt die Termine, bereits abgelegte Bilder bleiben bis zur
+Löschung der Mitschrift. Wieder an: `docker compose up -d --no-deps sales-auge`.
+
+**Logs:** `docker logs --since 10m sales-auge`. Sie enthalten keine Inhalte (keine Bilder, Beschreibungen, Titel,
+Namen oder Links), nur gekürzte uid (8 Zeichen), Zähler und die Art von Fehlern.
+
+**Löschen.** Bilder, Beschreibungen und Vektoren gehen mit der Mitschrift weg: `termin_akte.bilder_entfernen` in
+`mitschrift_entfernen`, das Sicherheitsnetz `server._mitschriften_abraeumen` und damit auch `loeschantrag_vermerken`.
+Einzelne Bilder löscht der Betreiber in der Akte (Knopf „Löschen“, Aktion `bild_loeschen`).
+
+**Wenn etwas hakt**
+
+- Kein Beobachter im Termin: Schalter in der Akte an? Termin auf Jitsi, nicht abgesagt, Bot nicht ausgeschaltet?
+  Link-Host in `JITSI_HOSTS`? `docker ps --filter name=auge`, `docker logs --since 10m sales-auge`.
+- Bilder ohne Beschreibung: KI-Tor `sales-ki` läuft? (`smoke.sh` Abschnitt 24), `OLLAMA_URL` gesetzt?
+  Zeitüberschreitung: `KI_BILD_TIMEOUT_S` anheben.
+- Container startet immer neu: Speicher (`docker stats --no-stream sales-auge`), Datenbank erreichbar, Log lesen.
+- Suche liefert nichts: `docker exec sales-auge python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8790/gesund',timeout=5).status)"`.
+- Tonmitschrift leidet: `docker stop sales-auge` (Not-Aus) und Log von `sales-termine` prüfen.
+
+**Abnahme (Spec §Abnahme 1–7)** — von Felix auszufüllen:
+
+| # | Prüfung | Ergebnis |
+|---|---------|----------|
+| 1 | Interner Termin, Bildschirm geteilt, Fenster wechseln: Bilder live in der Akte, Beschreibungen folgen, stehendes Bild erzeugt keine weiteren | |
+| 2 | Zweiter Teilnehmer teilt: auch dessen Bildschirm erscheint | |
+| 3 | Kameras an: kein Kamerabild irgendwo (Speicher, Akte, KI-Tor-Aufrufe). Prüfweg: im Browser des Beobachters die Eingangsbytes je Art messen, wie in der Probe vom 13.11. (`window.__lauraInfo()` zählt die entfernten Spuren je Art, `getStats()` liefert je `inbound-rtp` die Bytes; Kamera muss 0 Byte haben), dazu alle gespeicherten Bilder in der Akte (Reiter Bildschirm) einzeln sichten | |
+| 4 | Tonmitschrift vollständig wie ohne Beobachter | |
+| 5 | Nach dem Termin: Verlauf benennt Gezeigtes und verweist auf Bilder; Textsuche findet Bilder | |
+| 6 | Schalter aus: kein Beobachter; Schalter während des Termins aus: Beobachter geht binnen einer Runde | |
+| 7 | Löschen der Mitschrift entfernt Bilder, Beschreibungen und Vektoren | |
+
+## Video-Werkbank: Betrieb (seit 12.11.2026)
+
+Lange Erklärvideos (3 bis 5 Minuten) für den Laden. Der Betreiber bestellt im Chat ("Video zu Thema X"),
+Marketing baut Szene für Szene, der Betreiber segnet jedes Stück ab. Das fertige Video liegt in `/freigaben`.
+
+**Wer macht was**
+
+| Teil | Wo | Aufgabe |
+|---|---|---|
+| `auftrag_geben(art="video")` | `sales-mcp` | legt den Auftrag ins Auftragsbuch (höchstens zwei Videos je Laden und Tag) |
+| Werkbank-Arbeiter :8155 | PC | schreibt Gliederung und Texte, spricht, rendert Folien, fügt zusammen |
+| `marketing-werkbank-bote` | VM, systemd | stellt jedes Tor als Vorschlag in Rowboat ein und liest die Antwort |
+| Seiten `/marketing/werkbank` | `sales-ui` | Übersicht, Szenenseite mit "Passt" / "Nochmal" und Wunschfeld, Videoseite |
+| `sales-auftrag-bote` | VM, Container | legt das fertige Video in den Freigabe-Eingang (Herkunft `marketing-video`) |
+| Cron `postfach-check` | Gateway | meldet den Stand im Chat (9, 12, 15, 18, 21 Uhr) |
+
+**Ablauf und Stände.** `offen → in_arbeit → werkbank → erzeugt → wartet_freigabe → fertig`. `werkbank` läuft nie ab.
+Aus `erzeugt` und `wartet_freigabe` geht es zurück nach `werkbank`, wenn der Betreiber eine fertige Szene wieder
+öffnet; der Freigabe-Eintrag wird dann zurückgezogen und nach dem neuen Zusammenfügen neu angelegt.
+
+**Absegnen.** In Rowboat steht immer nur ein Block: erst wenn kein Vorschlag mehr offen ist, kommt der nächste.
+Der Ersatz für eine zurückgegebene Szene kommt sofort. Auf der Sales-Seite ist alles sofort sichtbar. Ein
+Änderungswunsch geht nur über die Sales-Seite (Rowboat-Vorschläge haben kein Textfeld).
+
+**Prüfen**
+
+```bash
+systemctl is-active marketing-werkbank-bote
+journalctl -u marketing-werkbank-bote --since "-10 min" --no-pager | tail -5   # "Durchgang: {...}" je Minute
+docker logs --since 10m sales-auftrag-bote | tail -5
+curl -s http://127.0.0.1:8155/healthz        # am PC: letzter_lauf, letztes_ergebnis
+```
+
+`letztes_ergebnis` am Arbeiter: `leer` (nichts zu tun), `wartet` (der Betreiber ist dran), `gliederung`, `text`,
+`clip`, `video`.
+
+**Störungen**
+
+- *Nichts passiert nach der Bestellung:* Läuft der Arbeiter am PC (`/healthz`)? Er startet über die geplante
+  Aufgabe `VibeMind-Marketing-Dienste`. Ist das Tagesbudget `marketing-werkbank` verbraucht, pausiert er bis zum
+  nächsten Tag.
+- *Kein Vorschlag in Rowboat:* Bote-Log ansehen. Fehlt `WERKBANK_UI_BASIS_URL` in `~/marketing-api.env`, fasst
+  der Bote nichts an. 403 heißt: dem engen Rowboat-Schlüssel (`~/marketing-werkbank/rowboat-key`) fehlt ein Kanal.
+- *"Das Video ließ sich nicht zusammenfügen":* steht auf der Videoseite. Ursache beheben (meist fehlt ein Clip
+  in `~/sales-claw/media-erzeugt/`), dann "Video neu zusammenfügen" drücken.
+- *Eine Szene ist "aufgegeben":* Der Arbeiter hat den Text nach mehreren Versuchen nicht durch die Belegprüfung
+  bekommen (jede Zahl braucht eine Quelle). Auf der Szenenseite einen neuen Wunsch schreiben.
+
+**Not-Aus.** `sudo systemctl stop marketing-werkbank-bote` (keine Vorschläge mehr) und am PC den Prozess auf
+Port 8155 beenden. Laufende Aufträge bleiben in `werkbank` liegen und gehen nach dem Start weiter.
+
+**Dateien.** Clips `wb-<auftrag8>-s<nr>-f<variante>.mp4`, Video `wb-<auftrag8>-video-f<n>.mp4` in
+`~/sales-claw/media-erzeugt/`. Alte Fassungen räumt der Arbeiter weg.
+
+**Datenschutz.** Ins Modell gehen nur der Auftragstext, `Marke.md`, `Markenhandbuch.md`, `Newsletter/` und
+`Video-Material/` aus dem Markenwissen. Rowboat-Wissensquellen nur, wenn sie in `WERKBANK_ROWBOAT_QUELLEN`
+stehen (am PC im Startskript der Marketing-Dienste; leer = nichts). Details: vibemind-os
+`spaces/marketing/README.md`, Abschnitt "Video-Werkbank".
+
+**Erster Lauf (12.11.2026).** Testauftrag `a86339b9`: 8 Szenen, 2:10 min, 6 Modellaufrufe. Gliederung etwa
+2 min, alle Szenentexte zusammen etwa 5 min, je Clip etwa 1,5 min, Zusammenfügen etwa 20 s.
+
+## Wartelisten-Abgleich: vibemind.space → Kontakte (seit 13.11.2026)
+
+Wer sich auf vibemind.space auf die Warteliste setzt, soll als Kontakt mit dem Kennzeichen „Waitinglist“ hier
+stehen. Die Warteliste liegt in der Datenbank der Website, nicht in unserer. Einmal in der Nacht holt
+`deploy/warteliste-abgleich.sh` sie ab und reicht sie an `sales-mcp` (`warteliste_abgleich.py`); ohne
+Sprachmodell, nur Basis-Laden, eine Richtung (nichts geht an die Website zurück).
+
+**Was der Abgleich tut.**
+
+| Fall | Wirkung |
+|---|---|
+| Adresse noch nicht bekannt | neuer Kontakt: Quelle `waitinglist`, Notiz beginnt mit „Waitinglist“, Name = Teil vor dem @, `consent_status` bleibt `unknown` |
+| Adresse schon bekannt | Kontakt bleibt unverändert und bekommt nur `enrichment.waitinglist` |
+| später bestätigt (Double-Opt-in) | `enrichment.waitinglist.bestaetigt_am` wird nachgetragen |
+| nicht mehr auf der Liste | Kontakt bleibt, `enrichment.waitinglist.auf_liste` wird `false`; gelöscht wird nie |
+| Adresse auf der Verbotsliste | wird nicht angelegt |
+
+Ein neuer Kontakt trägt als Anlagedatum den Tag seiner Anmeldung, damit der erste Lauf die Liste „zuletzt
+geändert“ nicht mit Wartelisten-Adressen füllt. Filtern: `source = 'waitinglist'` (vom Abgleich angelegt) oder
+`enrichment -> 'waitinglist' ->> 'auf_liste' = 'true'` (alle, die auf der Liste stehen, auch ältere Kontakte).
+
+**Zugang.** Der Wirt bekommt einen Abholschlüssel, der in der Website-Datenbank genau eine Funktion aufrufen
+darf (`waitlist_export`, nur lesend). Der Schlüssel entsteht auf dieser Maschine; in die Website-Datenbank
+kommt nur sein SHA-256. Der Container `sales-mcp` sieht den Schlüssel nie, nur das abgeholte Dokument.
+
+```bash
+bash ~/sales-claw/deploy/warteliste-anbinden.sh https://<projekt>.supabase.co <oeffentlicher-schluessel>
+```
+
+Das Skript trägt `WARTELISTE_URL`, `WARTELISTE_API_SCHLUESSEL` und `WARTELISTE_ABHOL_SCHLUESSEL` in die `.env`
+ein (Sicherung daneben) und gibt die eine SQL-Zeile aus, die in der Website-Datenbank auszuführen ist. Der
+Abholschlüssel selbst erscheint nirgends.
+
+**Erster Lauf in Stufen.** Erst rechnen lassen, dann wenige anlegen und ansehen, dann alles:
+
+```bash
+bash ~/sales-claw/deploy/warteliste-abgleich.sh --trocken           # nur Zahlen, schreibt nichts
+bash ~/sales-claw/deploy/warteliste-abgleich.sh --hoechstens 20     # legt höchstens 20 neue Kontakte an
+bash ~/sales-claw/deploy/warteliste-abgleich.sh                     # der Rest
+```
+
+Die Ausgabe ist eine Zeile JSON: `auf_der_liste`, `angelegt`, `gekennzeichnet`, `aktualisiert`,
+`unveraendert`, `gesperrt`, `zurueckgestellt`, `ausgetragen`, `austragen_gestoppt`, `unbrauchbar`. Adressen
+stehen weder in der Ausgabe noch im Journal.
+
+**Einschalten.**
+
+```bash
+sudo cp ~/sales-claw/deploy/systemd/sales-warteliste-abgleich.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sales-warteliste-abgleich.timer
+systemctl list-timers sales-warteliste-abgleich.timer
+```
+
+Läuft täglich um 03:40 (bis zu fünf Minuten Streuung), holt einen verpassten Lauf nach dem Hochfahren nach.
+
+**Wenn etwas nicht stimmt.**
+
+| Zeichen | Bedeutung | Was tun |
+|---|---|---|
+| Exit 2, „kein Dokument auf der Standardeingabe“ | Abholen gescheitert (Netz, Schlüssel entzogen oder nicht eingetragen) | nichts wurde geändert; Zugang prüfen, `--trocken` wiederholen |
+| Exit 2, „unvollstaendig“ oder „kein JSON“ | Dokument abgeschnitten oder fremd | nichts wurde geändert; nächster Lauf versucht es erneut |
+| Exit 4, „Schwund-Sperre“ | mindestens 20 und mehr als ein Fünftel der gekennzeichneten Kontakte fehlen im Dokument | Neue wurden angelegt, niemand ausgetragen; bei der Website klären, ob die Liste wirklich geschrumpft ist |
+| `unbrauchbar` > 0 | einzelne Zeilen der Website passen nicht (Adresse, Datum, Herkunft) | Zeilen bei der Website ansehen |
+
+**Not-Aus.** `sudo systemctl disable --now sales-warteliste-abgleich.timer`. Der Zugang lässt sich zusätzlich
+bei der Website entziehen (`UPDATE private.waitlist_export_keys SET revoked_at = now() WHERE label = '…'`);
+danach scheitert jedes Abholen mit Exit 2.
+
+**Schlüssel wechseln.** Zeile `WARTELISTE_ABHOL_SCHLUESSEL=` aus der `.env` löschen, `warteliste-anbinden.sh`
+erneut starten, neuen Hash bei der Website eintragen, alten dort entziehen.
+
+**Prüfung der Dateien** (ohne Docker, ohne Netz): `bash deploy/tests/test_warteliste_abgleich.sh` und
+`bash deploy/tests/test_warteliste_anbinden.sh` (braucht openssl). Verträge der Logik:
+`sales-mcp/tests/test_warteliste_abgleich_plan.py` (ohne Datenbank) und `test_warteliste_abgleich.py`.
+
+**Datenschutz.** Siehe `docs/06_DSGVO.md`, Abschnitt „Wartelisten-Kontakte“.

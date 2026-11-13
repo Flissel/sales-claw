@@ -34,13 +34,14 @@ def _saubere_umgebung(monkeypatch):
     """Jeder Test startet unkonfiguriert — sonst faerbt die .env des
     Entwicklers auf das Ergebnis ab."""
     for name in ("KONFERENZ_ANBIETER", "GOOGLE_MEET_CLIENT_ID",
-                 "GOOGLE_MEET_CLIENT_SECRET", "GOOGLE_MEET_REFRESH_TOKEN"):
+                 "GOOGLE_MEET_CLIENT_SECRET", "GOOGLE_MEET_REFRESH_TOKEN",
+                 "JITSI_BASIS", "JITSI_HOSTS"):
         monkeypatch.delenv(name, raising=False)
 
 
 def test_ohne_konfiguration_entsteht_ein_jitsi_link():
     url, hinweis = konferenz.raum()
-    assert url.startswith("https://meet.jit.si/")
+    assert url.startswith("https://meet.ffmuc.net/")
     assert hinweis == ""
 
 
@@ -54,14 +55,14 @@ def test_jitsi_raumname_ist_lang_und_zufaellig():
 
 def test_unbekannter_anbieter_faellt_auf_jitsi_zurueck_und_sagt_es():
     url, hinweis = konferenz.raum(anbieter="webex")
-    assert url.startswith("https://meet.jit.si/")
+    assert url.startswith("https://meet.ffmuc.net/")
     assert "webex" in hinweis and "Jitsi" in hinweis
 
 
 def test_google_ohne_zugangsdaten_faellt_zurueck_und_nennt_die_variablen(monkeypatch):
     monkeypatch.setenv("KONFERENZ_ANBIETER", "google")
     url, hinweis = konferenz.raum()
-    assert url.startswith("https://meet.jit.si/")
+    assert url.startswith("https://meet.ffmuc.net/")
     assert "GOOGLE_MEET_CLIENT_ID" in hinweis
 
 
@@ -117,7 +118,7 @@ def test_google_ohne_meetinguri_faellt_zurueck(monkeypatch, meet_stub):
     monkeypatch.setattr(konferenz, "GOOGLE_MEET_URL",
                         konferenz.GOOGLE_TOKEN_URL)  # liefert kein meetingUri
     url, hinweis = konferenz.raum()
-    assert url.startswith("https://meet.jit.si/")
+    assert url.startswith("https://meet.ffmuc.net/")
     assert "Google Meet nicht erreichbar" in hinweis
 
 
@@ -130,5 +131,11 @@ def test_kein_geheimnis_im_hinweis(monkeypatch):
     # Ein Ziel, das garantiert nicht antwortet: Port 0 ist nie erreichbar.
     monkeypatch.setattr(konferenz, "GOOGLE_TOKEN_URL", "http://127.0.0.1:1/token")
     url, hinweis = konferenz.raum()
-    assert url.startswith("https://meet.jit.si/")
+    assert url.startswith("https://meet.ffmuc.net/")
     assert "streng-geheim" not in hinweis
+
+
+def test_jitsi_basis_aus_umgebung(monkeypatch):
+    monkeypatch.setenv("JITSI_BASIS", "https://jitsi.example.org")
+    assert konferenz.jitsi_basis() == "https://jitsi.example.org"
+    assert konferenz.jitsi_raum().startswith("https://jitsi.example.org/")

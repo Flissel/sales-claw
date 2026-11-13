@@ -60,6 +60,9 @@ def _url_sicher(url) -> str:
 def vorschlagstext(eintrag: dict, basis: str) -> str:
     herkunft = fe.HERKUNFT_ANZEIGE.get(eintrag["herkunft"], eintrag["herkunft"])
     teile = [f"[{herkunft}] {_titel_bereinigen(eintrag.get('titel'))}"]
+    if eintrag["herkunft"] == "marketing-video":
+        # M6: Annehmen in Rowboat gibt ein Video nicht frei (Stufe 1); nur diese Herkunft bekommt den Satz
+        teile.append("Freigabe nur in Sales /freigaben")
     link = eintrag.get("link")
     if link:
         sicher = _url_sicher(link)

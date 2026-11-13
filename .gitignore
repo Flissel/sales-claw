@@ -4,6 +4,13 @@
 # .env.example passt auf keins der Muster oben (es endet nicht auf ".env")
 # und bleibt damit versioniert. Eine !-Negation waere hier wirkungslos.
 
+# Sicherungen und Temp-Dateien der Zugangs-Skripte (kanal-zugang-eintragen.sh,
+# vexa-anbinden.sh: .env.vor-<name>-<zeit>, .env.neu.<zufall>) - enthalten Geheimnisse
+.env.vor-*
+.env.neu.*
+**/.env.vor-*
+**/.env.neu.*
+
 # Sicherungen und Betriebsartefakte
 backups/
 *.tar
