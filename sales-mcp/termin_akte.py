@@ -445,6 +445,12 @@ def mitschrift_entfernen(uid: str) -> None:
                 (str(m["entwurf_id"]),)):
             server.entwurf_ablehnen(str(m["entwurf_id"]))
     server._q("delete from termin_mitschriften where uid = %s returning id", (uid,))
+    bilder_entfernen(uid)  # Bilder entstehen live, auch ohne Mitschrift
+
+
+def bilder_entfernen(uid: str) -> int:
+    """Alle Standbilder der Akte loeschen; gibt die Anzahl zurueck."""
+    return len(server._q("delete from termin_bilder where uid = %s returning id", (uid,)))
 
 
 _PASSCODE_PARAMETER = ("pwd", "passcode", "pw", "password", "pass")

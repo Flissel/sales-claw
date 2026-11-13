@@ -546,3 +546,60 @@ def test_quelle_auf_privat_umgestellt_sagt_zukuenftige_akten_ab():
               (qid,))
     assert termin_akte.abgleichen(JETZT)["abgesagt"] == 1
     assert termin_akte.lesen("k1")["abgesagt"] is True
+
+
+# ---------- Bildauswertung live: Bilder loeschen ----------
+
+def _akte_roh(uid, lead=None):
+    server._q("insert into termin_akten (uid, herkunft, beginn, ende, status) "
+              "values (%s, 'sales-claw', now(), now() + interval '1 hour', 'laeuft') "
+              "returning uid", (uid,))
+    if lead:
+        server._q("insert into termin_teilnehmer (uid, adresse, rolle, lead_id) "
+                  "values (%s, 'kunde@firma.de', 'gast', %s) returning uid", (uid, lead))
+
+
+def _bild(uid):
+    server._q("insert into termin_bilder (uid, aufgenommen_am, bild, breite, hoehe, dhash) "
+              "values (%s, now(), %s, 4, 4, 1) returning id", (uid, b"\x00\x01"))
+
+
+def _bilder(uid):
+    return server._q("select count(*) as n from termin_bilder where uid = %s", (uid,))[0]["n"]
+
+
+def test_mitschrift_entfernen_loescht_bilder():
+    _akte_roh("a")
+    _akte_roh("b")
+    _bild("a")
+    _bild("a")
+    _bild("b")  # keine Mitschrift vorhanden
+    termin_akte.mitschrift_entfernen("a")
+    assert (_bilder("a"), _bilder("b")) == (0, 1)
+
+
+def test_bilder_entfernen_zaehlt():
+    _akte_roh("a")
+    _bild("a")
+    _bild("a")
+    assert termin_akte.bilder_entfernen("a") == 2
+    assert termin_akte.bilder_entfernen("a") == 0
+
+
+def test_aufnahme_beenden_loescht_bilder():
+    _akte_roh("a")
+    _bild("a")
+    termin_akte.aufnahme_beenden("a", "Kunde hat abgelehnt")
+    assert _bilder("a") == 0
+
+
+def test_loeschantrag_sicherheitsnetz_loescht_bilder(monkeypatch):
+    lead = _lead()
+    _akte_roh("a", lead)
+    _akte_roh("b")
+    _bild("a")
+    _bild("b")
+    # akten_eines_leads faellt aus: nur das Sicherheitsnetz in server greift
+    monkeypatch.setattr(termin_akte, "akten_eines_leads", lambda *a, **k: [])
+    server._mitschriften_abraeumen(lead)
+    assert (_bilder("a"), _bilder("b")) == (0, 1)

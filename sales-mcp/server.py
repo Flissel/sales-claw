@@ -8903,6 +8903,8 @@ def _mitschriften_abraeumen(lead_id: str) -> None:
     # eine Akte durch akten_eines_leads, geht die Mitschrift hier trotzdem.
     _q("delete from termin_mitschriften where uid in (select uid from "
        f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning id", (lead_id, lead_id))
+    _q("delete from termin_bilder where uid in (select uid from "
+       f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning id", (lead_id, lead_id))
     # Von Gesperrten bleibt nur die Adresse (Final-Review I6).
     _q("update termin_teilnehmer set lead_id = null, grund = 'gesperrt', name = null "
        f"where {_TEILNAHME_DES_LEADS} returning uid", (lead_id, lead_id))
