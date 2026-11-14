@@ -649,3 +649,38 @@ def test_auswerten_bildstueck_ueberschreibt_stimmung_nicht(stub, monkeypatch):
     assert a["stimmung"] == "offen und interessiert"
     assert len(s.aufrufe) == 1
     assert "[Bild 11:58] Folie" in s.aufrufe[0]["nutzer"]
+
+
+# --- Beteiligte ohne Bots und Doppelte ---------------------------------------
+
+def test_beteiligte_ohne_bots():
+    liste = ["Felix - Berater", "Laura - teilt den Bildschirm", "VibeMind - Teilnehmer"]
+    assert auswertung.beteiligte_bereinigen(liste, {"felix"}) == ["Felix - Berater"]
+
+
+def test_beteiligte_sprechende_laura_bleibt():
+    liste = ["Felix - Berater", "Laura - teilt den Bildschirm"]
+    assert auswertung.beteiligte_bereinigen(liste, {"Laura"}) == [
+        "Felix - Berater", "Laura - teilt den Bildschirm"]
+
+
+def test_beteiligte_doppelte_zusammen():
+    liste = ["Felix - Berater", "Diana - Kundin", "Felix Baumann - Betreiber",
+             "Diana Marx - Kundin, Horizon Hues"]
+    assert auswertung.beteiligte_bereinigen(liste, set()) == [
+        "Felix Baumann - Berater", "Diana Marx - Kundin"]
+
+
+def test_beteiligte_ohne_trenner_und_muell():
+    assert auswertung.beteiligte_bereinigen(
+        ["Anna", "Anna Schmidt – Chefin", "", None, 3, "Anna"], set()) == ["Anna Schmidt"]
+
+
+def test_prompt_nennt_bot_regel():
+    assert "keine Beteiligten" in auswertung.SYSTEM_PROMPT
+
+
+def test_auswerten_bereinigt_beteiligte_ueber_stuecke(stub, monkeypatch):
+    stub({"beteiligte": ["Felix - Berater", "VibeMind Mitschrift - Bot", "Felix Baumann - X"]})
+    a = auswertung.auswerten(_fixture())
+    assert a["beteiligte"] == ["Felix Baumann - Berater"]
