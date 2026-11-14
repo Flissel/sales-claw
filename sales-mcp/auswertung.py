@@ -55,7 +55,7 @@ ARTEN = ("kundentermin", "intern")
 _NUR_KUNDENTERMIN = ("painpoints", "einwaende", "zusagen_kunde")
 _ZEITZONE = ZoneInfo("Europe/Berlin")
 _DATUM = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_SEGMENTZEILE = re.compile(r"^\[\d+\] ")
+# Eine Segmentzeile "[n] ..." irgendwo im Stueck (Zeilenanfang).
 _SEGMENTZEILE_IM_STUECK = re.compile(r"^\[\d+\] ", re.MULTILINE)
 
 SYSTEM_PROMPT = """Du bist ein sorgfaeltiger Protokollant und wertest die Mitschrift eines Gespraechs aus,
@@ -494,10 +494,12 @@ def _name_norm(text) -> str:
 def beteiligte_bereinigen(liste: list[str], sprecher: set[str]) -> list[str]:
     """Entfernt Aufnahme-Bots (ausser sie sprechen) und fasst Namensdoppel zusammen.
 
-    Eintrag = "Name - Rolle". Ist die Wortmenge eines Namens Teilmenge eines anderen,
-    bleibt ein Eintrag am Platz des ersten Vorkommens: laengerer Name, Rolle des ersten.
+    Ein Bot-Name gilt als sprechend, wenn seine Woerter Teilmenge der Woerter eines
+    Sprechers sind ("Laura" bei Sprecherin "Laura Schmidt"). Eintrag = "Name - Rolle".
+    Ist die Wortmenge eines Namens Teilmenge eines anderen, bleibt ein Eintrag am
+    Platz des ersten Vorkommens: laengerer Name, Rolle des ersten.
     """
-    sprechende = {_name_norm(x) for x in sprecher if x}
+    sprechende = [set(_name_norm(x).split()) for x in sprecher if x]
     ergebnis: list[list] = []  # [Name, Rolle, Wortmenge]
     for eintrag in liste:
         if not isinstance(eintrag, str):
@@ -508,9 +510,9 @@ def beteiligte_bereinigen(liste: list[str], sprecher: set[str]) -> list[str]:
             continue
         rolle = teile[1].strip() if len(teile) > 1 else ""
         schluessel = _name_norm(name)
-        if schluessel in BOT_NAMEN and schluessel not in sprechende:
-            continue
         worte = set(schluessel.split())
+        if schluessel in BOT_NAMEN and not any(worte <= sw for sw in sprechende):
+            continue
         for i, vorhanden in enumerate(ergebnis):
             if worte <= vorhanden[2] or vorhanden[2] <= worte:
                 if len(worte) > len(vorhanden[2]):

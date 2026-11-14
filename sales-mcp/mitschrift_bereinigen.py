@@ -22,8 +22,11 @@ MAX_LUECKE_VERBINDEN_S = 6
 MAX_ZEICHEN_VERBUNDEN = 400
 BETREIBER_STANDARD = "Felix Baumann"
 
+# Untertitel-Floskel nur mit Sender-/Community-Token am Ende, damit echte Saetze
+# ("Untertitel der Videos sind fertig") bleiben.
+_SENDER = r"(zdf|ard|swr|wdr|ndr|br|amara\.org[- ]community|funk)"
 _HALLUZINATIONEN = [re.compile(p) for p in (
-    r"untertitel(ung)?( im auftrag)? (des|der|von) [\w .\-]+(, \d{4})?",
+    rf"untertitel(ung)?( im auftrag)? (des|der|von) ([\w .\-]+ )?{_SENDER}(, \d{{4}})?",
     r"untertitel der amara\.org-community",
     r"(vielen )?dank (fürs|für's|für das) zuschauen",
     r"copyright [\w .\-]+ \d{4}",

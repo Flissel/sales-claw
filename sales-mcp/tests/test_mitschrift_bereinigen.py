@@ -102,3 +102,14 @@ def test_verbinden_kettet_ueber_vorgaenger():
 def test_sender_im_satz_bleibt():
     ein = [_s("A", _iso(0), "ARD und ZDF zeigen das heute")]
     assert [s["text"] for s in mb.bereinigen(ein, betreiber="")] == ["ARD und ZDF zeigen das heute"]
+
+
+def test_untertitel_nur_mit_sender_am_ende():
+    ein = [_s("A", _iso(0), "Untertitel der Videos sind fertig"),
+           _s("A", _iso(30), "Untertitel von Max"),
+           _s("A", _iso(60), "Untertitelung des ZDF für funk, 2017"),
+           _s("A", _iso(90), "Untertitel der Amara.org-Community"),
+           _s("A", _iso(120), "Untertitel im Auftrag des ZDF, 2018"),
+           _s("A", _iso(150), "Untertitel von SWR")]
+    assert [s["text"] for s in mb.bereinigen(ein)] == [
+        "Untertitel der Videos sind fertig", "Untertitel von Max"]

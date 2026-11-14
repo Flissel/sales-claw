@@ -603,7 +603,7 @@ def test_auswerten_reicht_bilder_in_den_prompt(stub):
 # ---------- reine Bild-Stuecke falten ----------
 
 def _hat_segmentzeile(stueck: str) -> bool:
-    return any(auswertung._SEGMENTZEILE.match(z) for z in stueck.splitlines())
+    return bool(auswertung._SEGMENTZEILE_IM_STUECK.search(stueck))
 
 
 def test_stuecke_haengen_reines_bildstueck_ans_vorige(monkeypatch):
@@ -703,3 +703,13 @@ def test_beteiligte_mehrere_stuecke_bereinigt(stub, monkeypatch):
     a = auswertung.auswerten(seg)
     assert len(s.aufrufe) > 1
     assert a["beteiligte"] == ["Felix Baumann - Berater", "Diana Marx - Kundin"]
+
+
+def test_beteiligte_laura_schmidt_spricht():
+    """Eine Kundin Laura Schmidt spricht: der Eintrag "Laura" ist dann kein Bot."""
+    liste = ["Felix - Berater", "Laura - Kundin", "Laura (Bildschirm) - Bot"]
+    assert auswertung.beteiligte_bereinigen(liste, {"Felix", "Laura Schmidt"}) == [
+        "Felix - Berater", "Laura - Kundin"]
+    # spricht keine Laura, bleibt der Bot-Name draussen
+    assert auswertung.beteiligte_bereinigen(liste, {"Felix", "Lauras Chef"}) == [
+        "Felix - Berater"]
