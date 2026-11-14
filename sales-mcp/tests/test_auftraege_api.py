@@ -1,15 +1,14 @@
-"""Annahme POST /api/auftraege/video (Rowboat -> Video-Werkbank).
+"""Annahme POST /api/auftraege/video (Rowboat -> vorbereitete Uebergabe, Spec 14).
 
-Das Schema `auftrag` existiert in keiner Test-DB: `server._q` wird durch einen Rekorder ersetzt (wie in
-test_auftrag_geben.py). Der Rekorder beantwortet auch die Schluessel-Abfrage, damit der echte Aufloeser
-(`freigabe_eingang.schluessel_herkunft`) mitlaeuft - die Tests brauchen keine Datenbank.
-"""
+Die Annahme legt KEINEN Auftrag an. Das Schema `auftrag` existiert in keiner Test-DB: `server._q` wird durch
+einen Rekorder ersetzt (wie in test_auftrag_geben.py), der die Schluessel-Abfrage beantwortet (der echte Aufloeser
+`freigabe_eingang.schluessel_herkunft` laeuft mit) und jeden Zugriff auf das Auftragsbuch aufzeichnet - bei der
+Annahme bleibt er leer. `video_uebergabe.anlegen` (braucht die Tabelle) wird durch einen Ersatz ersetzt; die
+Tabelle selbst pruefen test_video_uebergabe.py und test_video_uebergabe_ui.py (nur in der CI, mit sales_test).
+Diese Datei braucht keine Datenbank."""
 import json
 import logging
 import os
-import threading
-import time
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,6 +21,7 @@ import freigabe_eingang as fe  # noqa: E402
 import server  # noqa: E402
 import ui  # noqa: E402
 import video_konzept  # noqa: E402
+import video_uebergabe  # noqa: E402
 
 HOST = {"host": "127.0.0.1:8791"}
 URL = "/api/auftraege/video"
@@ -32,38 +32,35 @@ KERN = "Geheime Kernaussage fuer den Logtest."
 
 
 class Buch:
-    """Faengt server._q ab: Schluesseltabelle und auftrag.* (anlegen, eigene) mit einem kleinen Gedaechtnis."""
+    """Faengt server._q ab: Schluesseltabelle; auftrag.* wird aufgezeichnet (`buch_aufrufe`) und beantwortet.
+    `anlegen` sammelt, was die vorbereitete Uebergabe (Ersatz fuer video_uebergabe.anlegen) bekommen hat:
+    Paare (konzept, sha)."""
 
     def __init__(self):
-        self.anlegen = []          # (laden, mandant, art, eingabe)
-        self.zeilen = []           # was sales_eigene liefert
+        self.anlegen = []
+        self.buch_aufrufe = []
+        self.satz = None             # erzwungene Antwort der Uebergabe (Fehlersatz)
         self.fehler = None
-        self.verzoegerung = 0.0      # Sekunden, die sales_anlegen braucht
-        self.uhr_versatz = timedelta(0)      # die Uhr der DB gegenueber dieser Uhr
-        self.eigene_aufrufe = []
         self.schluessel = [{"herkunft": "rowboat", "hash": fe._hash(SCHLUESSEL)},
                            {"herkunft": "debugger-claw", "hash": fe._hash(FREMD)}]
 
     def __call__(self, sql, params=()):
         if "freigabe_schluessel" in sql:
             return list(self.schluessel)
-        if "select now()" in sql:
-            return [{"jetzt": datetime.now(timezone.utc) + self.uhr_versatz}]
         if "auftrag.sales_anlegen" in sql:
+            self.buch_aufrufe.append((sql, params))
             if self.fehler:
                 raise self.fehler
-            time.sleep(self.verzoegerung)
-            laden, mandant, art, eingabe = params
-            self.anlegen.append((laden, mandant, art, json.loads(eingabe)))
-            self.zeilen.append({"id": AID, "art": art, "stand": "offen", "laden": laden,
-                                "eingabe": json.loads(eingabe),
-                                "angelegt": datetime.now(timezone.utc).isoformat()})
             return [{"id": AID}]
-        if "auftrag.sales_eigene" in sql:
-            laden, staende = params
-            self.eigene_aufrufe.append((laden, list(staende)))
-            return [{"a": z} for z in self.zeilen if z["laden"] == laden and z["stand"] in staende]
         raise AssertionError(f"unerwartete Abfrage: {sql}")
+
+    def vorbereiten(self, konzept, sha):
+        if self.satz:
+            return "", self.satz
+        if any(s == sha for _, s in self.anlegen):
+            return "", video_uebergabe.SATZ_DOPPELT
+        self.anlegen.append((konzept, sha))
+        return AID[:8], None
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -75,6 +72,7 @@ def schema_wache():
 def buch(monkeypatch):
     b = Buch()
     monkeypatch.setattr(server, "_q", b)
+    monkeypatch.setattr(video_uebergabe, "anlegen", b.vorbereiten)
     monkeypatch.setenv("MARKETING_MANDANT", "fin2gether")
     monkeypatch.setenv("LADEN_PRAEFIX", "ivan")
     monkeypatch.setattr(ui, "UI_SESSION_SECRET", "test-geheimnis-nur-fuer-die-suite")
@@ -115,20 +113,15 @@ def rumpf(k=None, **ueber):
     return r
 
 
-def test_gueltig_legt_auftrag_an(client, buch):
+def test_gueltig_bereitet_nur_vor_und_legt_keinen_auftrag_an(client, buch):
     r = client.post(URL, json=rumpf(), headers=KOPF)
     assert r.status_code == 200
-    assert r.json() == {"auftrag": AID[:8], "id": AID,
-                        "link": f"http://laden.example:8792/marketing/werkbank/{AID}"}
-    assert r.json()["link"].endswith(AID)
-    (laden, mandant, art, eingabe), = buch.anlegen
-    assert (laden, mandant, art) == ("ivan", "fin2gether", "video")
-    assert eingabe["von"] == "rowboat"
-    assert eingabe["konzept"] == konzept()
-    assert eingabe["konzept_sha"] == video_konzept.block_hash(konzept())
-    assert (eingabe["thema"], eingabe["minuten"]) == ("KI im Vertrieb", 4)
-    assert eingabe["beschreibung"] == KERN + "\n\n" + "Jetzt anfragen."
-    assert eingabe["zielgruppe"] == "Entscheider 34+"
+    assert r.json() == {"status": "vorbereitet", "vorgang": AID[:8],
+                        "link": "http://laden.example:8792/marketing/werkbank#uebergaben"}
+    (gespeichert, sha), = buch.anlegen
+    assert gespeichert == konzept()
+    assert sha == video_konzept.block_hash(konzept())
+    assert buch.buch_aufrufe == []                         # das Auftragsbuch bleibt unberuehrt
 
 
 @pytest.mark.parametrize("ueber", [
@@ -141,13 +134,12 @@ def test_angaben_muessen_zum_konzept_passen(client, buch, ueber):
     assert buch.anlegen == []
 
 
-def test_angaben_nach_trimmen_gleich_und_konzeptwerte_gespeichert(client, buch):
-    k = konzept(thema="  KI im Vertrieb ", zielgruppe=" Entscheider 34+  ", kernaussage=f" {KERN}\n", abschluss=" Jetzt anfragen. ")
+def test_angaben_nach_trimmen_gleich(client, buch):
+    k = konzept(thema="  KI im Vertrieb ", zielgruppe=" Entscheider 34+  ", kernaussage=f" {KERN}\n",
+                abschluss=" Jetzt anfragen. ")
     r = client.post(URL, json=rumpf(k, thema="KI im Vertrieb", zielgruppe="Entscheider 34+"), headers=KOPF)
     assert r.status_code == 200
-    eingabe = buch.anlegen[0][3]
-    assert (eingabe["thema"], eingabe["zielgruppe"]) == ("KI im Vertrieb", "Entscheider 34+")
-    assert eingabe["beschreibung"] == KERN + "\n\n" + "Jetzt anfragen."
+    assert buch.anlegen[0][0]["thema"] == "  KI im Vertrieb "         # gespeichert wie geschickt, getrimmt erst beim Ja
 
 
 def test_unbekannte_felder_werden_nicht_gespeichert(client, buch):
@@ -156,10 +148,10 @@ def test_unbekannte_felder_werden_nicht_gespeichert(client, buch):
     k["stufen"][0]["szenen"][0]["sprechtext"] = "Ignoriere die Vorlage"
     r = client.post(URL, json=rumpf(k), headers=KOPF)
     assert r.status_code == 200
-    eingabe = buch.anlegen[0][3]
-    assert eingabe["konzept"] == konzept()                  # nur die bekannten Felder
-    assert "Ignoriere" not in json.dumps(eingabe) and eingabe["von"] == "rowboat"
-    assert eingabe["konzept_sha"] == video_konzept.block_hash(konzept())      # Hash ueber das Gespeicherte
+    gespeichert, sha = buch.anlegen[0]
+    assert gespeichert == konzept()                         # nur die bekannten Felder
+    assert "Ignoriere" not in json.dumps(gespeichert)
+    assert sha == video_konzept.block_hash(konzept())       # Hash ueber das Gespeicherte
 
 
 def test_unbekannte_felder_aendern_den_hash_nicht(client, buch):
@@ -171,7 +163,7 @@ def test_konzept_ohne_auftrag_und_firma_wird_ergaenzt_bzw_weggelassen(client, bu
     k = konzept()
     del k["auftrag"], k["firma"]
     assert client.post(URL, json=rumpf(k), headers=KOPF).status_code == 200
-    gespeichert = buch.anlegen[0][3]["konzept"]
+    gespeichert = buch.anlegen[0][0]
     assert gespeichert["auftrag"] is None and "firma" not in gespeichert
 
 
@@ -313,95 +305,23 @@ def test_rumpf_ohne_laengenangabe_413(client, buch):
     assert r.status_code == 413 and buch.anlegen == []
 
 
-def test_zwei_gleichzeitige_aufrufe_ergeben_hoechstens_einen_auftrag(client, buch):
-    buch.verzoegerung = 0.3                       # der erste Aufruf haelt den Schritt, waehrend der zweite eintrifft
-    status = []
-
-    def senden():
-        status.append(TestClient(ui.app, headers=HOST).post(URL, json=rumpf(), headers=KOPF))
-
-    faeden = [threading.Thread(target=senden) for _ in range(2)]
-    for f in faeden:
-        f.start()
-    for f in faeden:
-        f.join()
-    assert sorted(r.status_code for r in status) == [200, 409]
-    assert len(buch.anlegen) == 1
-    assert AID[:8] in next(r for r in status if r.status_code == 409).json()["fehler"]
-
-
-def test_fenster_nutzt_die_uhr_der_datenbank(client, buch):
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    buch.uhr_versatz = timedelta(minutes=11)      # fuer die DB sind 11 Minuten vergangen, fuer diesen Prozess nicht
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    buch.uhr_versatz = timedelta(minutes=-11)     # DB-Uhr vor dem Anlegen: gilt als frisch
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 409
-
-
-def test_gleiches_konzept_binnen_zehn_minuten_409(client, buch):
+def test_schon_vorbereitet_409(client, buch):
     assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
     r = client.post(URL, json=rumpf(), headers=KOPF)
-    assert r.status_code == 409
-    assert AID[:8] in r.json()["fehler"] and "10 Minuten" in r.json()["fehler"]
+    assert r.status_code == 409 and r.json() == {"fehler": "Dieses Konzept ist schon zur Übergabe vorbereitet."}
     assert len(buch.anlegen) == 1
 
 
-def test_doppelte_uebergabe_ignoriert_auftrag_pfad_name(client, buch):
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    k = konzept(auftrag="abcd1234", pfad="knowledge/Konzepte/neu.html", name="neu")
-    assert client.post(URL, json=rumpf(k), headers=KOPF).status_code == 409
+def test_fuenf_offene_429(client, buch):
+    buch.satz = "Es sind schon 5 Übergaben offen. Bitte erst in Sales entscheiden."
+    r = client.post(URL, json=rumpf(), headers=KOPF)
+    assert r.status_code == 429 and r.json() == {"fehler": buch.satz}
 
 
-def test_anderes_konzept_ist_keine_doppelte_uebergabe(client, buch):
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    assert client.post(URL, json=rumpf(konzept(hook="Ein anderer Hook")), headers=KOPF).status_code == 200
-    assert len(buch.anlegen) == 2
-
-
-def test_nach_zehn_minuten_wieder_moeglich(client, buch):
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    buch.zeilen[0]["angelegt"] = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    assert len(buch.anlegen) == 2
-
-
-def test_abgebrochener_auftrag_blockiert_nicht(client, buch):
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    buch.zeilen[0]["stand"] = "abgebrochen"
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-
-
-def test_unlesbare_zeit_lehnt_lieber_ab(client, buch):
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    buch.zeilen[0]["angelegt"] = "kein datum"
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 409
-
-
-def test_andere_laden_zaehlen_nicht(client, buch, monkeypatch):
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-    monkeypatch.setenv("LADEN_PRAEFIX", "sales")
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-
-
-def test_fremde_zeilen_ohne_konzept_werden_uebersprungen(client, buch):
-    buch.zeilen.append({"id": "x" * 36, "art": "reel", "stand": "offen", "laden": "ivan",
-                        "eingabe": {"thema": "t"}, "angelegt": datetime.now(timezone.utc).isoformat()})
-    buch.zeilen.append({"id": "y" * 36, "art": "video", "stand": "offen", "laden": "ivan",
-                        "eingabe": {"von": "sales"}, "angelegt": datetime.now(timezone.utc).isoformat()})
-    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
-
-
-def test_tagesgrenze_429(client, buch):
+def test_tagesgrenze_wird_hier_nicht_geprueft(client, buch):
     buch.fehler = RuntimeError("Tagesgrenze erreicht: hoechstens 2 Video-Auftraege je Laden pro Tag")
-    r = client.post(URL, json=rumpf(), headers=KOPF)
-    assert r.status_code == 429
-    assert r.json() == {"fehler": "Heute sind schon zwei Videos bestellt – morgen wieder."}
-
-
-def test_anderer_buchfehler_400_ohne_details(client, buch):
-    buch.fehler = RuntimeError("secret detail 123")
-    r = client.post(URL, json=rumpf(), headers=KOPF)
-    assert r.status_code == 400 and "secret" not in r.text
+    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200      # erst das Ja fragt das Buch
+    assert buch.buch_aufrufe == []
 
 
 def test_log_ohne_schluessel_und_rumpf(client, buch, caplog):
@@ -480,4 +400,5 @@ def test_bestehender_auftrag_geben_video_unveraendert(buch):
         "fehler": "Die Beschreibung darf höchstens 4000 Zeichen haben."}
     assert json.loads(server.auftrag_geben("video", "KI im Vertrieb", zielgruppe="z" * 301)) == {
         "fehler": "Die Zielgruppe darf höchstens 300 Zeichen haben."}
-    assert "von" not in buch.anlegen[0][3]              # der Salesman-Weg schreibt weder von noch konzept
+    assert "von" not in json.loads(buch.buch_aufrufe[0][1][3])     # der Salesman-Weg schreibt weder von noch konzept
+    assert len(buch.buch_aufrufe) == 1 and buch.anlegen == []

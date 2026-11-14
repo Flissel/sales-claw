@@ -1,44 +1,35 @@
-"""Annahme `POST /api/auftraege/video`: Rowboat gibt ein fertiges Videokonzept an die Video-Werkbank.
+"""Annahme `POST /api/auftraege/video`: Rowboat bereitet die Uebergabe eines Videokonzepts an die Video-Werkbank vor.
 
 Eigener Bearer-Schluessel (Herkunft `rowboat`, s. freigabe_eingang), keine Sitzung, kein CSRF; die
-Anmelde-Wache in ui.py laesst genau diesen Pfad durch. Sales sieht nur, DASS der Rowboat-Schluessel
-benutzt wurde, nicht, wer im Chat zugestimmt hat - das Ja setzt Rowboats Freigabeschicht durch.
+Anmelde-Wache in ui.py laesst genau diesen Pfad durch. Die Annahme legt KEINEN Auftrag an, sondern eine
+vorbereitete Uebergabe (video_uebergabe.py). Das verbindliche Ja gibt der Betreiber auf der Werkbank-Seite
+unter seinem Login; erst dann entsteht der Auftrag (mit Tagesgrenze). Der Rowboat-Schluessel kann diese
+Aktionen nicht ausloesen: sie haengen an der Sitzung und an der CSRF-Marke der Seite.
 
-Die Zeile im Auftragsbuch bleibt `von='sales'` (die Tagesgrenze zaehlt Rowboat und Salesman zusammen);
-die Herkunft steht in `eingabe.von = "rowboat"`. Antworten: 200 {auftrag, id, link}; Fehler
-{fehler: "<Satz>"} mit 400 (Pruefung), 401 (Schluessel), 409 (Doppelte Uebergabe), 413 (Rumpf), 429 (Tagesgrenze).
-Weder Schluessel noch Rumpf gelangen ins Log.
+Antworten: 200 {status: "vorbereitet", vorgang: <8 Hex>, link}; Fehler {fehler: "<Satz>"} mit 400 (Pruefung),
+401 (Schluessel), 409 (schon vorbereitet), 413 (Rumpf), 429 (5 Uebergaben offen). Weder Schluessel noch Rumpf
+gelangen ins Log.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-import threading
-from datetime import datetime, timedelta, timezone
 
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-import auftrag_buch
 import ui_freigabe_api
 import ui_werkbank
 import video_konzept
+import video_uebergabe
 
 PFAD = "/api/auftraege/video"
 HERKUNFT = "rowboat"
 MAX_RUMPF = 64 * 1024
-DOPPELT_FENSTER = timedelta(minutes=10)
-# Staende, in denen ein Auftrag noch "lebt": ein abgebrochener oder fehlgeschlagener darf neu uebergeben werden.
-LEBENDE_STAENDE = ["offen", "in_arbeit", "erzeugt", "wartet_freigabe", "fertig", "werkbank"]
 LOG = logging.getLogger("sales-ui")
-
-# Pruefen und Anlegen bilden zusammen einen Schritt: zwei gleichzeitige Aufrufe (zwei Werkzeugaufrufe in einer
-# Modellantwort, Wiederholen nach Zeitueberschreitung) sollen hoechstens einen Auftrag ergeben. Gilt je Prozess;
-# die Oberflaeche eines Ladens laeuft in einem Prozess.
-_SCHRITT = threading.Lock()
 
 
 def _fehler(status: int, satz: str) -> JSONResponse:
@@ -73,54 +64,6 @@ async def _rumpf(request: Request):
     return daten, None
 
 
-def _zeit(wert) -> datetime | None:
-    try:
-        z = datetime.fromisoformat(str(wert).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return z if z.tzinfo else z.replace(tzinfo=timezone.utc)
-
-
-def _jetzt(server) -> datetime:
-    """Die Uhr der Datenbank (dieselbe, die `angelegt` gesetzt hat). Ist sie nicht lesbar, gilt die Uhr dieses
-    Prozesses (dann kann eine Uhrenabweichung das Fenster verschieben)."""
-    try:
-        z = server._q("select now() as jetzt")[0]["jetzt"]
-    except Exception:  # noqa: BLE001 - nur die Uhr; die Pruefung selbst bleibt in Kraft
-        z = None
-    return z if isinstance(z, datetime) and z.tzinfo else datetime.now(timezone.utc)
-
-
-def _vorhandener(server, laden: str, sha: str) -> str | None:
-    """Auftragsnummer (8 Hex) eines lebenden Video-Auftrags dieses Ladens mit demselben Konzept-Hash, angelegt
-    vor hoechstens 10 Minuten; sonst None. Liest nur ueber auftrag_buch.eigene (sales_eigene)."""
-    jetzt = _jetzt(server)
-    for z in auftrag_buch.eigene(server._q, laden, LEBENDE_STAENDE):
-        eingabe = z.get("eingabe") if isinstance(z, dict) else None
-        if not isinstance(z, dict) or z.get("art") != "video" or not isinstance(eingabe, dict):
-            continue
-        if eingabe.get("konzept_sha") != sha:
-            continue
-        angelegt = _zeit(z.get("angelegt"))
-        if angelegt is None or jetzt - angelegt <= DOPPELT_FENSTER:   # unlesbare Zeit: lieber ablehnen
-            return str(z.get("id", ""))[:8] or "unbekannt"
-    return None
-
-
-def _uebergeben(server, laden: str, mandant: str, eingabe: dict, sha: str):
-    """-> (Auftrags-UUID, None) oder (None, Fehlerantwort)."""
-    with _SCHRITT:
-        vorhanden = _vorhandener(server, laden, sha)
-        if vorhanden:
-            return None, _fehler(409, f"Dieses Konzept wurde vor weniger als 10 Minuten schon übergeben: "
-                                      f"Auftrag {vorhanden}.")
-        try:
-            return auftrag_buch.anlegen(server._q, laden, mandant, "video", eingabe), None
-        except auftrag_buch.AuftragAbgelehnt as e:
-            grenze = "zwei Videos" in e.grund or "Tagesgrenze" in e.grund
-            return None, _fehler(429 if grenze else 400, e.grund)
-
-
 def routen(ui) -> list[Route]:
     async def video(request: Request):
         herkunft = await run_in_threadpool(ui_freigabe_api._herkunft, request)
@@ -141,28 +84,24 @@ def routen(ui) -> list[Route]:
             or video_konzept.pruefen(konzept)
         if satz:
             return _fehler(400, satz)
-        # Die Angaben oben muessen genau die des Konzepts sein, das Felix bestaetigt hat.
+        # Die Angaben oben muessen genau die des Konzepts sein, das der Betreiber gleich sieht.
         if (thema.strip() != konzept["thema"].strip() or daten["minuten"] != konzept["minuten"]
                 or (zielgruppe or "").strip() != konzept["zielgruppe"].strip()
                 or (beschreibung or "") != video_konzept.beschreibung_aus(konzept)):
             return _fehler(400, "Die Angaben passen nicht zum Konzept.")
         mandant = os.environ.get("MARKETING_MANDANT", "").strip()
         if not mandant:
-            return _fehler(400, "Für diesen Laden ist keine Marketing-Firma eingetragen.")
+            return _fehler(400, video_uebergabe.SATZ_KEINE_FIRMA)
         firma = konzept.get("firma")
         if isinstance(firma, str) and firma.strip() and firma.strip() != mandant:
-            return _fehler(400, "Das Konzept gehört zu einer anderen Firma als dieser Laden.")
-        laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
+            return _fehler(400, video_uebergabe.SATZ_FIRMA)
         konzept = video_konzept.bereinigen(konzept)           # nur bekannte Felder werden gespeichert
         sha = video_konzept.block_hash(konzept)
-        eingabe = {"thema": konzept["thema"].strip(), "beschreibung": video_konzept.beschreibung_aus(konzept),
-                   "minuten": konzept["minuten"], "zielgruppe": konzept["zielgruppe"].strip(),
-                   "von": HERKUNFT, "konzept": konzept, "konzept_sha": sha}
-        aid, fehler = await run_in_threadpool(_uebergeben, server, laden, mandant, eingabe, sha)
-        if fehler:
-            return fehler
-        LOG.info("auftraege-api herkunft=%s art=video auftrag=%s", HERKUNFT, aid[:8])
+        vorgang, satz = await run_in_threadpool(video_uebergabe.anlegen, konzept, sha)
+        if satz:
+            return _fehler(409 if satz == video_uebergabe.SATZ_DOPPELT else 429, satz)
         basis = ui.UI_BASIS_URL.rstrip("/")
-        return JSONResponse({"auftrag": aid[:8], "id": aid, "link": f"{basis}{ui_werkbank.BASIS}/{aid}"})
+        return JSONResponse({"status": "vorbereitet", "vorgang": vorgang,
+                             "link": f"{basis}{ui_werkbank.BASIS}#uebergaben"})
 
     return [Route(PFAD, video, methods=["POST"])]

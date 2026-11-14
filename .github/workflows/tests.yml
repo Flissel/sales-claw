@@ -66,6 +66,12 @@ jobs:
             -v schema=sales_test -f db/post-sammelstelle.sql
           psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
             -v schema=sales_test -f db/freigabe-eingang.sql
+          # Vorbereitete Video-Uebergaben (Konzept-Flaeche). Zweimal eingespielt: die Idempotenz
+          # (create ... if not exists, wiederholbare Rechte) wird so bei jedem Lauf bewiesen.
+          for lauf in 1 2; do
+            psql "postgresql://postgres:ci@localhost:5432/postgres" -v ON_ERROR_STOP=1 \
+              -v schema=sales_test -f db/video-uebergabe.sql
+          done
       - name: Image bauen
         run: docker build -t sales-mcp-ci ./sales-mcp
       - name: Suite
