@@ -356,3 +356,11 @@ def test_prompt_enthaelt_heikel_regel():
     assert ("Zeigt das Bild eine Anmeldung mit Passwort- oder Kontoauswahl, eine "
             "Bezahlseite mit Karten- oder Kontodaten oder ein E-Mail-Postfach bzw. "
             "eine geöffnete E-Mail, antworte nur mit dem Wort HEIKEL.") in bild_arbeit.BILD_PROMPT
+
+
+@pytest.mark.parametrize("antwort", ["**HEIKEL**", '"HEIKEL"', "`HEIKEL`", "„Heikel“", " **heikel**.\n"])
+def test_heikel_mit_markdown(monkeypatch, antwort):
+    _heikel_antwort(monkeypatch, antwort)
+    assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "heikel"
+    assert server._q("select 1 from termin_bilder") == []
+    assert _uebersprungen() == 1

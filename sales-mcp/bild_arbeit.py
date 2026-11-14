@@ -43,6 +43,8 @@ BILD_PROMPT = (
 )
 
 # Antwort beginnt mit dem Wort HEIKEL (Satzzeichen danach ok; "Heikle ..." nicht).
+# Anfuehrung/Markdown, in die kleine Modelle Ein-Wort-Antworten gern huellen.
+_UMHUELLUNG = " \t\r\n\"'„“”*_`"
 _HEIKEL = re.compile(r"^heikel\b", re.IGNORECASE)
 
 
@@ -121,7 +123,7 @@ def naechste_beschreiben_status(einbetter: Einbetter) -> str | None:
     try:
         text = ollama.chat(BILD_PROMPT, "Beschreibe dieses Bild.",
                            timeout_s=KI_TIMEOUT_S, bilder=[jpeg]).strip()
-        if _HEIKEL.match(text):
+        if _HEIKEL.match(text.strip(_UMHUELLUNG)):
             return _heikel_entfernen(bild_id, uid)
         if not text:
             raise ValueError("leere Beschreibung")
