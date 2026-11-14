@@ -60,7 +60,7 @@ _HEIKEL = re.compile(r"^heikel\b", re.IGNORECASE)
 # Postfach, statt HEIKEL zu antworten, gilt das Bild trotzdem als heikel.
 _HEIKEL_STICHWORT = re.compile(
     r"passwort|kennwort|anmelde|anmeldung|sign in|login|checkout|zahlung|kreditkarte|"
-    r"bezahl|iban|posteingang|inbox|e-mail-postfach|gmx|web\.de|outlook", re.IGNORECASE)
+    r"bezahl|\biban\b|posteingang|inbox|e-mail-postfach|gmx|web\.de|outlook", re.IGNORECASE)
 
 
 class Einbetter(Protocol):
@@ -88,7 +88,8 @@ def _beanspruchen() -> dict | None:
         "where beschreibung_status in ('offen', 'fehler') "
         "and (versucht_am is null or versucht_am <= now() - case "
         "  when beschreibung_versuche >= 2 then %s::interval else %s::interval end) "
-        "order by aufgenommen_am, id for update skip locked limit 1) "
+        "order by (beschreibung_status = 'fehler'), aufgenommen_am, id "
+        "for update skip locked limit 1) "
         "returning id, uid, bild, vektor_bild is not null as hat_vektor_bild",
         (PAUSE_NACH_VERSUCH_2, PAUSE_NACH_VERSUCH_1))
     return zeilen[0] if zeilen else None

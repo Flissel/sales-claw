@@ -169,12 +169,25 @@ def test_stichwort_netz_loescht(monkeypatch, caplog, antwort):
 @pytest.mark.parametrize("antwort", [
     "Eine Folie mit Umsatzzahlen 2025 und Wachstum je Quartal.",
     "Ein Architekturdiagramm mit drei Diensten und einer Datenbank.",
+    "Eine Landkarte mit Libanon und Syrien.",
 ])
 def test_stichwort_netz_harmlose_beschreibung_bleibt(monkeypatch, antwort):
     bid = _heikel_antwort(monkeypatch, antwort)
     assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "fertig"
     assert _zeile(bid)["beschreibung"] == antwort
     assert _uebersprungen() == 0
+
+
+def test_fehler_bild_verdraengt_neue_nicht():
+    """Re-Review: faellige Fehler-Bilder (unbegrenzte Wiederholung) kommen nach neuen dran."""
+    _akte("a1")
+    alt = _bild(minute=0)
+    neu = _bild(minute=5)
+    server._q("update termin_bilder set beschreibung_status = 'fehler', "
+              "beschreibung_versuche = 1, versucht_am = now() - interval '1 hour' "
+              "where id = %s returning id", (alt,))
+    assert str(bild_arbeit._beanspruchen()["id"]) == str(neu)
+    assert str(bild_arbeit._beanspruchen()["id"]) == str(alt)
 
 
 def test_neuversuch_wartet_wachsende_pause(monkeypatch):
