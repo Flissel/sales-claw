@@ -6,10 +6,14 @@ Aufruf (im Container des Taktgebers, dort liegen Code und Datenbankzugang):
 <uid> ist die volle Akten-uid (z. B. 3c9afada-...@sales-claw) oder ein eindeutiger
 Praefix ab 8 Zeichen; bei 0 oder mehr als einem Treffer Abbruch.
 Wirkung: Segmente durch mitschrift_bereinigen.bereinigen, auswertung_status
-'offen', auswertung_versuche 0, alte Auswertung geleert; der Taktgeber wertet
-danach neu aus. Abbruch, wenn der verknuepfte Entwurf schon verschickt ist.
+'offen' (bzw. 'leer', wenn nichts bleibt), auswertung_versuche 0, alte
+Auswertung geleert, offene Vorschlaege der alten Auswertung geloescht; der
+Taktgeber wertet danach neu aus. Abbruch, wenn die Auswertung noch aussteht
+(Status nicht fertig/fehler/leer) oder der verknuepfte Entwurf schon verschickt,
+freigegeben oder fehlgeschlagen ist. Ein offener Entwurf bleibt (Warnzeile).
 Ausgabe: nur Zaehler (Segmente, Anteil '?'-Sprecher, Anteil Segmente mit
-hoechstens 2 Woertern, je vorher/nachher) - nie Text oder Namen.
+hoechstens 2 Woertern, je vorher/nachher; geloeschte Vorschlaege) - nie Text
+oder Namen.
 """
 import sys
 
@@ -28,7 +32,13 @@ def main(argv: list[str]) -> int:
     print(f"Segmente: {st['segmente_vorher']} -> {st['segmente_nachher']}")
     print(f"Sprecher '?': {st['fragezeichen_vorher']:.1%} -> {st['fragezeichen_nachher']:.1%}")
     print(f"Segmente mit hoechstens 2 Woertern: {st['kurz_vorher']:.1%} -> {st['kurz_nachher']:.1%}")
-    print("Status offen; der Taktgeber wertet beim naechsten Durchlauf aus.")
+    print(f"Offene Vorschlaege geloescht: {st['vorschlaege_geloescht']}")
+    if st["entwurf_offen"]:
+        print(f"WARNUNG: {neu_auswertung.ENTWURF_WARNUNG}")
+    if st["segmente_nachher"]:
+        print("Status offen; der Taktgeber wertet beim naechsten Durchlauf aus.")
+    else:
+        print("Status leer: nach der Bereinigung bleibt kein Segment.")
     return 0
 
 
