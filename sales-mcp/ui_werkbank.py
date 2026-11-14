@@ -126,7 +126,8 @@ def minuten(sekunden) -> str:
 def quelle_text(q) -> str:
     """Ein Beleg als eine Zeile: Text, oder bei einem Objekt der erste benennende Wert (plus Stelle)."""
     if isinstance(q, str):
-        return q.strip()[:300]
+        text = q.strip()[:300]
+        return "Konzept" if text == "konzept" else text   # Quelle konzept: das Konzept aus Rowboat
     if not isinstance(q, dict):
         return ""
     for schluessel in ("name", "quelle", "datei", "titel", "pfad", "url"):

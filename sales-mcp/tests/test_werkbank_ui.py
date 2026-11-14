@@ -807,3 +807,9 @@ def test_szenenseite_zeigt_jede_aussage_mit_quelle(klient, pult):
     aussage = html.index("Die Schulung spart 30 % &lt;Zeit&gt;.")
     assert sprech < aussage < html.index("<h3>Bildidee</h3>")
     assert "Quelle: Preise.pdf" in html and "Quelle: Auftrag" in html and "<Zeit>" not in html
+
+def test_quelle_konzept_wird_als_konzept_angezeigt():
+    assert ui_werkbank.quelle_text("konzept") == "Konzept"
+    assert ui_werkbank.quelle_text("  konzept ") == "Konzept"
+    assert ui_werkbank.quelle_text("Marke.md") == "Marke.md"        # andere Quellen unveraendert
+    assert ui_werkbank.quelle_text({"name": "Preise.pdf", "stelle": "S. 2"}) == "Preise.pdf (S. 2)"
