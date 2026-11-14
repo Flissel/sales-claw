@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Prueft den Mitschriften-Ordner je Laden (Mitschriften-Ablage, 14.11.2026)
-# ohne Docker-Start: Compose haengt /mitschriften an sales-termine und
-# sales-ui ein (beschreibbar), update.sh weist Laeden ohne eigenen oder mit
-# geteiltem Ordner ab, laden-anlegen.sh und beispiel.env schreiben die Zeile,
-# sicherung.sh sichert den Ordner, wiederherstellen.sh stellt ihn her.
+# ohne Docker-Start: Compose haengt /mitschriften an sales-termine, sales-ui
+# und sales-mcp (Loeschantrag) ein (beschreibbar), update.sh weist Laeden
+# ohne eigenen oder mit geteiltem Ordner ab, laden-anlegen.sh und
+# beispiel.env schreiben die Zeile, sicherung.sh sichert den Ordner,
+# wiederherstellen.sh stellt ihn her.
 # `docker compose config` laeuft nur, wenn `docker compose` am Ort vorhanden
 # ist (mit .env.example, nie mit einer echten .env); sonst wird dieser Teil
 # uebersprungen (und gemeldet). update.sh laeuft in einer Wegwerf-Kopie
@@ -27,7 +28,7 @@ block() {
     in_services && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { aktiv = ($1 == d ":") ; next }
     in_services && aktiv { print }'
 }
-for d in sales-termine sales-ui; do
+for d in sales-termine sales-ui sales-mcp; do
   b="$(block "$d")"
   echo "$b" | grep -qE '^      (- )?MITSCHRIFTEN_PFAD[=:][[:space:]]*/mitschriften[[:space:]]*$' \
     || fehler "$d: MITSCHRIFTEN_PFAD=/mitschriften fehlt"
@@ -41,7 +42,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   ( cd "$WURZEL" && docker compose -f "$COMPOSE" --env-file "$T/compose.env" config ) \
     > "$T/config.yml" 2> "$T/config.err" \
     || fehler "docker compose config schlaegt fehl: $(grep -v 'variable is not set' "$T/config.err" | head -5)"
-  for d in sales-termine sales-ui; do
+  for d in sales-termine sales-ui sales-mcp; do
     # Gerenderter Dienstblock, darin die Einhaengung mit Ziel /mitschriften.
     sed 's/\r$//' "$T/config.yml" | awk -v d="$d" '
       /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { aktiv = ($1 == d ":") }

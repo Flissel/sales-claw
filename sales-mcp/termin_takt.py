@@ -580,6 +580,26 @@ _LETZTER_ABGLEICH: datetime | None = None
 _bericht_pause: dict[str, datetime] = {}
 
 
+def _ablage_veraltet(jetzt: datetime) -> int:
+    """Hoechstens ein veralteter Bericht je Runde: die Auswertung ist nach einer
+    Neu-Auswertung leer oder endgueltig gescheitert (Versuche aufgebraucht) -
+    der alte Bericht zeigte die alte Auswertung. Buchung leeren, Datei weg.
+    'offen' bleibt unberuehrt (die Neu-Auswertung laeuft noch)."""
+    weg = server._q(
+        "with alt as (select id, uid, bericht_pfad from termin_mitschriften "
+        "where bericht_pfad is not null and (auswertung_status = 'leer' "
+        "or (auswertung_status = 'fehler' and auswertung_versuche >= %s)) "
+        "order by geholt_am, id limit 1 for update skip locked) "
+        "update termin_mitschriften m set bericht_pfad = null, bericht_stand = null, "
+        "bericht_am = null from alt where m.id = alt.id "
+        "returning alt.uid, alt.bericht_pfad", (MAX_AUSWERTUNGEN,))
+    if not weg:
+        return 0
+    uid, pfad = weg[0]["uid"], weg[0]["bericht_pfad"]
+    return int(_je_akte("Bericht veraltet", uid,
+                        lambda: mitschrift_bericht.datei_entfernen(pfad)))
+
+
 def _ablage_einordnen(jetzt: datetime) -> int:
     """Hoechstens eine KI-Einordnung je Runde: ohne Rubrik, oder 'Unsortiert'
     (nicht von Hand) mit faelligem Neuversuch. Nicht vor/waehrend eines Termins
@@ -633,7 +653,7 @@ def _ablage_abgleich(jetzt: datetime) -> int:
     except Exception as e:  # noqa: BLE001 - nur der Typname ins Log (Pfade!)
         LOG.warning("Abgleich der Mitschriften-Ablage fehlgeschlagen (%s)", type(e).__name__)
         return 0
-    return int(r.get("geloescht", 0)) + int(r.get("neu", 0))
+    return int(r.get("geloescht", 0)) + int(r.get("zurueckgesetzt", 0))
 
 
 def _ablage(jetzt: datetime) -> int:
@@ -642,7 +662,8 @@ def _ablage(jetzt: datetime) -> int:
              "Mitschriften-Ablage fehlt oder ist nicht beschreibbar - Berichte warten")
     if not ok:
         return 0
-    return _ablage_einordnen(jetzt) + _ablage_bericht(jetzt) + _ablage_abgleich(jetzt)
+    return (_ablage_veraltet(jetzt) + _ablage_einordnen(jetzt) + _ablage_bericht(jetzt)
+            + _ablage_abgleich(jetzt))
 
 
 # ---------- Runde und Schleife ----------

@@ -280,7 +280,9 @@ def _unterordner(basis: Path) -> list[Path]:
 
 
 def abgleichen() -> dict:
-    """Waisen loeschen, fehlende Berichte neu erzeugen, leere Rubrikordner entfernen.
+    """Waisen loeschen, Buchungen fehlender Berichte zuruecksetzen, leere Rubrikordner
+    entfernen. Neu erzeugt der Taktgeber die zurueckgesetzten einzeln (einer je Runde),
+    damit der Abgleich die Runde nicht aufhaelt.
 
     Vorsichtig: nur Dateien nach BERICHT_MUSTER in direkten Unterordnern; laeuft
     nicht, wenn der Ordner fehlt, nicht beschreibbar ist oder keine einzige
@@ -305,7 +307,7 @@ def abgleichen() -> dict:
             len(erwartet))
         return {"uebersprungen": "keine erwartete Datei"}
 
-    geloescht = neu = entfernt = 0
+    geloescht = zurueck = entfernt = 0
     grenze = time.time() - SCHONFRIST_S
     for rel, f in dateien.items():
         if rel in erwartet:
@@ -322,12 +324,10 @@ def abgleichen() -> dict:
         ziel = sicherer_pfad(z["bericht_pfad"])
         if ziel is not None and ziel.is_file():
             continue
-        try:
-            if ablegen(z["uid"]):
-                neu += 1
-        except Exception as err:  # noqa: BLE001 - ein Bericht stoppt den Rest nicht
-            log.warning("Abgleich: Bericht uid=%s nicht erzeugt (%s)",
-                        uid8(z["uid"]), type(err).__name__)
+        if server._q("update termin_mitschriften set bericht_pfad = null, bericht_stand = null, "
+                     "bericht_am = null where uid = %s and bericht_pfad = %s returning id",
+                     (z["uid"], z["bericht_pfad"])):
+            zurueck += 1
 
     for unter in _unterordner(basis):
         try:
@@ -335,5 +335,6 @@ def abgleichen() -> dict:
             entfernt += 1
         except OSError:
             pass
-    log.info("Abgleich: geloescht=%d neu=%d ordner_entfernt=%d", geloescht, neu, entfernt)
-    return {"geloescht": geloescht, "neu": neu, "ordner_entfernt": entfernt}
+    log.info("Abgleich: geloescht=%d zurueckgesetzt=%d ordner_entfernt=%d",
+             geloescht, zurueck, entfernt)
+    return {"geloescht": geloescht, "zurueckgesetzt": zurueck, "ordner_entfernt": entfernt}

@@ -465,6 +465,11 @@ def berichte_entfernen(zeilen: list[dict]) -> None:
     if not pfade:
         return
     import mitschrift_bericht  # zirkulaer: mitschrift_bericht -> ui_termin -> termin_akte
+    if not mitschrift_bericht.ordner().is_dir():
+        # fehlt die Einhaengung, liefe datei_entfernen still ins Leere
+        LOG.warning("Bericht-Dateien nicht entfernt: Mitschriften-Ablage fehlt (anzahl=%d)",
+                    len(pfade))
+        return
     for pfad in pfade:
         mitschrift_bericht.datei_entfernen(pfad)
 

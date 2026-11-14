@@ -1549,7 +1549,7 @@ def test_ablage_ohne_beschreibbaren_ordner_ruht(fake, ki, tmp_path, monkeypatch,
 def test_takt_abgleich_hoechstens_stuendlich(fake, ablage, monkeypatch):
     aufrufe = []
     monkeypatch.setattr(mitschrift_bericht, "abgleichen",
-                        lambda: aufrufe.append(1) or {"geloescht": 0, "neu": 0,
+                        lambda: aufrufe.append(1) or {"geloescht": 0, "zurueckgesetzt": 0,
                                                       "ordner_entfernt": 0})
     termin_takt.runde(JETZT)
     termin_takt.runde(JETZT + timedelta(seconds=30))
@@ -1558,3 +1558,54 @@ def test_takt_abgleich_hoechstens_stuendlich(fake, ablage, monkeypatch):
     assert len(aufrufe) == 2
     termin_takt.runde(JETZT + timedelta(minutes=62))
     assert len(aufrufe) == 2
+
+
+def test_abgleich_fehlende_datei_baut_der_takt_einzeln_neu(fake, ablage, ki, monkeypatch):
+    _fertig("u1", rubrik="Kurse")
+    _fertig("u2", rubrik="Kurse")
+    termin_takt.runde(JETZT)
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    p1, p2 = _mit("u1")["bericht_pfad"], _mit("u2")["bericht_pfad"]
+    (ablage / p2).unlink()
+    aufrufe = []
+    echt = mitschrift_bericht.ablegen
+    monkeypatch.setattr(mitschrift_bericht, "ablegen",
+                        lambda uid: aufrufe.append(uid) or echt(uid))
+    termin_takt.runde(JETZT + timedelta(minutes=61))    # Abgleich: nur zuruecksetzen
+    assert aufrufe == [] and _mit("u2")["bericht_pfad"] is None
+    termin_takt.runde(JETZT + timedelta(minutes=61, seconds=30))  # Bericht-Schritt
+    assert aufrufe == ["u2"] and _mit("u2")["bericht_pfad"] == p2
+    assert _html(ablage) == sorted([p1, p2])
+
+
+@pytest.mark.parametrize("status,versuche", [("leer", 0), ("fehler", 3)])
+def test_ablage_veralteter_bericht_geht_weg(fake, ablage, ki, monkeypatch, status,
+                                          versuche):
+    _fertig("u1", rubrik="Kurse")
+    _fertig("u2", rubrik="Kurse")
+    _fertig("u3", rubrik="Kurse")
+    for i in range(3):
+        termin_takt.runde(JETZT + timedelta(seconds=30 * i))
+    pfade = {u: _mit(u)["bericht_pfad"] for u in ("u1", "u2", "u3")}
+    assert all(pfade.values())
+    # u1 endet leer bzw. endgueltig gescheitert; u2 wird gerade neu ausgewertet (offen);
+    # u3 ist gescheitert, darf aber noch einmal versuchen
+    server._q("update termin_mitschriften set auswertung_status = %s, "
+              "auswertung_versuche = %s where uid = 'u1' returning id", (status, versuche))
+    server._q("update termin_mitschriften set auswertung_status = 'offen' "
+              "where uid = 'u2' returning id")
+    server._q("update termin_mitschriften set auswertung_status = 'fehler', "
+              "auswertung_versuche = 1, auswertung_am = %s where uid = 'u3' returning id",
+              (JETZT + timedelta(minutes=2),))
+    # Auswertung und Einordnung ruhen (Termin steht an), der Schritt laeuft trotzdem
+    monkeypatch.setattr(termin_takt, "_termin_steht_an", lambda jetzt: True)
+    termin_takt.runde(JETZT + timedelta(minutes=2))
+    m1 = _mit("u1")
+    assert (m1["bericht_pfad"], m1["bericht_stand"], m1["bericht_am"]) == (None, None, None)
+    assert not (ablage / pfade["u1"]).exists()
+    assert m1["rubrik"] == "Kurse"
+    for u in ("u2", "u3"):
+        assert _mit(u)["bericht_pfad"] == pfade[u] and (ablage / pfade[u]).is_file()
+    termin_takt.runde(JETZT + timedelta(minutes=2, seconds=30))   # bleibt weg
+    assert _mit("u1")["bericht_pfad"] is None
+    assert _html(ablage) == sorted([pfade["u2"], pfade["u3"]])

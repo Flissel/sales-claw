@@ -249,6 +249,9 @@ services:
       # meldet "nicht eingerichtet" und tut nichts.
       BEWERBUNG_PULT_URL: ${BEWERBUNG_PULT_URL:-}
       BEWERBUNG_EINGANG_KEY: ${BEWERBUNG_EINGANG_KEY:-}
+      # Terminberichte (Mitschriften-Ablage, 14.11.2026): loeschantrag_vermerken
+      # (MCP-Werkzeug) loescht mit der Mitschrift auch die Bericht-Datei.
+      MITSCHRIFTEN_PFAD: /mitschriften
     # Der Medienordner (Stufe 4, F4). Hier liegen die Unterlagen, die der
     # Betreiber an Entwürfe hängen kann; `medien_liste` liest genau dieses
     # Verzeichnis und `entwurf_erstellen` prüft eine Datei gegen es, bevor ein
@@ -304,6 +307,9 @@ services:
       # ab, der Waechter auf dem Wirt (deploy/auftrag-ausfuehren.sh) holt
       # sie und schreibt Ergebnisse zurueck. Schreibbar, gitignoriert.
       - ./auftraege:/auftraege
+      # Terminberichte (14.11.2026): beschreibbar, weil der Loeschantrag hier
+      # laeuft und die Bericht-Datei mit der Mitschrift loescht (DSGVO).
+      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/sales/mitschriften}:/mitschriften
       # Chat-Eingang (14.10.2026): Bilder/Dateien, die im Chat beim Agenten
       # ankommen, legt der Gateway unter media/inbound seines Volumes ab.
       # `medien_aus_chat_uebernehmen` kopiert von hier in media-erzeugt —

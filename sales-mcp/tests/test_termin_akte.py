@@ -651,3 +651,19 @@ def test_loeschantrag_loescht_bericht(ablage, monkeypatch, sicherheitsnetz):
     server._mitschriften_abraeumen(lead)
     assert not a.exists() and b.exists()
     assert server._q("select count(*) as n from termin_mitschriften where uid = 'a'")[0]["n"] == 0
+
+
+def test_bericht_entfernen_ohne_ablage_warnt_ohne_pfad(monkeypatch, tmp_path, caplog):
+    """Fehlt die Einhaengung (Dienst ohne /mitschriften), darf das Entfernen
+    nicht still ins Leere laufen: Warnung mit Anzahl, ohne Pfad."""
+    caplog.set_level(logging.INFO)
+    monkeypatch.setenv("MITSCHRIFTEN_PFAD", str(tmp_path / "nicht-eingehaengt"))
+    _akte_roh("a")
+    server._q("insert into termin_mitschriften (uid, segmente, auswertung_status, bericht_pfad) "
+              "values ('a', '[]'::jsonb, 'fertig', 'Kurse/2026-11-14_1000_geheim_0badc0de.html') "
+              "returning id")
+    termin_akte.mitschrift_entfernen("a")
+    warn = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("anzahl=1" in w for w in warn), warn
+    assert "geheim" not in caplog.text and "nicht-eingehaengt" not in caplog.text
+    assert server._q("select count(*) as n from termin_mitschriften")[0]["n"] == 0

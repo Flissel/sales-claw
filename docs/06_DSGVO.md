@@ -188,7 +188,11 @@ Checkliste für die Bericht-Dateien (Runbook: Abschnitt Mitschriften-Ablage):
       Anthropic – Vorbehalt wie im Abschnitt Mitschriften). Sie bekommt Titel, Art, Beteiligte und Kurzfassung, nicht
       das Transkript.
 - [ ] **Wer löscht:** jeder Löschweg der Mitschrift löscht die Datei mit (`mitschrift_entfernen` beim Ablehnen oder
-      nachträglichen Verwerfen der Aufnahme und beim Löschantrag, Sicherheitsnetz `_mitschriften_abraeumen`).
+      nachträglichen Verwerfen der Aufnahme und beim Löschantrag, Sicherheitsnetz `_mitschriften_abraeumen`). Dafür ist
+      der Ordner in allen Diensten eingehängt, die löschen: `sales-mcp` (Löschantrag über das MCP-Werkzeug), `sales-ui`
+      und `sales-termine`. Fehlt die Einhängung trotzdem, warnt das Log (nur die Anzahl) und der Abgleich räumt nach.
+- [ ] **Veralteter Bericht:** endet eine Neu-Auswertung leer oder scheitert die Auswertung endgültig, löscht der
+      Taktgeber den alten Bericht (er zeigte die alte Auswertung und das unbereinigte Transkript).
 - [ ] **Abgleich stündlich:** der Taktgeber `sales-termine` gleicht höchstens einmal je Stunde Dateien und Buchungen ab.
       Eine Bericht-Datei ohne Mitschrift (z. B. nach Löschung der Akte per Kaskade oder wenn das Entfernen scheiterte)
       wird dabei gelöscht, sobald sie älter als 10 Minuten ist; eine Waise kann also gut eine Stunde überleben. Fehlt der

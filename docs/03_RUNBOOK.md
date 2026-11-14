@@ -4194,8 +4194,10 @@ Kundendaten, nicht weitergeben“). Die Dateien sind die Ablage, die Datenbank f
 **Wo.** Auf dem Host `MITSCHRIFTEN_ORDNER` des Ladens (Basis-Laden `./laeden-daten/sales/mitschriften`, jeder weitere
 Laden `./laeden-daten/<name>/mitschriften`), im Container `/mitschriften` (`MITSCHRIFTEN_PFAD`). Darin ein Unterordner je
 Rubrik, darin `JJJJ-MM-TT_HHMM_<titel-kurz>_<uid8>.html` (`uid8` = gekürzter sha256 der uid, nie die uid selbst).
+Eingehängt (beschreibbar) in `sales-termine` (Ablage), `sales-ui` (Oberfläche, Aufnahme verwerfen) und `sales-mcp`
+(Löschantrag über das MCP-Werkzeug `loeschantrag_vermerken`).
 
-**Je Runde (Vorgabe 30 s)** höchstens eine KI-Einordnung und höchstens ein Bericht:
+**Je Runde (Vorgabe 30 s)** höchstens ein veralteter Bericht, eine KI-Einordnung und ein Bericht:
 
 - *Einordnung:* Mitschrift ohne Rubrik, oder `Unsortiert` (nicht von Hand gesetzt) nach einem KI-Fehlschlag – höchstens
   3 Versuche, je 1 h Abstand. Dieselbe KI wie die Auswertung; sie wartet wie die Auswertung, wenn ein Termin mit Bot in
@@ -4204,14 +4206,19 @@ Rubrik, darin `JJJJ-MM-TT_HHMM_<titel-kurz>_<uid8>.html` (`uid8` = gekürzter sh
 - *Bericht:* neu, wenn noch keiner da ist, die Auswertung neu fertig ist (auch nach `scripts/neu_auswerten.py`),
   Standbilder gelöscht wurden (`bericht_stand` weicht ab) oder die Rubrik gewechselt hat (die alte Datei geht weg).
   Scheitert ein Bericht, kommt diese Mitschrift erst nach einer Stunde wieder dran; die anderen laufen weiter.
+- *Veralteter Bericht:* endet eine Neu-Auswertung leer oder ist die Auswertung endgültig gescheitert (3 Versuche),
+  wird die Buchung geleert und die alte Datei gelöscht – sie zeigte die alte Auswertung. Eine laufende Neu-Auswertung
+  (`offen`) bleibt unberührt.
 - *Abgleich (höchstens stündlich, erste Runde nach dem Start):* löscht Waisen – Dateien `*_<uid8>.html` in einem
-  Rubrikordner ohne Buchung, älter als 10 Minuten –, erzeugt gebuchte, aber fehlende Berichte neu und entfernt leere
-  Rubrikordner. Fremde Dateien bleiben. Er läuft **nicht**, wenn der Ordner fehlt, nicht beschreibbar ist oder keine
-  einzige erwartete Datei enthält (Zeichen für einen falsch eingehängten Ordner).
+  Rubrikordner ohne Buchung, älter als 10 Minuten –, setzt die Buchung gebuchter, aber fehlender Berichte zurück
+  (neu erzeugt sie danach der Bericht-Schritt, einer je Runde) und entfernt leere Rubrikordner. Fremde Dateien
+  bleiben. Er läuft **nicht**, wenn der Ordner fehlt, nicht beschreibbar ist oder keine einzige erwartete Datei
+  enthält (Zeichen für einen falsch eingehängten Ordner).
 
 **Löschen.** Jeder Weg, der eine Mitschrift löscht, löscht die Datei mit: `termin_akte.mitschrift_entfernen` (Aufnahme
 abgelehnt oder nachträglich verworfen, Löschantrag) und das Sicherheitsnetz `server._mitschriften_abraeumen`. Löschungen per
-Datenbank-Kaskade (Akte gelöscht) räumt der nächste Abgleich ab.
+Datenbank-Kaskade (Akte gelöscht) räumt der nächste Abgleich ab. Fehlt einem dieser Dienste die Einhängung, steht im
+Log `Bericht-Dateien nicht entfernt: Mitschriften-Ablage fehlt (anzahl=N)` – dann bleibt die Datei bis zum Abgleich.
 
 **Sicherung.** `deploy/sicherung.sh` sichert den Ordner je Laden als `mitschriften.tar.gz` (`docs/04_BACKUP_RESTORE.md`).
 

@@ -209,7 +209,7 @@ def _alt(pfad):
     return pfad
 
 
-def test_abgleich_loescht_waisen_und_erzeugt_fehlende(ablage, caplog):
+def test_abgleich_loescht_waisen_und_setzt_fehlende_zurueck(ablage, caplog):
     caplog.set_level("INFO")
     _mitschrift(UID)
     gebucht = mb.ablegen(UID)
@@ -233,15 +233,19 @@ def test_abgleich_loescht_waisen_und_erzeugt_fehlende(ablage, caplog):
     jung.write_text("x")
     vorher = (ablage / gebucht).stat().st_mtime_ns
 
-    assert mb.abgleichen() == {"geloescht": 2, "neu": 1, "ordner_entfernt": 1}
+    assert mb.abgleichen() == {"geloescht": 2, "zurueckgesetzt": 1, "ordner_entfernt": 1}
     assert not waise.exists() and not waise_alt.exists() and not (ablage / "Alt").exists()
     assert notiz.exists() and oben.exists() and jung.exists()
-    assert (ablage / fehlt).is_file() and _mit(UID2)["bericht_pfad"] == fehlt
+    # fehlende Datei: nur die Buchung zuruecksetzen, neu erzeugt der Taktgeber (einer je Runde)
+    m2 = _mit(UID2)
+    assert not (ablage / fehlt).exists()
+    assert (m2["bericht_pfad"], m2["bericht_stand"], m2["bericht_am"]) == (None, None, None)
+    assert _mit(UID)["bericht_pfad"] == gebucht
     assert (ablage / gebucht).stat().st_mtime_ns == vorher
     for geheim in ("deadbeef", "0badc0de", "geheimer-titel", "Kurse", str(ablage)):
         assert geheim not in caplog.text, geheim
     # zweiter Lauf: nichts mehr zu tun
-    assert mb.abgleichen() == {"geloescht": 0, "neu": 0, "ordner_entfernt": 0}
+    assert mb.abgleichen() == {"geloescht": 0, "zurueckgesetzt": 0, "ordner_entfernt": 0}
 
 
 def test_abgleich_ueberspringt_ohne_erwartete_datei(ablage, monkeypatch):
