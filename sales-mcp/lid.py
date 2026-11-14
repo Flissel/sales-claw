@@ -22,15 +22,15 @@ Quelle openwa/upstream/src/modules/contact/contact.controller.ts:157)
 
     GET /api/sessions/{OPENWA_SESSION_ID}/contacts/{kennung}/phone
     Header: X-API-Key: {OPENWA_API_KEY}
-    200: {"contactId": "183096603361451@lid", "phone": "491729186846"}
+    200: {"contactId": "183096603361451@lid", "phone": "4917604069015"}
          `phone` ist null, wenn die Engine nicht aufloesen kann.
 
 1. **Das `@lid`-Suffix ist Pflicht und muss URL-kodiert werden** (`%40lid`).
-   Gemessen: `183096603361451@lid` -> `491729186846`, dieselbe Kennung OHNE
+   Gemessen: `183096603361451@lid` -> `4917604069015`, dieselbe Kennung OHNE
    Suffix -> `phone: null`. Wer nur die Ziffern schickt, bekommt stillschweigend
    Nullen und haelt das faelschlich fuer „nicht aufloesbar". Deshalb baut
    `_ziel` das Suffix selbst an und kodiert mit `quote(..., safe="")`.
-2. **`phone` kommt als blanke MSISDN-Ziffern ohne `+`** (`491729186846`) — vor
+2. **`phone` kommt als blanke MSISDN-Ziffern ohne `+`** (`4917604069015`) — vor
    jedem Vergleich mit `leads.phone` durch `nummern.py`, wie ueberall sonst.
    Ausdruecklich als `+<ziffern>`, damit die 49-Sonderregel fuer blanke Folgen
    (BLANK_PRAEFIX) gar nicht erst greift und eine oesterreichische Nummer nicht
@@ -48,7 +48,7 @@ Quelle openwa/upstream/src/modules/contact/contact.controller.ts:157)
    als „16 unaufloesbare Absender" in der Datenbank landet.
 5. **Der Endpunkt loest auch Kennungen auf, die noch nicht in OpenWAs
    `lid_mappings` stehen** (gemessen an `187853296390180@lid` ->
-   `4917670794980`). Er fragt die Engine aktiv — die SQLite-Tabelle im
+   `4917604069017`). Er fragt die Engine aktiv — die SQLite-Tabelle im
    openwa-Container ist also nicht die Obergrenze der Deckung.
 6. **EIN NEGATIVERGEBNIS ENTSTEHT AUSSCHLIESSLICH BEI `HTTP 200` +
    `phone: null`.** Jeder andere HTTP-Ausgang ist transient und bricht den
@@ -288,7 +288,7 @@ def aufloesen(kennung) -> Ergebnis:
     # Blanke MSISDN (Punkt 2 im Kopf). Der ROHWERT geht durch nummern.py, nicht
     # `"+" + ziffern(roh)`: das filterte jedes Nicht-Ziffernzeichen weg und
     # erklaerte den Rest zur internationalen Schreibweise — aus
-    # `49a17b29186846` wurde so die Nummer eines echten Kunden (Befund M7).
+    # `49a17b604069015` wurde so die Nummer eines echten Kunden (Befund M7).
     wert = str(roh).strip()[:FEHLER_MAXLAENGE]
     telefon, fehler = normalisiere_msisdn(wert)
     if fehler:

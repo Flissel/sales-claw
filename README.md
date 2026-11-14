@@ -186,4 +186,12 @@ Die Marketing-Seiten der UI sprechen über `sales-mcp/marketing_pult.py` mit dem
 
 ## Lizenz
 
-Noch nicht festgelegt, im Repo gibt es keine `LICENSE`-Datei im Wurzelverzeichnis. `editor/` steht als Fork unter MIT, siehe `editor/LICENSE`.
+MIT, siehe `LICENSE` (seit 14.11.2026). Das gilt für den Code dieses Repos.
+
+Eigene Lizenzen behalten:
+
+- `editor/`: Fork des Email-Builder-JS-Beispiels, MIT, siehe `editor/LICENSE` und `editor/HERKUNFT.md`.
+- `deploy/openwa-patches/`: Patches für OpenWA. OpenWA selbst liegt nicht in diesem Repo; es wird aus einem lokalen Upstream-Klon gebaut und bringt seine eigene Lizenz mit.
+- Abhängigkeiten aus `sales-mcp/requirements.txt` und den Container-Abbildern: jeweils die Lizenz des Projekts.
+
+Telefonnummern in Doku, Kommentaren und Tests sind Beispielnummern aus dem Block, den die Bundesnetzagentur für Medienproduktionen freihält ((0)176 040690 00 bis 99), oder erfundene Testwerte. Ausnahme: `config/openclaw.json` trägt die Nummern des Betreibers; wer das Repo übernimmt, setzt dort seine eigenen ein.

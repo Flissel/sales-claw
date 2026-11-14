@@ -135,7 +135,7 @@ def normalisiere_msisdn(roh):
 
     Gemeint sind Werte, die kein Mensch getippt hat: der Ziffernteil eines
     WhatsApp-JID (`491701234567:12@s.whatsapp.net`) und OpenWAs `phone`-Feld
-    (blanke MSISDN, `491729186846`). Sie bringen ihre Landesvorwahl technisch
+    (blanke MSISDN, `4917604069015`). Sie bringen ihre Landesvorwahl technisch
     immer mit, tragen aber kein `+` — deshalb wird eines vorangestellt, damit
     die 49-Sonderregel fuer blanke Folgen (BLANK_PRAEFIX) gar nicht erst
     greift und eine oesterreichische Nummer nicht als unzustellbar gilt.
@@ -149,7 +149,7 @@ def normalisiere_msisdn(roh):
         '0170123456'      -> 0170123456@c.us       (nationale Schreibweise)
         '004917612345678' -> 004917612345678@c.us  (00 einbetoniert)
         '000000000000'    -> 000000000000@c.us     (Vorwahl 0)
-        '49a17b29186846'  -> 491729186846@c.us     (= die Nummer eines
+        '49a17b604069015'  -> 4917604069015@c.us     (= die Nummer eines
                                                      ECHTEN Kunden)
 
     Die Regel hier: das `+` kommt nur davor, wenn der Wert weder `+` noch

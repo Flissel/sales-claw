@@ -66,7 +66,7 @@ Block A von drei. Block B (Kalender) und Block C (Kontaktliste) folgen mit eigen
 
 - `kontakt_freigeben` (Kanal WhatsApp) und der erste vom Betreiber freigegebene Entwurf an einen ignorierten Absender heben dessen Ignorieren-Markierung auf. Das gilt für die Rufnummer und alle ihr eindeutig zugeordneten `@lid`-Kennungen.
 - Gebucht wird eine Aktivität `absender_ignorieren_aufgehoben`. Die Rückgabe enthält den Satz „X stand auf Ignorieren – aufgehoben, neue Nachrichten sind wieder sichtbar.“
-- **Einmalige Reparatur:** Die Markierungen für Arjun (4915752415952) und Muttu (4915565715663) werden über denselben Weg aufgehoben (Skript in Task-Form, nicht von Hand in der DB). Die übrigen 31 bleiben.
+- **Einmalige Reparatur:** Die Markierungen für Arjun (4917604069013) und Muttu (4917604069012) werden über denselben Weg aufgehoben (Skript in Task-Form, nicht von Hand in der DB). Die übrigen 31 bleiben.
 
 ### 1.6 Bedarfsanalyse vorerst aus
 

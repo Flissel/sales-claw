@@ -5,7 +5,7 @@ ueberpruefen welche daten gleich bleiben und welche sich aendern? damit wir
 ein exaktes matching machen koennen?"
 
 Der Anlass ist echt: WhatsApp stellt auf LIDs um. Dieselbe Person erscheint
-mal unter ihrer Rufnummer (`4915772882471@c.us`), mal unter einer LID
+mal unter ihrer Rufnummer (`4917604069014@c.us`), mal unter einer LID
 (`143151310344360`), die keinen Bezug zur Nummer hat. In den Produktivdaten
 war am 25.08.2026 nachweisbar:
 
@@ -75,11 +75,11 @@ def _zuordnung(lid, telefon, quelle):
 def test_identitaetsfelder_werden_gesammelt():
     felder = inbox._identitaetsfelder({
         "pushName": "Sophie M.", "isLidSender": True,
-        "senderPhone": "491729186846@c.us",
+        "senderPhone": "4917604069015@c.us",
         "chatId": "183096603361451@lid", "from": "183096603361451@lid"})
     assert felder["push_name"] == "Sophie M."
     assert felder["ist_lid_absender"] is True
-    assert felder["senderphone"] == "491729186846@c.us"
+    assert felder["senderphone"] == "4917604069015@c.us"
     assert felder["chat_kennung"] == "183096603361451@lid"
 
 
@@ -118,12 +118,12 @@ def test_langer_anzeigename_wird_gedeckelt():
 # ---------------------------------------------------------------------------
 
 def test_bericht_zeigt_kennungen_mit_quelle_und_kontakt():
-    lead = _lead(name="Sophie", phone="+491729186846")
-    _nachricht(lead, "491729186846@c.us", kennung_quelle="zuordnung",
+    lead = _lead(name="Sophie", phone="+4917604069015")
+    _nachricht(lead, "4917604069015@c.us", kennung_quelle="zuordnung",
                push_name="Sophie M.")
     b = json.loads(server.kennungen_bericht())
     treffer = [k for k in b["kennungen"]
-               if k["kennung"] == "491729186846@c.us"]
+               if k["kennung"] == "4917604069015@c.us"]
     assert treffer, b["kennungen"]
     assert treffer[0]["kontakt"] == "Sophie"
     assert treffer[0]["quellen"] == ["zuordnung"]
@@ -133,20 +133,20 @@ def test_bericht_zeigt_kennungen_mit_quelle_und_kontakt():
 def test_bericht_findet_den_widerspruch():
     """Der gefaehrliche Fall: eine LID, zwei verschiedene Rufnummern."""
     _zuordnung("245745328336963", "4915228908100@c.us", "openwa")
-    _zuordnung("245745328336963", "491729186846@c.us", "betreiber")
+    _zuordnung("245745328336963", "4917604069015@c.us", "betreiber")
     b = json.loads(server.kennungen_bericht())
     assert len(b["widersprueche"]) == 1
     w = b["widersprueche"][0]
     assert w["lid"] == "245745328336963"
-    assert w["ziele"] == ["4915228908100@c.us", "491729186846@c.us"]
+    assert w["ziele"] == ["4915228908100@c.us", "4917604069015@c.us"]
     assert w["quellen"] == ["openwa", "betreiber"]
     # Die spaetere gewinnt — genau das macht den Fall gefaehrlich.
-    assert w["gewonnen_hat"] == "491729186846@c.us"
+    assert w["gewonnen_hat"] == "4917604069015@c.us"
 
 
 def test_eindeutige_aufloesung_ist_kein_widerspruch():
-    _zuordnung("143151310344360", "4915772882471@c.us", "openwa")
-    _zuordnung("143151310344360", "4915772882471@c.us", "betreiber")
+    _zuordnung("143151310344360", "4917604069014@c.us", "openwa")
+    _zuordnung("143151310344360", "4917604069014@c.us", "betreiber")
     assert json.loads(server.kennungen_bericht())["widersprueche"] == []
 
 

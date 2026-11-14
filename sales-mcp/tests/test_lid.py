@@ -160,9 +160,9 @@ def test_das_lid_suffix_geht_kodiert_mit_raus():
     """Der teuerste Befund des Plans: dieselbe Kennung OHNE Suffix liefert
     stillschweigend `phone: null`. Wer nur die Ziffern schickt, haelt ein
     Nichtergebnis faelschlich fuer 'nicht aufloesbar'."""
-    STUB.antworten["183096603361451"] = (200, "491729186846")
+    STUB.antworten["183096603361451"] = (200, "4917604069015")
     ergebnis = lid.aufloesen("183096603361451@lid")
-    assert ergebnis.telefon == "491729186846@c.us"
+    assert ergebnis.telefon == "4917604069015@c.us"
     assert ergebnis.typ == lid.TYP_RUFNUMMER
     assert ergebnis.transient is False
     pfad = _pfade()[-1]
@@ -171,10 +171,10 @@ def test_das_lid_suffix_geht_kodiert_mit_raus():
 
 
 def test_blanke_msisdn_laeuft_durch_nummern_py():
-    """OpenWA liefert `491729186846` ohne `+`. Ausdruecklich als `+<ziffern>`
+    """OpenWA liefert `4917604069015` ohne `+`. Ausdruecklich als `+<ziffern>`
     normalisieren, sonst greift die 49-Sonderregel fuer blanke Folgen."""
-    STUB.antworten["44199592386700"] = (200, "4315208874679")   # AT-Nummer
-    assert lid.aufloesen("44199592386700@lid").telefon == "4315208874679@c.us"
+    STUB.antworten["44199592386700"] = (200, "4317604069010")   # AT-Nummer
+    assert lid.aufloesen("44199592386700@lid").telefon == "4317604069010@c.us"
 
 
 # Review-Befund M7: `normalisiere_empfaenger("+" + ziffern(roh))` hat
@@ -185,7 +185,7 @@ def test_blanke_msisdn_laeuft_durch_nummern_py():
 @pytest.mark.parametrize("geliefert", [
     "0170123456",       # nationale Schreibweise, ohne Landesvorwahl
     "000000000000",     # eine Landesvorwahl beginnt nie mit 0
-    "49a17b29186846",   # Buchstaben — wurden stillschweigend weggefiltert
+    "49a17b604069015",   # Buchstaben — wurden stillschweigend weggefiltert
 ])
 def test_unsaubere_msisdn_wird_verworfen_statt_zurechtgebogen(geliefert):
     STUB.antworten["183096603361451"] = (200, geliefert)
@@ -367,13 +367,13 @@ def test_nicht_ready_session_fragt_gar_nichts_ab():
 def test_aufgeloeste_kennung_wird_gespiegelt_und_ist_danach_bekannt():
     sammel = _sammel()
     _eingang(sammel, "183096603361451@lid")
-    STUB.antworten["183096603361451"] = (200, "491729186846")
+    STUB.antworten["183096603361451"] = (200, "4917604069015")
     antwort = _aufloesen()
     # Die Kennung bleibt in ihrer unaufgeloesten Form stehen — sie ist der
     # Wiedererkennungswert im Posteingang.
     assert antwort["aufgeloest"] == [{"kennung": "183096603361451@lid",
-                                      "telefon": "491729186846@c.us"}]
-    assert server.lid_telefon("183096603361451@lid") == "491729186846@c.us"
+                                      "telefon": "4917604069015@c.us"}]
+    assert server.lid_telefon("183096603361451@lid") == "4917604069015@c.us"
 
 
 def test_429_schreibt_kein_negativergebnis_in_die_zuordnung():

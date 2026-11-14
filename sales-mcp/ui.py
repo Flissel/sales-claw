@@ -9194,7 +9194,7 @@ async def einordnung_datei(request):
 
 
 def _kennung_lesbar(absender) -> str:
-    """`4917661696700@c.us` -> `+49 176 61696700`; LIDs bleiben, was sie sind."""
+    """`4917604069016@c.us` -> `+49 176 040690 16`; LIDs bleiben, was sie sind."""
     roh = str(absender or "")
     if "@lid" in roh:
         return roh

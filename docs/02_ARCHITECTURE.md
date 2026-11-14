@@ -840,17 +840,17 @@ weshalb der Betrieb erst wie Zufall aussah („manchmal kommt er zum Einordnen")
 * **Am Eingang** wurde zu wenig aufgelöst. `eingang_einordnen` verspricht dem
   Betreiber wörtlich „Künftige Nachrichten von dieser Kennung laufen zum Kontakt
   mit dieser Nummer". Für jede Kennung, die selbst schon eine Rufnummer war, war
-  das unwahr. Gemessen: am 01.09.2026 ordnete der Betreiber `491791714185` dem
-  Kontakt hinter `4917688014635@c.us` zu — bis zum 22.09.2026 landeten trotzdem
+  das unwahr. Gemessen: am 01.09.2026 ordnete der Betreiber `4917604069019` dem
+  Kontakt hinter `4917604069018@c.us` zu — bis zum 22.09.2026 landeten trotzdem
   **217 Nachrichten** desselben Menschen am Sammelkontakt.
 * **In der Anzeige** wurde zu viel aufgelöst. Am 22.09.2026 wanderte die neue
   Nummer an den Lead; damit zeigte dieselbe Zuordnung auf eine Nummer, die
   niemand mehr hat. Gemessen am laufenden Dienst am 23.09.2026:
 
   ```
-  Kennung              491791714185@c.us
-  direkt            -> Ivan, +491791714185        (sein Kontakt)
-  über lid_kanonisch -> 4917688014635@c.us -> None (niemand mehr)
+  Kennung              4917604069019@c.us
+  direkt            -> Ivan, +4917604069019        (sein Kontakt)
+  über lid_kanonisch -> 4917604069018@c.us -> None (niemand mehr)
   ```
 
   Das ist keine verpasste Auflösung, sondern eine **Umkehr**: ein Kontakt wurde

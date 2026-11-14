@@ -38,7 +38,7 @@ GEHEIMNIS = "test-geheimnis-0123456789"
 EIGENE = "4915100000000@c.us"
 # Die gemessene LID von Sophie und ihre gemessene Rufnummer (Plan T1).
 SOPHIE_LID = "183096603361451@lid"
-SOPHIE_NUMMER = "491729186846@c.us"
+SOPHIE_NUMMER = "4917604069015@c.us"
 # Ein ZWEITER Mensch mit einer eigenen LID. Zeigen beide auf dieselbe Nummer,
 # hat `_kanon` sie bis zur Fix-Runde zu einer einzigen Identitaet kollabiert
 # (Review-Befund H4) — Person B war im Posteingang nie sichtbar.
@@ -83,7 +83,7 @@ def sauber():
 # Helfer
 # ---------------------------------------------------------------------------
 
-def _lead(name="Sophie Beispiel", phone="+49 172 9186846"):
+def _lead(name="Sophie Beispiel", phone="+49 176 040690 15"):
     return str(server._q(
         "insert into leads (name, phone, source) values (%s, %s, 'whatsapp') "
         "returning id", (name, phone))[0]["id"])
@@ -183,7 +183,7 @@ def test_senderphone_schlaegt_die_gespeicherte_zuordnung():
     lead = _lead()
     _sammel()
     _zuordnung(SOPHIE_LID, "4915199999999@c.us")   # veraltet/falsch
-    status, _ = _eingang(senderPhone="491729186846")
+    status, _ = _eingang(senderPhone="4917604069015")
     assert status == 200
     zeilen = _zeilen("kundenantwort")
     assert str(zeilen[0]["lead_id"]) == lead
@@ -399,7 +399,7 @@ def test_zuordnen_zu_einem_bestehenden_kontakt_routet_die_naechste_nachricht():
 def test_zuordnen_ueber_eine_nummer_geht_auch_ohne_kontakt():
     _sammel()
     antwort = _einordnen(absender=SOPHIE_LID, entscheidung="zuordnen",
-                         telefon="+49 172 9186846")
+                         telefon="+49 176 040690 15")
     assert antwort["zugeordnet"]["telefon"] == SOPHIE_NUMMER
     assert server.lid_telefon(SOPHIE_LID) == SOPHIE_NUMMER
 
@@ -413,7 +413,7 @@ def test_eine_falsche_zuordnung_laesst_sich_korrigieren():
                telefon="+4915199999999")
     assert server.lid_telefon(SOPHIE_LID) == "4915199999999@c.us"
     _einordnen(absender=SOPHIE_LID, entscheidung="zuordnen",
-               telefon="+49 172 9186846")
+               telefon="+49 176 040690 15")
     assert server.lid_telefon(SOPHIE_LID) == SOPHIE_NUMMER
 
 
@@ -789,11 +789,11 @@ def test_ignorieren_speichert_die_genannte_kennung_nicht_die_nummer_dahinter():
 # ---------------------------------------------------------------------------
 
 def test_eine_jid_mit_buchstaben_landet_nicht_im_verlauf_eines_fremden():
-    """`"+" + _ziffern("49a17b29186846@c.us")` ergab genau Sophies Nummer —
+    """`"+" + _ziffern("49a17b604069015@c.us")` ergab genau Sophies Nummer —
     eine unsaubere Kennung buchte in die Historie eines echten Kunden."""
     lead = _lead()
     sammel = _sammel()
-    status, _ = _eingang(absender="49a17b29186846@c.us")
+    status, _ = _eingang(absender="49a17b604069015@c.us")
     assert status == 200
     zeile = _zeilen("kundenantwort")[0]
     assert str(zeile["lead_id"]) == sammel != lead
@@ -816,7 +816,7 @@ def test_ein_unsauberes_senderphone_faellt_auf_die_naechste_stufe_durch():
     """Es ist ein Hinweis von OpenWA, keine Wahrheit — und die Kennung selbst
     kennen wir immer noch."""
     sammel = _sammel()
-    status, _ = _eingang(senderPhone="49a17b29186846")
+    status, _ = _eingang(senderPhone="49a17b604069015")
     assert status == 200
     zeile = _zeilen("kundenantwort")[0]
     assert str(zeile["lead_id"]) == sammel
@@ -935,15 +935,15 @@ def test_signatur_ueberlebt_den_dekorator_und_werkzeug_ist_registriert():
 # Eine Zuordnung ergaenzt eine Nummer — sie ueberstimmt sie nicht (23.09.2026)
 # ---------------------------------------------------------------------------
 
-IVAN_NEU = "491791714185@c.us"
-IVAN_ALT = "4917688014635@c.us"
+IVAN_NEU = "4917604069019@c.us"
+IVAN_ALT = "4917604069018@c.us"
 
 
 def test_eine_veraltete_zuordnung_macht_aus_einem_kontakt_keinen_fremden():
     """Der vom Betreiber gemeldete Fall, gemessen im laufenden Betrieb.
 
-    Am 01.09.2026 hat er gesagt: „491791714185 gehoert zu dem Kontakt mit
-    4917688014635" — damals stand die alte Nummer am Lead. Am 22.09.2026
+    Am 01.09.2026 hat er gesagt: „4917604069019 gehoert zu dem Kontakt mit
+    4917604069018" — damals stand die alte Nummer am Lead. Am 22.09.2026
     wurde die NEUE Nummer an den Lead geschrieben; seither zeigt dieselbe
     Zuordnung auf eine Nummer, die niemand mehr hat.
 
@@ -952,10 +952,10 @@ def test_eine_veraltete_zuordnung_macht_aus_einem_kontakt_keinen_fremden():
     seiner EIGENEN, am Lead stehenden Nummer wieder in der Einordnungsliste.
     Gemessen am 23.09.2026 gegen den laufenden Dienst:
 
-        direkt              -> Ivan, +491791714185
-        ueber lid_kanonisch -> 4917688014635@c.us -> None
+        direkt              -> Ivan, +4917604069019
+        ueber lid_kanonisch -> 4917604069018@c.us -> None
     """
-    lead = _lead("Ivan", "+491791714185")
+    lead = _lead("Ivan", "+4917604069019")
     sammel = _sammel()
     _zuordnung(IVAN_NEU, IVAN_ALT)
     _kundenantwort(sammel, IVAN_NEU, text="Bin dabei")
@@ -977,7 +977,7 @@ def test_ignorieren_bleibt_verweigert_wenn_die_zuordnung_ins_leere_zeigt():
     `bestaetigt=True` stillgelegt werden koennen, und von seinen Nachrichten
     waere danach kein Wort mehr gespeichert worden.
     """
-    _lead("Ivan", "+491791714185")
+    _lead("Ivan", "+4917604069019")
     sammel = _sammel()
     _zuordnung(IVAN_NEU, IVAN_ALT)
     _kundenantwort(sammel, IVAN_NEU)
@@ -992,7 +992,7 @@ def test_eine_LID_ohne_zuordnung_bleibt_unveraendert_eine_rueckfrage():
     """Die Gegenprobe: an dem, was die Aufloesung wirklich braucht, aendert
     sich nichts. Eine `@lid` ist keine Rufnummer — ohne Zuordnung findet sie
     keinen Kontakt und wird gefragt, nicht geraten."""
-    _lead("Sophie Beispiel", "+49 172 9186846")
+    _lead("Sophie Beispiel", "+49 176 040690 15")
     sammel = _sammel()
     _kundenantwort(sammel, SOPHIE_LID)
     koerbe = _einordnen()

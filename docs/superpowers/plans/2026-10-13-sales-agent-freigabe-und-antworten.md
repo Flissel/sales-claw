@@ -382,12 +382,12 @@ git commit -m "feat(sales): mail_beantworten - Antwort auf Postfach-Mail als Ent
 - [ ] **Step 1: Failing Tests** in `test_ignorieren.py`, Fixture-Muster wie dort:
 ```python
 def test_freigabe_hebt_ignorieren_auf():
-    lead = _lead_mit_nummer("+4915752415952")
-    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415952@c.us", lead)
-    assert server.absender_ist_ignoriert("4915752415952@c.us")
+    lead = _lead_mit_nummer("+4917604069013")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4917604069013@c.us", lead)
+    assert server.absender_ist_ignoriert("4917604069013@c.us")
     a = json.loads(server.kontakt_freigeben(lead))
     assert "stand auf Ignorieren – aufgehoben" in a["ignorieren_aufgehoben"]
-    assert not server.absender_ist_ignoriert("4915752415952@c.us")
+    assert not server.absender_ist_ignoriert("4917604069013@c.us")
 
 
 def test_entwurf_freigabe_hebt_auf():
@@ -688,7 +688,7 @@ git commit -m "feat(sales): Agent-Regeln - Antworten nur mit Freigabe, Freigabe 
 - [ ] **Claims** in WORKBOARD und secondbrain, nur die eigene Zeile stagen.
 - [ ] **Push** von SC `feat/stufe-1-fundament`, dann auf der VM `ssh offload-vm 'cd ~/sales-claw && bash deploy/update.sh'`. Das spielt `provision.sql` je Laden ein und baut die Container neu. Erwartet: „ALLE PRUEFUNGEN GRUEN“.
 - [ ] **Cron-Änderung aus Task 8** auf der VM übernehmen, wie dort entschieden.
-- [ ] **Einmalige Reparatur** im Container `sales-mcp`: `eingang_einordnen(absender="4915752415952@c.us", entscheidung="beachten")` und dasselbe für `4915565715663@c.us`, beides über das Werkzeug. Danach gibt `absender_ist_ignoriert(...)` für beide False zurück.
+- [ ] **Einmalige Reparatur** im Container `sales-mcp`: `eingang_einordnen(absender="4917604069013@c.us", entscheidung="beachten")` und dasselbe für `4917604069012@c.us`, beides über das Werkzeug. Danach gibt `absender_ist_ignoriert(...)` für beide False zurück.
 - [ ] **Echter Lauf:**
   1. Eine Probe-Mail an das Betreiber-Postfach. Im Chat „dort antworten: Danke, passt“, der Agent nutzt `mail_beantworten`, zeigt den Entwurf, dann „ja“, dann „Ist raus“. Die Mail kommt im selben Verlauf an (Header prüfen).
   2. Ein Auftrag an einen Kontakt auf „manuell“ mit freigegebener WhatsApp ergibt einen Entwurf `pending` mit Hinweis.
