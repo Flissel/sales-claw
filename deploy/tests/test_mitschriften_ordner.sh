@@ -32,8 +32,8 @@ for d in sales-termine sales-ui sales-mcp; do
   b="$(block "$d")"
   echo "$b" | grep -qE '^      (- )?MITSCHRIFTEN_PFAD[=:][[:space:]]*/mitschriften[[:space:]]*$' \
     || fehler "$d: MITSCHRIFTEN_PFAD=/mitschriften fehlt"
-  echo "$b" | grep -qE '^      - \$\{MITSCHRIFTEN_ORDNER:-\./laeden-daten/sales/mitschriften\}:/mitschriften[[:space:]]*$' \
-    || fehler "$d: Volume \${MITSCHRIFTEN_ORDNER:-./laeden-daten/sales/mitschriften}:/mitschriften (rw) fehlt"
+  echo "$b" | grep -qE '^      - \$\{MITSCHRIFTEN_ORDNER:-\./laeden-daten/\$\{LADEN_PRAEFIX:-sales\}/mitschriften\}:/mitschriften[[:space:]]*$' \
+    || fehler "$d: Volume \${MITSCHRIFTEN_ORDNER:-./laeden-daten/\${LADEN_PRAEFIX:-sales}/mitschriften}:/mitschriften (rw) fehlt"
 done
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
@@ -57,6 +57,25 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     echo "$eintrag" | grep -q 'read_only' && fehler "$d: /mitschriften ist read_only (muss beschreibbar sein)"
     echo "$eintrag" | grep -q 'laeden-daten.probe.mitschriften' \
       || fehler "$d: Quelle folgt MITSCHRIFTEN_ORDNER nicht: $(echo "$eintrag" | grep source)"
+  done
+  # Fehlt MITSCHRIFTEN_ORDNER in der .env (erstes Update nach dem Merge, update.sh
+  # prueft noch mit den alten Regeln), faellt Compose auf den Ordner des EIGENEN
+  # Ladens zurueck, nie auf den des Basis-Ladens.
+  quelle() { # env-datei dienst -> gerenderte Quelle des /mitschriften-Volumes
+    ( cd "$WURZEL" && docker compose -f "$COMPOSE" --env-file "$1" config ) 2>/dev/null \
+      | sed 's/\r$//' | awk -v d="$2" '
+          /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { aktiv = ($1 == d ":") }
+          aktiv && /^      - type: / { blk = "" }
+          aktiv { blk = blk $0 "\n"; if ($0 ~ /target: \/mitschriften$/ && !fertig) { print blk; fertig = 1 } }' \
+      | sed -n 's/^ *source: //p'
+  }
+  grep -v '^MITSCHRIFTEN_ORDNER=\|^LADEN_PRAEFIX=' "$T/compose.env" > "$T/ohne.env"
+  cp "$T/ohne.env" "$T/ivan.env"; echo "LADEN_PRAEFIX=ivan" >> "$T/ivan.env"
+  for d in sales-termine sales-ui sales-mcp; do
+    q="$(quelle "$T/ivan.env" "$d")"
+    case "$q" in */laeden-daten/ivan/mitschriften) ;; *) fehler "$d: ohne MITSCHRIFTEN_ORDNER, mit LADEN_PRAEFIX=ivan ist die Quelle '$q' (erwartet .../laeden-daten/ivan/mitschriften)";; esac
+    q="$(quelle "$T/ohne.env" "$d")"
+    case "$q" in */laeden-daten/sales/mitschriften) ;; *) fehler "$d: Basis-Laden ohne Angaben: Quelle '$q' (erwartet .../laeden-daten/sales/mitschriften)";; esac
   done
   echo "OK: docker compose config gueltig"
 else
@@ -181,5 +200,28 @@ aus="$(PATH="$T/bin:$PATH" bash "$B/deploy/sicherung.sh" "$B/z" 2>&1 </dev/null 
 echo "$aus" | grep -q '^FEHLER: ivan hat kein MITSCHRIFTEN_ORDNER' || fehler "sicherung: Laden ohne Zeile nicht gemeldet ($aus)"
 ls "$B"/z/*/sales/mitschriften.tar.gz >/dev/null 2>&1 || fehler "sicherung: Basis-Laden ohne mitschriften.tar.gz"
 ls "$B"/z/*/ivan/mitschriften.tar.gz >/dev/null 2>&1 && fehler "sicherung: Laden ohne Zeile sicherte den Ordner des Basis-Ladens"
+
+# 6. sicherung.sh: tar Exit 1 ("Datei geaendert") ist kein Abbruch, Exit 2 zaehlt als FEHLER.
+mkdir -p "$T/tarbin"
+cat > "$T/tarbin/tar" <<'STUB'
+#!/bin/sh
+# Echtes tar, danach fuer das Mitschriften-Archiv den Code aus TAR_RC melden.
+/usr/bin/tar "$@"; rc=$?
+case "$*" in *mitschriften.tar.gz*) [ "$rc" -eq 0 ] && exit "${TAR_RC:-0}" ;; esac
+exit "$rc"
+STUB
+chmod +x "$T/tarbin/tar"
+for rc in 1 2; do
+  neuer_baum s2; fremd "$B/laeden-daten/sales/mitschriften"
+  aus="$(TAR_RC=$rc PATH="$T/tarbin:$T/bin:$PATH" bash "$B/deploy/sicherung.sh" "$B/z" 2>&1 </dev/null && echo "RC=0" || echo "RC=$?")"
+  ls "$B"/z/*/sales/mitschriften.tar.gz >/dev/null 2>&1 || fehler "sicherung: tar-Exit $rc: Archiv fehlt ($aus)"
+  if [ "$rc" = 1 ]; then
+    echo "$aus" | grep -q '^HINWEIS: sales/mitschriften' || fehler "sicherung: tar-Exit 1 nicht als Hinweis gemeldet ($aus)"
+    echo "$aus" | grep -q '^ABBRUCH' && fehler "sicherung: tar-Exit 1 brach die Sicherung ab ($aus)"
+    echo "$aus" | grep -q '^FEHLER: tar fuer' && fehler "sicherung: tar-Exit 1 als Fehler gezaehlt ($aus)"
+  else
+    echo "$aus" | grep -q '^FEHLER: tar fuer sales/mitschriften endete mit Code 2' || fehler "sicherung: tar-Exit 2 nicht als FEHLER gemeldet ($aus)"
+  fi
+done
 
 echo "OK: mitschriften-ordner"

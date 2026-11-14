@@ -97,7 +97,21 @@ for P in $PRAEFIXE; do
     dir="${dir:-$standard}"
     case "$dir" in /*) ;; *) dir="$WURZEL/${dir#./}" ;; esac
     if [ -d "$dir" ]; then
-      tar czf "$UNTERORDNER/$vorgabe.tar.gz" -C "$dir" .
+      if [ "$v" = MITSCHRIFTEN_ORDNER ]; then
+        # Der Taktgeber schreibt hier laufend; tar meldet "Datei beim Lesen geaendert"
+        # mit Exit 1 - das ist kein Fehler (unter set -e wuerde es die ganze Nacht
+        # beenden). Ab Exit 2 ist das Archiv unbrauchbar: FEHLER zaehlen, weitermachen.
+        rc=0
+        tar czf "$UNTERORDNER/$vorgabe.tar.gz" -C "$dir" . || rc=$?
+        if [ "$rc" -ge 2 ]; then
+          echo "FEHLER: tar fuer $P/mitschriften endete mit Code $rc - Archiv unbrauchbar." >&2
+          FEHLER=$((FEHLER + 1))
+        elif [ "$rc" -eq 1 ]; then
+          echo "HINWEIS: $P/mitschriften waehrend der Sicherung veraendert (tar Exit 1) - Archiv bleibt gueltig." >&2
+        fi
+      else
+        tar czf "$UNTERORDNER/$vorgabe.tar.gz" -C "$dir" .
+      fi
     fi
   done
 

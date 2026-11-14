@@ -48,7 +48,7 @@
 
 **Interfaces:**
 - Produces: Spalten auf `termin_mitschriften`: `rubrik text null`, `rubrik_manuell boolean not null default false`, `bericht_pfad text null` (relativ zu `/mitschriften`, Form `<Rubrik>/<dateiname>`), `bericht_am timestamptz null`, `bericht_stand text null`, `einordnung_versuche integer not null default 0`, `einordnung_am timestamptz null`.
-- Produces: in beiden Containern `sales-termine` und `sales-ui` Umgebungsvariable `MITSCHRIFTEN_PFAD=/mitschriften` und Volume `${MITSCHRIFTEN_ORDNER:-./laeden-daten/sales/mitschriften}:/mitschriften` (rw).
+- Produces: in beiden Containern `sales-termine` und `sales-ui` Umgebungsvariable `MITSCHRIFTEN_PFAD=/mitschriften` und Volume `${MITSCHRIFTEN_ORDNER:-./laeden-daten/${LADEN_PRAEFIX:-sales}/mitschriften}:/mitschriften` (rw).
 
 - [ ] **Step 1: Failing tests schreiben**
   - `test_termin_schema.py`: die erwartete Spaltenmenge für `termin_mitschriften` um die sieben Spalten erweitern (gleiches Muster wie Z. 20/33); `test_mitschriften_spalten_vorgaben`: neue Zeile einfügen → `rubrik_manuell is False`, `einordnung_versuche == 0`, `rubrik/bericht_pfad/bericht_am/bericht_stand/einordnung_am is None`.
@@ -259,7 +259,7 @@
 
 1. Claim in `00_Meta/002_Koordination_Live.md` setzen und committen.
 2. Sicherung von `sales`.
-3. `~/sales-claw/laeden-daten/sales/mitschriften` anlegen; jede weitere Laden-.env (`ivan`, `sophie`, …) um `MITSCHRIFTEN_ORDNER` ergänzen (sonst weist `update.sh` sie ab).
-4. `provision.sql`, dann `update.sh` gezielt für `sales-termine` und `sales-ui`; Smoke-Test.
+3. `~/sales-claw/laeden-daten/sales/mitschriften` anlegen; in JEDE weitere Laden-.env (`ivan`, `sophie`, …) VOR `update.sh` die Zeile `MITSCHRIFTEN_ORDNER=./laeden-daten/<name>/mitschriften` eintragen. Grund: das erste Update prüft die Laden-.envs noch mit den alten Regeln (vor `git merge`), und ohne die Zeile weist das zweite Update sie ab; der Compose-Standard fällt ohnehin auf den Ordner des eigenen Ladens (`./laeden-daten/${LADEN_PRAEFIX:-sales}/mitschriften`) zurück, nie auf den des Basis-Ladens.
+4. `provision.sql`, dann `update.sh` gezielt für `sales-mcp`, `sales-termine` und `sales-ui`; Smoke-Test.
 5. Der Takt ordnet den Bestand von allein nacheinander ein (eine Mitschrift je Runde). Danach prüfen: die zwei Diana-Termine (`3c9afada…`, `54ac1821…`) liegen unter „Kurse“; sonst in der Oberfläche verschieben.
 6. Felix öffnet einen Bericht unter „Mitschriften“ und druckt ihn testweise als PDF.

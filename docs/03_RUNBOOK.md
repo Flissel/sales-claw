@@ -4192,7 +4192,7 @@ Kundendaten, nicht weitergeben“). Die Dateien sind die Ablage, die Datenbank f
 (`termin_mitschriften.rubrik`, `rubrik_manuell`, `bericht_pfad`, `bericht_am`, `bericht_stand`).
 
 **Wo.** Auf dem Host `MITSCHRIFTEN_ORDNER` des Ladens (Basis-Laden `./laeden-daten/sales/mitschriften`, jeder weitere
-Laden `./laeden-daten/<name>/mitschriften`), im Container `/mitschriften` (`MITSCHRIFTEN_PFAD`). Darin ein Unterordner je
+Laden `./laeden-daten/<name>/mitschriften`), im Container `/mitschriften` (`MITSCHRIFTEN_PFAD`). Fehlt die Zeile in der .env, nimmt Compose `./laeden-daten/<LADEN_PRAEFIX>/mitschriften` (nie den Ordner des Basis-Ladens). Darin ein Unterordner je
 Rubrik, darin `JJJJ-MM-TT_HHMM_<titel-kurz>_<uid8>.html` (`uid8` = gekürzter sha256 der uid, nie die uid selbst).
 Eingehängt (beschreibbar) in `sales-termine` (Ablage), `sales-ui` (Oberfläche, Aufnahme verwerfen) und `sales-mcp`
 (Löschantrag über das MCP-Werkzeug `loeschantrag_vermerken`).

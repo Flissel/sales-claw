@@ -309,7 +309,7 @@ services:
       - ./auftraege:/auftraege
       # Terminberichte (14.11.2026): beschreibbar, weil der Loeschantrag hier
       # laeuft und die Bericht-Datei mit der Mitschrift loescht (DSGVO).
-      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/sales/mitschriften}:/mitschriften
+      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/${LADEN_PRAEFIX:-sales}/mitschriften}:/mitschriften
       # Chat-Eingang (14.10.2026): Bilder/Dateien, die im Chat beim Agenten
       # ankommen, legt der Gateway unter media/inbound seines Volumes ab.
       # `medien_aus_chat_uebernehmen` kopiert von hier in media-erzeugt —
@@ -837,7 +837,7 @@ services:
     volumes:
       # MITSCHRIFTEN JE LADEN (14.11.2026), wie die Medien: Vorgabe gehoert dem
       # Basis-Laden; update.sh weist andere Laeden ohne eigenen Ordner ab.
-      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/sales/mitschriften}:/mitschriften
+      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/${LADEN_PRAEFIX:-sales}/mitschriften}:/mitschriften
 
   # KI-Tor (12.11.2026, sales-ki/ki_tor.py): Uebergang des Betreibers - bis
   # eigene Server mit lokalem Modell da sind, beantwortet Claude Code (Abo,
@@ -1185,7 +1185,7 @@ services:
     volumes:
       # MITSCHRIFTEN JE LADEN (14.11.2026), wie die Medien: Vorgabe gehoert dem
       # Basis-Laden; update.sh weist andere Laeden ohne eigenen Ordner ab.
-      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/sales/mitschriften}:/mitschriften
+      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/${LADEN_PRAEFIX:-sales}/mitschriften}:/mitschriften
       # DER MEDIENORDNER — und hier OHNE `:ro`, als einziger Dienst im Stack.
       #
       # Das ist eine bewusste Aenderung an einem Grundsatz. Bisher war

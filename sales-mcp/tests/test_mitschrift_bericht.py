@@ -103,6 +103,15 @@ def test_bericht_nur_gepruefte_bilder():
     assert mb.bericht_html(UID).count("<img") == 1
 
 
+def test_bericht_meta_ohne_leere_teile():
+    assert mb._verbinden("", "", "") == ""
+    assert mb._verbinden("", "2 Segmente", "") == "2 Segmente"
+    assert mb._verbinden("14.11.2026", "", "Kurse") == "14.11.2026 · Kurse"
+    _mitschrift(rubrik=None)
+    html = mb.bericht_html(UID)
+    assert "<p class=\"meta\"> · " not in html and " ·  · " not in html
+
+
 def test_bericht_ohne_fertige_auswertung():
     _mitschrift(status="offen")
     with pytest.raises(ValueError):
@@ -233,7 +242,7 @@ def test_abgleich_loescht_waisen_und_setzt_fehlende_zurueck(ablage, caplog):
     jung.write_text("x")
     vorher = (ablage / gebucht).stat().st_mtime_ns
 
-    assert mb.abgleichen() == {"geloescht": 2, "zurueckgesetzt": 1, "ordner_entfernt": 1}
+    assert mb.abgleichen() == {"geloescht": 2, "tmp_geloescht": 0, "zurueckgesetzt": 1, "ordner_entfernt": 1}
     assert not waise.exists() and not waise_alt.exists() and not (ablage / "Alt").exists()
     assert notiz.exists() and oben.exists() and jung.exists()
     # fehlende Datei: nur die Buchung zuruecksetzen, neu erzeugt der Taktgeber (einer je Runde)
@@ -245,7 +254,29 @@ def test_abgleich_loescht_waisen_und_setzt_fehlende_zurueck(ablage, caplog):
     for geheim in ("deadbeef", "0badc0de", "geheimer-titel", "Kurse", str(ablage)):
         assert geheim not in caplog.text, geheim
     # zweiter Lauf: nichts mehr zu tun
-    assert mb.abgleichen() == {"geloescht": 0, "zurueckgesetzt": 0, "ordner_entfernt": 0}
+    assert mb.abgleichen() == {"geloescht": 0, "tmp_geloescht": 0, "zurueckgesetzt": 0, "ordner_entfernt": 0}
+
+
+def test_abgleich_raeumt_alte_tmp_dateien(ablage, caplog):
+    caplog.set_level("INFO")
+    _mitschrift(UID)
+    mb.ablegen(UID)
+    alt = ablage / "Kurse" / "X_deadbeef.html.tmp"
+    alt.write_text("x")
+    _alt(alt)
+    jung = ablage / "Kurse" / "Y_cafebabe.html.tmp"   # Schonfrist: bleibt
+    jung.write_text("x")
+    fremd = ablage / "Kurse" / "notiz.tmp"            # kein Berichtsname: bleibt
+    fremd.write_text("x")
+    _alt(fremd)
+    oben = ablage / "Z_deadbeef.html.tmp"             # kein Rubrikordner: bleibt
+    oben.write_text("x")
+    _alt(oben)
+    r = mb.abgleichen()
+    assert r["tmp_geloescht"] == 1 and r["geloescht"] == 0
+    assert not alt.exists()
+    assert jung.exists() and fremd.exists() and oben.exists()
+    assert "deadbeef" not in caplog.text
 
 
 def test_abgleich_ueberspringt_ohne_erwartete_datei(ablage, monkeypatch):

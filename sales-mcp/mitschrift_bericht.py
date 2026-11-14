@@ -129,6 +129,11 @@ def _liste(wert) -> list:
     return wert if isinstance(wert, list) else []
 
 
+def _verbinden(*teile: str) -> str:
+    """Nur nicht leere Teile verbinden (sonst beginnt die Zeile mit ' · ')."""
+    return " · ".join(t for t in teile if t)
+
+
 def bericht_html(uid: str) -> str:
     e = ui_termin._e
     a = server._q("select titel, thema, beginn, plattform, bilder_uebersprungen "
@@ -177,7 +182,10 @@ def bericht_html(uid: str) -> str:
         for s in seg)
     titel = a["titel"] or a["thema"] or "Termin"
     datum = a["beginn"].astimezone(TZ).strftime("%d.%m.%Y, %H:%M") if a["beginn"] else ""
-    kopf = " · ".join(x for x in (e(datum), e(a["plattform"] or ""), e(m["rubrik"] or "")) if x)
+    kopf = _verbinden(e(datum), e(a["plattform"] or ""), e(m["rubrik"] or ""))
+    meta = _verbinden(
+        kopf, f"{len(seg)} Segmente", f"{len(bilder)} Standbilder",
+        f'{int(a["bilder_uebersprungen"] or 0)} heikle Bildschirme nicht gespeichert')
     erstellt = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
     return (
         '<!doctype html><html lang="de"><head><meta charset="utf-8">\n'
@@ -185,8 +193,7 @@ def bericht_html(uid: str) -> str:
         f'<title>Terminbericht – {e(titel)}</title>\n<style>\n{CSS}\n</style></head><body>\n'
         '<p class="intern">Intern – enthält Kundendaten, nicht weitergeben</p>\n'
         f'<h1>{e(titel)}</h1>\n'
-        f'<p class="meta">{kopf} · {len(seg)} Segmente · {len(bilder)} Standbilder'
-        f' · {int(a["bilder_uebersprungen"] or 0)} heikle Bildschirme nicht gespeichert</p>\n'
+        f'<p class="meta">{meta}</p>\n'
         f'<h2>Auswertung</h2>\n<div>{ui_termin._md(m["auswertung_md"] or "")}</div>\n'
         '<h2>Bilder je Thema</h2>\n'
         f'<p class="meta">Höchstens {MAX_JE_THEMA} Bilder je Thema, verkleinert.</p>\n'
@@ -286,6 +293,8 @@ def verschieben(uid: str, rubrik: str) -> str | None:
 # ---------- Abgleich Datei <-> Buchung (Taktgeber, hoechstens stuendlich) ----------
 
 BERICHT_MUSTER = re.compile(r"^.+_[0-9a-f]{8}\.html$")
+# Rest eines abgebrochenen ablegen() (Absturz zwischen Schreiben und os.replace)
+TMP_MUSTER = re.compile(r"^.+_[0-9a-f]{8}\.html\.tmp$")
 # Eben geschriebene Dateien bleiben: ablegen() schreibt erst die Datei, dann die Buchung.
 SCHONFRIST_S = 600
 
@@ -316,10 +325,13 @@ def abgleichen() -> dict:
                         "where bericht_pfad is not null order by uid")
     erwartet = {z["bericht_pfad"] for z in gebucht}
     dateien: dict[str, Path] = {}
+    tmps: list[Path] = []
     for unter in _unterordner(basis):
         for f in unter.iterdir():
             if BERICHT_MUSTER.match(f.name) and f.is_file() and not f.is_symlink():
                 dateien[f"{unter.name}/{f.name}"] = f
+            elif TMP_MUSTER.match(f.name) and f.is_file() and not f.is_symlink():
+                tmps.append(f)
     if not erwartet & dateien.keys():
         # ohne jede Buchung ist das normal (noch kein Bericht), sonst ein Warnzeichen
         (log.warning if erwartet else log.info)(
@@ -327,7 +339,7 @@ def abgleichen() -> dict:
             len(erwartet))
         return {"uebersprungen": "keine erwartete Datei"}
 
-    geloescht = zurueck = entfernt = 0
+    geloescht = tmp_geloescht = zurueck = entfernt = 0
     grenze = time.time() - SCHONFRIST_S
     for rel, f in dateien.items():
         if rel in erwartet:
@@ -339,6 +351,15 @@ def abgleichen() -> dict:
             geloescht += 1
         except OSError as err:
             log.warning("Abgleich: Waise nicht entfernt (%s)", type(err).__name__)
+
+    for f in tmps:
+        try:
+            if f.stat().st_mtime > grenze:
+                continue
+            f.unlink()
+            tmp_geloescht += 1
+        except OSError as err:
+            log.warning("Abgleich: Temp-Datei nicht entfernt (%s)", type(err).__name__)
 
     for z in gebucht:
         ziel = sicherer_pfad(z["bericht_pfad"])
@@ -355,6 +376,6 @@ def abgleichen() -> dict:
             entfernt += 1
         except OSError:
             pass
-    log.info("Abgleich: geloescht=%d zurueckgesetzt=%d ordner_entfernt=%d",
-             geloescht, zurueck, entfernt)
-    return {"geloescht": geloescht, "zurueckgesetzt": zurueck, "ordner_entfernt": entfernt}
+    log.info("Abgleich: geloescht=%d tmp_geloescht=%d zurueckgesetzt=%d ordner_entfernt=%d",
+             geloescht, tmp_geloescht, zurueck, entfernt)
+    return {"geloescht": geloescht, "tmp_geloescht": tmp_geloescht, "zurueckgesetzt": zurueck, "ordner_entfernt": entfernt}
