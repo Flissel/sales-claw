@@ -1,0 +1,2 @@
+sales-mcp/konzept_lesen.py -text
+sales-mcp/tests/konzept_vektoren.json -text
