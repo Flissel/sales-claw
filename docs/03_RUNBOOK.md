@@ -3977,6 +3977,47 @@ entfernte Tracks mit `mediaType` `screenshare`, nie Kameras und nie Ton. Es ents
 siehe Abschnitt KI-Tor und `docs/06_DSGVO.md`). Die Vektoren rechnet fastembed lokal im Container; kein Bild geht
 anderswohin.
 
+**Mehrere Freigaben.** Teilen mehrere Teilnehmer gleichzeitig, erfasst der Beobachter bis zu 3 Bildschirme (nach
+Quellname sortiert). Drossel und Änderungsprüfung laufen je Quelle, die Obergrenze je Akte gilt gemeinsam. Das
+Bild-Ende (`bis`) wird je Freigeber geführt. Empfangen werden nur die erfassten Bildschirm-Quellen, nie Kamera oder Ton.
+Bekannte Grenzen: bei mehr als 3 Freigaben kann eine spätere eine laufende verdrängen; zwei Freigeber mit gleichem
+Anzeigenamen schließen ihr Bild-Ende gemeinsam.
+
+**Heikle Bildschirme (Anmeldung, Bezahlung, Postfach).** Zwei Schichten verhindern, dass sie in der Akte bleiben:
+
+- *Schicht A, lokal (`sales-mcp/heikel.py`):* ein CLIP-Zero-Shot-Vergleich im Container, bevor ein Bild gespeichert
+  wird. Schwelle `AUGE_HEIKEL_ABSTAND` (Vorgabe 0,045), am 14.11.2026 an 356 echten Standbildern kalibriert
+  (`scripts/heikel_kalibrieren.py`, nur lesend): **Trefferquote nur 14,8 %**, Fehlalarme 1,4 %. Schicht A fängt also nur
+  einen kleinen Teil; sie ist ein Vorfilter, keine Garantie. Fällt das Modell aus, wird das Bild nicht gespeichert
+  (fail-closed); ohne Prüfer startet der Dienst nicht.
+- *Schicht B, Bildmodell (`sales-mcp/bild_arbeit.py`), die eigentliche Absicherung:* beim Beschreiben antwortet das
+  Modell (über das KI-Tor) bei Anmelde-, Zahlungs- und Postfach-Bildschirmen mit HEIKEL; dann wird die **ganze Zeile**
+  in `termin_bilder` gelöscht (Bild, Beschreibung, beide Vektoren). Bis dahin liegt das Bild einige Sekunden in der
+  Datenbank, und es **ist für diese Prüfung an das KI-Tor gegangen** (siehe `docs/06_DSGVO.md`).
+
+Beide Schichten zählen in `termin_akten.bilder_uebersprungen`; der Reiter „Bildschirm“ der Akte zeigt „N heikle
+Bildschirme (Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert.“ Kalibrieren (einmalig, Einmal-Container,
+nur lesend): `ssh offload-vm 'cd ~/sales-claw && docker compose run --rm --no-deps -T sales-auge timeout 900 python -' < scripts/heikel_kalibrieren.py`.
+
+**Mitschrift-Bereinigung.** Vor dem Ablegen (`termin_takt._mitschrift_ablegen`, Modul
+`sales-mcp/mitschrift_bereinigen.py`) werden Whisper-Halluzinationen entfernt („Untertitel im Auftrag des ZDF“,
+Amara, „Danke fürs Zuschauen“ u. ä.), Sprechernamen vereinheitlicht (Betreiber über `BETREIBER_NAME`, Vorgabe
+„Felix Baumann“; nur wenn alle Wörter des Namens im Betreibernamen stecken, mehrdeutige Kurznamen bleiben), ein leerer
+Sprecher zwischen zwei gleichen Sprechern (≤ 3 s) gefüllt und Bruchstücke desselben Sprechers (≤ 6 s Abstand,
+höchstens 400 Zeichen) verbunden. In der Auswertung (`sales-mcp/auswertung.py`) werden reine Bild-Abschnitte
+eingeklappt, und „Beteiligte“ führt keine Bots („Laura (Bildschirm)“, „VibeMind Mitschrift“ …), außer sie haben
+gesprochen; Doppelte werden zusammengeführt.
+
+**Neu auswerten** (bereits abgelegte Mitschrift, nur solange kein Entwurf verschickt ist; sonst Abbruch):
+
+    ssh offload-vm 'docker exec -i sales-termine timeout 120 python - <uid>' < scripts/neu_auswerten.py
+
+`<uid>` ist die volle Akten-uid oder ein eindeutiger Präfix ab 8 Zeichen (0 oder mehrere Treffer: Abbruch). Das Skript
+bereinigt die Segmente, setzt `auswertung_status='offen'` und `auswertung_versuche=0` und leert die alte Auswertung
+(sie verwiese auf Segment-Nummern der alten Fassung); der Taktgeber wertet beim nächsten Durchlauf aus. Ausgabe nur
+Zähler: Segmente, Anteil Sprecher „?“ und Anteil Segmente mit höchstens 2 Wörtern, je vorher/nachher. Immer mit
+`timeout` im Container, nie eine Suche ab `/`.
+
 **Grenzen und Aufbau.** `mem_limit` 2560m (Leerlauf mit Modellen gemessen 1,54 GiB), `cpus` 1,5 (Chromium mit einem Termin ≈ 0,5 GB), läuft als uid 10001. Der
 HTTP-Teil (`GET /gesund`, `POST /suche`, Port `AUGE_PORT`, Vorgabe 8790) ist nur im Compose-Netz erreichbar. Die
 Umgebung ist bewusst schmal (DB, KI-Tor, Jitsi-Hosts), ohne den Anker `x-sales-mcp-umgebung`: keine Kanal-Schlüssel,
