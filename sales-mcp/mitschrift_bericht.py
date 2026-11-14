@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -260,3 +261,79 @@ def ablegen(uid: str) -> str | None:
         datei_entfernen(z["bericht_pfad"])
     log.info("Bericht abgelegt uid=%s", uid8(uid))
     return rel
+
+
+# ---------- Abgleich Datei <-> Buchung (Taktgeber, hoechstens stuendlich) ----------
+
+BERICHT_MUSTER = re.compile(r"^.+_[0-9a-f]{8}\.html$")
+# Eben geschriebene Dateien bleiben: ablegen() schreibt erst die Datei, dann die Buchung.
+SCHONFRIST_S = 600
+
+
+def _beschreibbar(basis: Path) -> bool:
+    return basis.is_dir() and os.access(basis, os.W_OK | os.X_OK)
+
+
+def _unterordner(basis: Path) -> list[Path]:
+    return [d for d in basis.iterdir()
+            if d.is_dir() and not d.is_symlink() and not d.name.startswith(".")]
+
+
+def abgleichen() -> dict:
+    """Waisen loeschen, fehlende Berichte neu erzeugen, leere Rubrikordner entfernen.
+
+    Vorsichtig: nur Dateien nach BERICHT_MUSTER in direkten Unterordnern; laeuft
+    nicht, wenn der Ordner fehlt, nicht beschreibbar ist oder keine einzige
+    erwartete Datei enthaelt (Zeichen fuer einen falsch eingehaengten Ordner).
+    """
+    basis = ordner()
+    if not _beschreibbar(basis):
+        log.warning("Abgleich uebersprungen: Ablage fehlt oder ist nicht beschreibbar")
+        return {"uebersprungen": "ordner"}
+    gebucht = server._q("select uid, bericht_pfad from termin_mitschriften "
+                        "where bericht_pfad is not null order by uid")
+    erwartet = {z["bericht_pfad"] for z in gebucht}
+    dateien: dict[str, Path] = {}
+    for unter in _unterordner(basis):
+        for f in unter.iterdir():
+            if BERICHT_MUSTER.match(f.name) and f.is_file() and not f.is_symlink():
+                dateien[f"{unter.name}/{f.name}"] = f
+    if not erwartet & dateien.keys():
+        # ohne jede Buchung ist das normal (noch kein Bericht), sonst ein Warnzeichen
+        (log.warning if erwartet else log.info)(
+            "Abgleich uebersprungen: keine erwartete Datei in der Ablage (gebucht=%d)",
+            len(erwartet))
+        return {"uebersprungen": "keine erwartete Datei"}
+
+    geloescht = neu = entfernt = 0
+    grenze = time.time() - SCHONFRIST_S
+    for rel, f in dateien.items():
+        if rel in erwartet:
+            continue
+        try:
+            if f.stat().st_mtime > grenze:
+                continue
+            f.unlink()
+            geloescht += 1
+        except OSError as err:
+            log.warning("Abgleich: Waise nicht entfernt (%s)", type(err).__name__)
+
+    for z in gebucht:
+        ziel = sicherer_pfad(z["bericht_pfad"])
+        if ziel is not None and ziel.is_file():
+            continue
+        try:
+            if ablegen(z["uid"]):
+                neu += 1
+        except Exception as err:  # noqa: BLE001 - ein Bericht stoppt den Rest nicht
+            log.warning("Abgleich: Bericht uid=%s nicht erzeugt (%s)",
+                        uid8(z["uid"]), type(err).__name__)
+
+    for unter in _unterordner(basis):
+        try:
+            unter.rmdir()  # nur leere
+            entfernt += 1
+        except OSError:
+            pass
+    log.info("Abgleich: geloescht=%d neu=%d ordner_entfernt=%d", geloescht, neu, entfernt)
+    return {"geloescht": geloescht, "neu": neu, "ordner_entfernt": entfernt}

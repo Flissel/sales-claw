@@ -4184,6 +4184,51 @@ Einzelne Bilder löscht der Betreiber in der Akte (Knopf „Löschen“, Aktion 
 | 6 | Schalter aus: kein Beobachter; Schalter während des Termins aus: Beobachter geht binnen einer Runde | |
 | 7 | Löschen der Mitschrift entfernt Bilder, Beschreibungen und Vektoren | |
 
+## Meeting-Mittelpunkt: Mitschriften-Ablage (seit 14.11.2026)
+
+Zu jeder Mitschrift mit fertiger Auswertung legt der Taktgeber `sales-termine` (Schritt 7, `termin_takt._ablage`) einen
+internen HTML-Bericht als Datei ab (Auswertung, geprüfte Standbilder je Thema, Transkript; oben „Intern – enthält
+Kundendaten, nicht weitergeben“). Die Dateien sind die Ablage, die Datenbank führt Buch
+(`termin_mitschriften.rubrik`, `rubrik_manuell`, `bericht_pfad`, `bericht_am`, `bericht_stand`).
+
+**Wo.** Auf dem Host `MITSCHRIFTEN_ORDNER` des Ladens (Basis-Laden `./laeden-daten/sales/mitschriften`, jeder weitere
+Laden `./laeden-daten/<name>/mitschriften`), im Container `/mitschriften` (`MITSCHRIFTEN_PFAD`). Darin ein Unterordner je
+Rubrik, darin `JJJJ-MM-TT_HHMM_<titel-kurz>_<uid8>.html` (`uid8` = gekürzter sha256 der uid, nie die uid selbst).
+
+**Je Runde (Vorgabe 30 s)** höchstens eine KI-Einordnung und höchstens ein Bericht:
+
+- *Einordnung:* Mitschrift ohne Rubrik, oder `Unsortiert` (nicht von Hand gesetzt) nach einem KI-Fehlschlag – höchstens
+  3 Versuche, je 1 h Abstand. Dieselbe KI wie die Auswertung; sie wartet wie die Auswertung, wenn ein Termin mit Bot in
+  15 Minuten beginnt oder läuft, und solange die KI nicht erreichbar ist (die Rubrik bleibt dann leer). Eine von Hand
+  gesetzte Rubrik fasst die KI nie an.
+- *Bericht:* neu, wenn noch keiner da ist, die Auswertung neu fertig ist (auch nach `scripts/neu_auswerten.py`),
+  Standbilder gelöscht wurden (`bericht_stand` weicht ab) oder die Rubrik gewechselt hat (die alte Datei geht weg).
+  Scheitert ein Bericht, kommt diese Mitschrift erst nach einer Stunde wieder dran; die anderen laufen weiter.
+- *Abgleich (höchstens stündlich, erste Runde nach dem Start):* löscht Waisen – Dateien `*_<uid8>.html` in einem
+  Rubrikordner ohne Buchung, älter als 10 Minuten –, erzeugt gebuchte, aber fehlende Berichte neu und entfernt leere
+  Rubrikordner. Fremde Dateien bleiben. Er läuft **nicht**, wenn der Ordner fehlt, nicht beschreibbar ist oder keine
+  einzige erwartete Datei enthält (Zeichen für einen falsch eingehängten Ordner).
+
+**Löschen.** Jeder Weg, der eine Mitschrift löscht, löscht die Datei mit: `termin_akte.mitschrift_entfernen` (Aufnahme
+abgelehnt oder nachträglich verworfen, Löschantrag) und das Sicherheitsnetz `server._mitschriften_abraeumen`. Löschungen per
+Datenbank-Kaskade (Akte gelöscht) räumt der nächste Abgleich ab.
+
+**Sicherung.** `deploy/sicherung.sh` sichert den Ordner je Laden als `mitschriften.tar.gz` (`docs/04_BACKUP_RESTORE.md`).
+
+**Logs:** `docker logs --since 1h sales-termine | grep -iE "Mitschriften-Ablage|Abgleich|Bericht|einordnung"`. Sie
+enthalten nur gekürzte uid, Anzahlen und die Art von Fehlern – keine Titel, Namen, Rubrik-Namen oder Pfade.
+
+**Wenn etwas hakt**
+
+- `Mitschriften-Ablage fehlt oder ist nicht beschreibbar - Berichte warten`: Volume eingehängt, Rechte passend zum
+  Container-Benutzer? `docker exec sales-termine ls -ld /mitschriften`. Bis dahin ruhen Einordnung, Berichte und Abgleich.
+- `Abgleich uebersprungen: keine erwartete Datei in der Ablage (gebucht=N)` mit N > 0: Ordner falsch eingehängt oder
+  geleert. Es wird nichts gelöscht und nichts neu erzeugt. Ordner prüfen bzw. aus der Sicherung zurückspielen. Ist er
+  wirklich verloren, die Buchungen zurücksetzen – der Taktgeber legt dann je Runde einen Bericht neu ab:
+  `update termin_mitschriften set bericht_pfad = null, bericht_stand = null where bericht_pfad is not null;`
+  (im Schema des Ladens).
+- `Bericht uid=… fehlgeschlagen (<Fehlerart>)`: meist Rechte oder voller Datenträger; nach einer Stunde neuer Versuch.
+
 ## Video-Werkbank: Betrieb (seit 12.11.2026)
 
 Lange Erklärvideos (3 bis 5 Minuten) für den Laden. Der Betreiber bestellt im Chat ("Video zu Thema X"),

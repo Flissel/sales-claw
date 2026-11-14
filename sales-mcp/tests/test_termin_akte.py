@@ -603,3 +603,51 @@ def test_loeschantrag_sicherheitsnetz_loescht_bilder(monkeypatch):
     monkeypatch.setattr(termin_akte, "akten_eines_leads", lambda *a, **k: [])
     server._mitschriften_abraeumen(lead)
     assert (_bilder("a"), _bilder("b")) == (0, 1)
+
+
+# ---------- Mitschriften-Ablage: die Bericht-Datei geht mit ----------
+
+@pytest.fixture
+def ablage(monkeypatch, tmp_path):
+    monkeypatch.setenv("MITSCHRIFTEN_PFAD", str(tmp_path))
+    return tmp_path
+
+
+def _bericht(uid, ablage):
+    import mitschrift_bericht
+    server._q("insert into termin_mitschriften (uid, segmente, auswertung_status, "
+              "auswertung_json, auswertung_md, auswertung_am, rubrik) values "
+              "(%s, '[]'::jsonb, 'fertig', '{}'::jsonb, 'Ergebnis', now(), 'Kurse') "
+              "returning id", (uid,))
+    pfad = mitschrift_bericht.ablegen(uid)
+    assert pfad and (ablage / pfad).is_file()
+    return ablage / pfad
+
+
+def test_mitschrift_entfernen_loescht_bericht(ablage):
+    _akte_roh("a")
+    _akte_roh("b")
+    a, b = _bericht("a", ablage), _bericht("b", ablage)
+    termin_akte.mitschrift_entfernen("a")
+    assert not a.exists() and b.exists()
+    termin_akte.mitschrift_entfernen("a")      # nichts mehr da: still
+
+
+def test_aufnahme_beenden_loescht_bericht(ablage):
+    _akte_roh("a")
+    a = _bericht("a", ablage)
+    termin_akte.aufnahme_beenden("a", "Kunde hat abgelehnt")
+    assert not a.exists()
+
+
+@pytest.mark.parametrize("sicherheitsnetz", [False, True])
+def test_loeschantrag_loescht_bericht(ablage, monkeypatch, sicherheitsnetz):
+    lead = _lead()
+    _akte_roh("a", lead)
+    _akte_roh("b")
+    a, b = _bericht("a", ablage), _bericht("b", ablage)
+    if sicherheitsnetz:  # akten_eines_leads faellt aus: nur das Netz in server greift
+        monkeypatch.setattr(termin_akte, "akten_eines_leads", lambda *x, **k: [])
+    server._mitschriften_abraeumen(lead)
+    assert not a.exists() and b.exists()
+    assert server._q("select count(*) as n from termin_mitschriften where uid = 'a'")[0]["n"] == 0

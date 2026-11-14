@@ -5,6 +5,7 @@ Datenbank sales_test; keine Dienste. Ablage: tmp_path (MITSCHRIFTEN_PFAD).
 import io
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -197,3 +198,78 @@ def test_datei_entfernen(ablage):
     aussen.write_text("x")
     mb.datei_entfernen("../aussen.html")
     assert aussen.exists()
+
+
+# ---------- Abgleich (Task 4) ----------
+
+def _alt(pfad):
+    """Datei aelter als die Schonfrist des Abgleichs machen."""
+    t = time.time() - 3600
+    os.utime(pfad, (t, t))
+    return pfad
+
+
+def test_abgleich_loescht_waisen_und_erzeugt_fehlende(ablage, caplog):
+    caplog.set_level("INFO")
+    _mitschrift(UID)
+    gebucht = mb.ablegen(UID)
+    _mitschrift(UID2, titel="Kurs Zwei")
+    fehlt = mb.ablegen(UID2)
+    (ablage / fehlt).unlink()
+    waise = ablage / "Kurse" / "X_deadbeef.html"
+    waise.write_text("x")
+    _alt(waise)
+    (ablage / "Alt").mkdir()
+    waise_alt = ablage / "Alt" / "2026-01-01_1000_geheimer-titel_0badc0de.html"
+    waise_alt.write_text("x")
+    _alt(waise_alt)
+    notiz = ablage / "Kurse" / "notiz.txt"
+    notiz.write_text("bleibt")
+    _alt(notiz)
+    oben = ablage / "Y_deadbeef.html"          # kein Rubrikordner: unangetastet
+    oben.write_text("x")
+    _alt(oben)
+    jung = ablage / "Kurse" / "Z_cafebabe.html"   # gerade geschrieben: Schonfrist
+    jung.write_text("x")
+    vorher = (ablage / gebucht).stat().st_mtime_ns
+
+    assert mb.abgleichen() == {"geloescht": 2, "neu": 1, "ordner_entfernt": 1}
+    assert not waise.exists() and not waise_alt.exists() and not (ablage / "Alt").exists()
+    assert notiz.exists() and oben.exists() and jung.exists()
+    assert (ablage / fehlt).is_file() and _mit(UID2)["bericht_pfad"] == fehlt
+    assert (ablage / gebucht).stat().st_mtime_ns == vorher
+    for geheim in ("deadbeef", "0badc0de", "geheimer-titel", "Kurse", str(ablage)):
+        assert geheim not in caplog.text, geheim
+    # zweiter Lauf: nichts mehr zu tun
+    assert mb.abgleichen() == {"geloescht": 0, "neu": 0, "ordner_entfernt": 0}
+
+
+def test_abgleich_ueberspringt_ohne_erwartete_datei(ablage, monkeypatch):
+    _mitschrift(UID)
+    pfad = mb.ablegen(UID)
+    (ablage / pfad).unlink()                   # Ordner leer, Datenbank hat Buchungen
+    waise = ablage / "Kurse" / "X_deadbeef.html"
+    waise.write_text("x")
+    _alt(waise)
+    r = mb.abgleichen()
+    assert set(r) == {"uebersprungen"}
+    assert waise.exists() and not (ablage / pfad).exists()
+    # Ordner fehlt
+    monkeypatch.setenv("MITSCHRIFTEN_PFAD", str(ablage / "fehlt"))
+    assert set(mb.abgleichen()) == {"uebersprungen"}
+    assert not (ablage / "fehlt").exists()
+    # "Ordner" ist eine Datei
+    datei = ablage / "datei"
+    datei.write_text("x")
+    monkeypatch.setenv("MITSCHRIFTEN_PFAD", str(datei))
+    assert set(mb.abgleichen()) == {"uebersprungen"}
+    assert _mit()["bericht_pfad"] == pfad and waise.exists()
+
+
+def test_abgleich_ohne_buchung_loescht_nichts(ablage):
+    (ablage / "Kurse").mkdir()
+    waise = ablage / "Kurse" / "X_deadbeef.html"
+    waise.write_text("x")
+    _alt(waise)
+    assert set(mb.abgleichen()) == {"uebersprungen"}
+    assert waise.exists()

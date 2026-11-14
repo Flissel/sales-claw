@@ -445,14 +445,28 @@ def aufnahme_beenden(uid: str, grund: str) -> None:
 def mitschrift_entfernen(uid: str) -> None:
     """Einen noch offenen Zusammenfassungs-Entwurf ablehnen (er darf nicht
     verwaisen) und die lokale Mitschrift der Akte loeschen (Vorschlaege gehen
-    per Kaskade mit)."""
+    per Kaskade mit). Die Bericht-Datei der Mitschriften-Ablage geht mit."""
     for m in server._q("select entwurf_id from termin_mitschriften where uid = %s", (uid,)):
         if m["entwurf_id"] and server._q(
                 "select 1 from drafts where id = %s and status = 'pending'",
                 (str(m["entwurf_id"]),)):
             server.entwurf_ablehnen(str(m["entwurf_id"]))
-    server._q("delete from termin_mitschriften where uid = %s returning id", (uid,))
+    weg = server._q("delete from termin_mitschriften where uid = %s returning bericht_pfad",
+                    (uid,))
     bilder_entfernen(uid)  # Bilder entstehen live, auch ohne Mitschrift
+    berichte_entfernen(weg)
+
+
+def berichte_entfernen(zeilen: list[dict]) -> None:
+    """Bericht-Dateien geloeschter Mitschriften entfernen (Zeilen aus
+    `delete ... returning bericht_pfad`). Erst nach dem Delete: scheitert das
+    Entfernen, raeumt der stuendliche Abgleich die Waise ab."""
+    pfade = [z["bericht_pfad"] for z in zeilen if z.get("bericht_pfad")]
+    if not pfade:
+        return
+    import mitschrift_bericht  # zirkulaer: mitschrift_bericht -> ui_termin -> termin_akte
+    for pfad in pfade:
+        mitschrift_bericht.datei_entfernen(pfad)
 
 
 def bilder_entfernen(uid: str) -> int:
