@@ -108,12 +108,14 @@ for e in "$WURZEL"/deploy/laeden/*.env; do
   # die Werte nicht setzt, saehe STILL die Dateien des ersten, darunter
   # Kalenderdateien mit Kundennamen. Deshalb hier ein Fehler statt eines
   # Rueckfalls, und derselbe Ordner fuer zwei Laeden ebenso.
-  for v in MEDIEN_ORDNER MEDIEN_ERZEUGT_ORDNER; do
+  # MITSCHRIFTEN_ORDNER (14.11.2026, Terminberichte) folgt derselben Regel; sein
+  # Vorgabewert ist ./laeden-daten/sales/mitschriften.
+  for v in MEDIEN_ORDNER MEDIEN_ERZEUGT_ORDNER MITSCHRIFTEN_ORDNER; do
     w="$(sed -n "s/^$v=//p" "$e" | tr -d '[:space:]')"
     w="${w%/}"
     case "$w" in
-      ""|media|./media|media-erzeugt|./media-erzeugt|"$WURZEL/media"|"$WURZEL/media-erzeugt")
-        echo "FEHLER: $e setzt $v nicht auf einen eigenen Ordner ('${w:-leer}') - dieser Laden saehe die Medien des Basis-Ladens." >&2
+      ""|media|./media|media-erzeugt|./media-erzeugt|"$WURZEL/media"|"$WURZEL/media-erzeugt"|laeden-daten/sales/mitschriften|./laeden-daten/sales/mitschriften|"$WURZEL/laeden-daten/sales/mitschriften")
+        echo "FEHLER: $e setzt $v nicht auf einen eigenen Ordner ('${w:-leer}') - dieser Laden saehe die Dateien (Medien, Terminberichte) des Basis-Ladens." >&2
         LADEN_ENV_FEHLER=$((LADEN_ENV_FEHLER + 1))
         continue 2 ;;
     esac
@@ -129,7 +131,7 @@ for e in "$WURZEL"/deploy/laeden/*.env; do
   LADEN_DATEIEN+=("")
 done
 if [ "$LADEN_ENV_FEHLER" -gt 0 ]; then
-  echo "ABBRUCH: $LADEN_ENV_FEHLER Umgebungsdatei(en) in deploy/laeden/ fehlerhaft (LADEN_PRAEFIX oder eigene Medienordner) - siehe FEHLER-Zeilen oben." >&2
+  echo "ABBRUCH: $LADEN_ENV_FEHLER Umgebungsdatei(en) in deploy/laeden/ fehlerhaft (LADEN_PRAEFIX oder eigene Medien-/Mitschriftenordner) - siehe FEHLER-Zeilen oben." >&2
   exit 1
 fi
 

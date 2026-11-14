@@ -97,6 +97,31 @@ for vol in $VOLUMES; do
     sh -c "find /ziel -mindepth 1 -delete && tar xzf /quelle/$vol.tar.gz -C /ziel"
 done
 
+# MITSCHRIFTEN JE LADEN (14.11.2026, Terminberichte). sicherung.sh legt den
+# Ordner des Ladens als mitschriften.tar.gz ab (MITSCHRIFTEN_ORDNER aus
+# deploy/laeden/<laden>.env, beim Basis-Laden ./laeden-daten/sales/mitschriften).
+# Das ist KEIN Volume, sondern ein Ordner auf dem Host: er wird geleert und
+# aus der Sicherung entpackt. Fehlt die Datei (Sicherung vor diesem Datum oder
+# noch keine Berichte), ist das nur ein Hinweis - kein Fehler.
+WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "$UNTERORDNER/mitschriften.tar.gz" ]; then
+  md=""
+  if [ "$LADEN" != sales ] && [ -r "$WURZEL/deploy/laeden/$LADEN.env" ]; then
+    md="$(sed -n 's/^MITSCHRIFTEN_ORDNER=//p' "$WURZEL/deploy/laeden/$LADEN.env" | tr -d '[:space:]')"
+  fi
+  md="${md:-./laeden-daten/sales/mitschriften}"
+  case "$md" in /*) ;; *) md="$WURZEL/${md#./}" ;; esac
+  mkdir -p "$md"
+  if find "$md" -mindepth 1 -delete && tar xzf "$UNTERORDNER/mitschriften.tar.gz" -C "$md"; then
+    echo "Mitschriften-Ordner $md wiederhergestellt."
+  else
+    echo "FEHLER: Mitschriften-Ordner $md konnte nicht aus $UNTERORDNER/mitschriften.tar.gz wiederhergestellt werden." >&2
+    FEHLER=$((FEHLER + 1))
+  fi
+else
+  echo "HINWEIS: $UNTERORDNER/mitschriften.tar.gz fehlt - Mitschriften-Ordner bleibt unveraendert."
+fi
+
 if [ ! -f "$UNTERORDNER/schema.sql.gz" ]; then
   echo "FEHLER: $UNTERORDNER/schema.sql.gz fehlt, obwohl andere Teile dieses Ladens gesichert wurden - Kundendaten (Leads, Entwuerfe, Aktivitaeten) werden NICHT wiederhergestellt." >&2
   FEHLER=$((FEHLER + 1))

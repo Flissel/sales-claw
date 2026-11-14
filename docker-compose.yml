@@ -826,6 +826,12 @@ services:
       # Betreiber fuer die Mitschrift-Bereinigung (Sprechernamen); leer = Vorgabe
       # im Code (Felix Baumann). Andere Laeden setzen ihn in der .env.
       BETREIBER_NAME: ${BETREIBER_NAME:-}
+      # Terminberichte (Mitschriften-Ablage, 14.11.2026): Ordner dieses Ladens, beschreibbar.
+      MITSCHRIFTEN_PFAD: /mitschriften
+    volumes:
+      # MITSCHRIFTEN JE LADEN (14.11.2026), wie die Medien: Vorgabe gehoert dem
+      # Basis-Laden; update.sh weist andere Laeden ohne eigenen Ordner ab.
+      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/sales/mitschriften}:/mitschriften
 
   # KI-Tor (12.11.2026, sales-ki/ki_tor.py): Uebergang des Betreibers - bis
   # eigene Server mit lokalem Modell da sind, beantwortet Claude Code (Abo,
@@ -1168,7 +1174,12 @@ services:
       - EMAIL_ABSENDER=${EMAIL_ABSENDER:-}
       # Bildsuche in der Termin-Akte fragt den Beobachter (nur Compose-Netz).
       - AUGE_URL=http://${LADEN_PRAEFIX:-sales}-auge:8790
+      # Terminberichte (Mitschriften-Ablage, 14.11.2026): Liste und Abruf der Berichte.
+      - MITSCHRIFTEN_PFAD=/mitschriften
     volumes:
+      # MITSCHRIFTEN JE LADEN (14.11.2026), wie die Medien: Vorgabe gehoert dem
+      # Basis-Laden; update.sh weist andere Laeden ohne eigenen Ordner ab.
+      - ${MITSCHRIFTEN_ORDNER:-./laeden-daten/sales/mitschriften}:/mitschriften
       # DER MEDIENORDNER — und hier OHNE `:ro`, als einziger Dienst im Stack.
       #
       # Das ist eine bewusste Aenderung an einem Grundsatz. Bisher war

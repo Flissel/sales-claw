@@ -76,13 +76,18 @@ for P in $PRAEFIXE; do
   # es EINE globale media.tar.gz, und media-erzeugt fehlte ganz — dort liegen
   # die Dateien, die der Betreiber per WhatsApp an sich selbst schickt, und
   # die lassen sich nicht neu erzeugen.
-  for paar in MEDIEN_ORDNER:media MEDIEN_ERZEUGT_ORDNER:media-erzeugt; do
+  # MITSCHRIFTEN_ORDNER (14.11.2026, Terminberichte): Vorgabe des Basis-Ladens ist
+  # ./laeden-daten/sales/mitschriften, nicht ./mitschriften - daher je Paar eine
+  # eigene Vorgabe (standard), waehrend der Dateiname mitschriften.tar.gz bleibt.
+  for paar in MEDIEN_ORDNER:media MEDIEN_ERZEUGT_ORDNER:media-erzeugt MITSCHRIFTEN_ORDNER:mitschriften; do
     v="${paar%%:*}"; vorgabe="${paar#*:}"
+    standard="./$vorgabe"
+    if [ "$v" = MITSCHRIFTEN_ORDNER ]; then standard="./laeden-daten/sales/mitschriften"; fi
     dir=""
     if [ "$P" != sales ] && [ -r "$WURZEL/deploy/laeden/$P.env" ]; then
       dir="$(sed -n "s/^$v=//p" "$WURZEL/deploy/laeden/$P.env" | tr -d '[:space:]')"
     fi
-    dir="${dir:-./$vorgabe}"
+    dir="${dir:-$standard}"
     case "$dir" in /*) ;; *) dir="$WURZEL/${dir#./}" ;; esac
     if [ -d "$dir" ]; then
       tar czf "$UNTERORDNER/$vorgabe.tar.gz" -C "$dir" .

@@ -206,6 +206,8 @@ MITGLIED_NAME=${MITGLIED_NAME:-}
 # Basis-Ladens ein; deploy/update.sh weist einen Laden ohne sie deshalb ab.
 MEDIEN_ORDNER=./laeden-daten/$NAME/media
 MEDIEN_ERZEUGT_ORDNER=./laeden-daten/$NAME/media-erzeugt
+# Terminberichte je Laden (Mitschriften-Ablage, 14.11.2026)
+MITSCHRIFTEN_ORDNER=./laeden-daten/$NAME/mitschriften
 # Konto-Mails ueber die Adresse des Betreibers (Spec 2026-09-24).
 SYSTEM_SMTP_HOST=$SYS_HOST
 SYSTEM_SMTP_PORT=${SYS_PORT:-587}
