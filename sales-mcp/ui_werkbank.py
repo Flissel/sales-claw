@@ -8,6 +8,8 @@ Der Betreiber nimmt ein langes Video Szene fuer Szene am Handy ab:
 - /marketing/werkbank/{aid}/szene/{nr}: Text, Bildidee, Belege, Clip-Abspieler, Wunschfeld und Knoepfe.
 - /marketing/werkbank/{aid}/video: das fertige Video mit Abspieler, Download und Kopierfeldern.
 - /marketing/werkbank/datei/{name}: Clips und Video aus dem Erzeugt-Ordner, gestreamt, mit Range.
+- Abschnitt "Übergaben aus Rowboat" (#uebergaben) auf der Liste; POST /aktion/werkbank-uebergabe-{ja,nein}
+  (video_uebergabe.py): erst das Ja legt den Auftrag an.
 - POST /aktion/werkbank-{wunsch,urteil,nochmal,oeffnen,neu-schreiben,neu-bauen}: gehen an die Pult-Routen der
   Marketing-API. "Nochmal schreiben" gibt einer aufgegebenen Szene oder Gliederung einen neuen Wunsch, "Video neu
   zusammenfügen" startet nach einem gescheiterten Zusammenfuegen genau einen neuen Versuch.
@@ -17,6 +19,7 @@ Alle Seiten laufen ohne JavaScript, ausser dem Kopier-Knopf der Videoseite (eige
 was sie selbst anzeigen konnten. Die Firma ist die des Ladens (MARKETING_MANDANT)."""
 from __future__ import annotations
 
+import logging
 import os
 import re
 import stat
@@ -31,6 +34,7 @@ import auftrag_buch
 import marketing_pult
 import medien
 import ui_reels
+import video_uebergabe
 
 BASIS = "/marketing/werkbank"
 STUECK = 1024 * 1024               # Lesegroesse beim Streamen: nie die ganze Datei im Speicher
@@ -69,7 +73,25 @@ HINWEISE = {"ueberholt": ("hinweis", "Diese Fassung ist überholt."),
             "versucht": ("meta", "Die Szene wird noch einmal versucht."),
             "geoeffnet": ("meta", "Die Szene ist wieder offen."),
             "neu": ("meta", "Danke – das wird mit deinem Wunsch neu geschrieben."),
-            "neu_bauen": ("meta", "Das Video wird neu zusammengefügt.")}
+            "neu_bauen": ("meta", "Das Video wird neu zusammengefügt."),
+            "uebergabe_nein": ("meta", "Die Übergabe ist verworfen. Es wurde kein Auftrag angelegt."),
+            "uebergabe_abgelehnt": ("warnung", "Der Auftrag wurde nicht angelegt. Der Grund steht an der Übergabe."),
+            "uebergabe_entschieden": ("hinweis", video_uebergabe.SATZ_ENTSCHIEDEN),
+            "uebergabe_abgelaufen": ("hinweis", video_uebergabe.SATZ_ABGELAUFEN),
+            "uebergabe_fehlt": ("hinweis", video_uebergabe.SATZ_FEHLT)}
+
+UEBERGABE_HINWEIS = "Was im Konzept steht, geht an das Videomodell und kann im Video landen."
+_HEX8 = re.compile(r"^[0-9a-f]{8}$")
+
+
+def alter_text(sekunden) -> str:
+    """"vor n Minuten" / "vor n Stunden" aus dem Alter in Sekunden (nach der Uhr der Datenbank)."""
+    s = sekunden if isinstance(sekunden, int) and not isinstance(sekunden, bool) and sekunden > 0 else 0
+    if s < 3600:
+        n = max(1, s // 60)
+        return f"vor {n} Minute" if n == 1 else f"vor {n} Minuten"
+    n = s // 3600
+    return f"vor {n} Stunde" if n == 1 else f"vor {n} Stunden"
 
 KOPIER_JS = """document.addEventListener("click", function (ev) {
   var knopf = ev.target.closest("button[data-kopieren]");
@@ -239,6 +261,70 @@ def routen(ui) -> list:
             return RedirectResponse(seite_url(aid, str(nr)), status_code=303)
         return RedirectResponse(seite_url(aid, kennung=kennung), status_code=303)
 
+    # --- Uebergaben aus Rowboat (Spec 14): das verbindliche Ja steht hier -----------------
+
+    def darf_entscheiden() -> bool:
+        rolle = ui._AKTIVE_ROLLE.get()
+        return darf_schreiben() and not (rolle and not ui._pfad_erlaubt(rolle, BASIS))
+
+    def uebergabe_meldung(request) -> str:
+        """Ergebniszeile nach "Ja" (Auftragsnummer + Link) oder nach einer anderen Entscheidung."""
+        if request.query_params.get("hinweis") == "uebergeben":
+            nr, aid = request.query_params.get("nr", ""), request.query_params.get("a", "")
+            if _HEX8.fullmatch(nr) and _AID.fullmatch(aid) and aid.startswith(nr):
+                return (f'<p class="hinweis">Übergeben: Auftrag {e(nr)} ist angelegt. '
+                        f'<a href="{e(BASIS)}/{e(aid)}">Zum Auftrag</a></p>')
+            return ""
+        return hinweis_html(request)
+
+    def uebergabe_karte(z: dict, darf: bool) -> str:
+        k = z["konzept"] if isinstance(z.get("konzept"), dict) else {}
+        stufen = [s for s in liste(k.get("stufen")) if isinstance(s, dict)]
+        szenen = sum(len([sz for sz in liste(s.get("szenen")) if isinstance(sz, dict)]) for s in stufen)
+        kennung = str(z["id"])
+        teile = [f'<div class="karte" id="u-{e(kennung[:8])}">',
+                 f'<div><b>{e(k.get("thema", ""))}</b> · {e(k.get("minuten", ""))} Minuten · '
+                 f'{len(stufen)} Stufen · {szenen} Szenen</div>',
+                 f'<div class="meta">Laden: {e(laden())} · Konzept: {e(k.get("name") or k.get("pfad") or "ohne Namen")}'
+                 f' · {e(alter_text(z.get("alter_s")))}</div>',
+                 f'<p class="hinweis">{e(UEBERGABE_HINWEIS)}</p>']
+        zeilen = []
+        for s in stufen:
+            punkte = []
+            for sz in liste(s.get("szenen")):
+                if not isinstance(sz, dict):
+                    continue
+                notiz = f' <span class="meta">Notiz: {e(sz["notiz"])}</span>' if sz.get("notiz") else ""
+                punkte.append(f'<li>{e(sz.get("kurz", ""))} <span class="meta">({e(sz.get("bildart", ""))})</span>'
+                              f'{notiz}</li>')
+            zeilen.append(f'<h4>{e(s.get("name", ""))}</h4><ul>{"".join(punkte)}</ul>')
+        teile.append(f'<details><summary>Stufen und Szenen ansehen</summary>{"".join(zeilen)}</details>')
+        if z.get("fehler"):
+            teile.append(f'<p class="warnung">{e(z["fehler"])}</p>')
+        if darf:
+            def knopf(aktion: str, text: str, klasse: str) -> str:
+                return (f'<form class="aktion" method="post" action="/aktion/werkbank-uebergabe-{aktion}">{csrf()}'
+                        f'<input type="hidden" name="id" value="{e(kennung)}">'
+                        f'<button class="{klasse}">{text}</button></form>')
+            teile.append(f'<div class="aktionen">{knopf("ja", "Ja, übergeben", "primaer")}'
+                         f'{knopf("nein", "Nein", "gefahr")}</div>')
+        teile.append("</div>")
+        return "".join(teile)
+
+    async def uebergaben_html() -> str:
+        """Abschnitt "Übergaben aus Rowboat"; "" ohne offene Uebergabe (oder solange die Tabelle fehlt)."""
+        try:
+            offene = await run_in_threadpool(video_uebergabe.offene)
+        except Exception as f:                              # noqa: BLE001 - nur der Typname, nie der Text
+            logging.getLogger("sales-ui").warning("Uebergaben nicht lesbar: %s", type(f).__name__)
+            return ""
+        if not offene:
+            return ""
+        darf = darf_entscheiden()
+        return (f'<section class="block" id="uebergaben"><h2>Übergaben aus Rowboat '
+                f'<span class="zaehler offen">{len(offene)}</span></h2>'
+                + "".join(uebergabe_karte(z, darf) for z in offene) + "</section>")
+
     # --- Liste der Video-Auftraege ---------------------------------------------------------
 
     @ui._gesichert_seite
@@ -267,8 +353,10 @@ def routen(ui) -> list:
         inhalt = (f'<div class="wb-szenen">{"".join(karten)}</div>' if karten else
                   '<p class="meta">Noch kein langes Video bestellt. Schreib dem Salesman: „Video zu …“ und '
                   'nenn das Thema.</p>')
+        meldung = uebergabe_meldung(request)
+        uebergaben = await uebergaben_html()
         return ui._seite("Lange Videos", _STIL + f'<div class="wb"><p><a href="/marketing/reels">Alle Reels</a></p>'
-                         f'{inhalt}</div>')
+                         f'{meldung}{uebergaben}{inhalt}</div>')
 
     # --- Uebersicht -------------------------------------------------------------------------
 
@@ -621,6 +709,50 @@ def routen(ui) -> list:
             return schon_entschieden(aid, nr, wunsch, kennung)
         return RedirectResponse(seite_url(aid, nr or None, erfolg, None if nr else kennung or None), status_code=303)
 
+    async def uebergabe_kopf(request):
+        """Gemeinsamer Kopf von Ja und Nein: -> (id, None) oder (None, Fehlerseite). Login (Sitzung der Wache),
+        CSRF-Marke und Schreibrecht wie bei den anderen Aktionen der Seite."""
+        form = await request.form()
+        if not ui._csrf_ok(form):
+            return None, ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
+        if not darf_entscheiden():
+            return None, ui._fehlerseite(403, "Nicht erlaubt", "Diese Anmeldung darf hier nichts ändern.")
+        kennung = str(form.get("id") or "")
+        if not _AID.fullmatch(kennung):
+            return None, nicht_gefunden()
+        if not ui_reels.eigene_firma():
+            return None, keine_firma()
+        return kennung, None
+
+    def zurueck(**abfrage) -> RedirectResponse:
+        return RedirectResponse(f"{BASIS}?{urllib.parse.urlencode(abfrage)}#uebergaben", status_code=303)
+
+    @ui._gesichert_seite
+    async def uebergabe_ja(request):
+        kennung, abgelehnt = await uebergabe_kopf(request)
+        if abgelehnt is not None:
+            return abgelehnt
+        try:
+            art, wert = await run_in_threadpool(video_uebergabe.bestaetigen, kennung, ui._ui_akteur(request))
+        except Exception:                                   # noqa: BLE001 - nichts wurde angelegt (Transaktion zurueck)
+            return ui._fehlerseite(503, "Nicht möglich", "Das Auftragsbuch ist gerade nicht erreichbar. "
+                                                         "Nichts wurde angelegt. Bitte gleich noch einmal versuchen.")
+        if art == "ok":
+            return zurueck(hinweis="uebergeben", nr=wert["auftrag"], a=wert["id"])
+        return zurueck(hinweis={"abgelehnt": "uebergabe_abgelehnt", "abgelaufen": "uebergabe_abgelaufen",
+                                "entschieden": "uebergabe_entschieden"}.get(art, "uebergabe_fehlt"))
+
+    @ui._gesichert_seite
+    async def uebergabe_nein(request):
+        kennung, abgelehnt = await uebergabe_kopf(request)
+        if abgelehnt is not None:
+            return abgelehnt
+        if await run_in_threadpool(video_uebergabe.verwerfen, kennung, ui._ui_akteur(request)):
+            return zurueck(hinweis="uebergabe_nein")
+        art, _ = await run_in_threadpool(video_uebergabe.warum_nicht, kennung)
+        return zurueck(hinweis={"abgelaufen": "uebergabe_abgelaufen",
+                                "entschieden": "uebergabe_entschieden"}.get(art, "uebergabe_fehlt"))
+
     @ui._gesichert_seite
     async def wunsch_speichern(request):
         form, aid, nr, _, abgelehnt = await aktion(request, False)
@@ -780,4 +912,6 @@ def routen(ui) -> list:
         Route("/aktion/werkbank-oeffnen", oeffnen, methods=["POST"]),
         Route("/aktion/werkbank-neu-schreiben", neu_schreiben, methods=["POST"]),
         Route("/aktion/werkbank-neu-bauen", neu_bauen, methods=["POST"]),
+        Route("/aktion/werkbank-uebergabe-ja", uebergabe_ja, methods=["POST"]),
+        Route("/aktion/werkbank-uebergabe-nein", uebergabe_nein, methods=["POST"]),
     ]
