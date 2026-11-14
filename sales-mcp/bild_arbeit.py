@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Protocol
 
+import bildschirm
 import ollama
 import server
 
@@ -34,8 +36,14 @@ BILD_PROMPT = (
     "Beschreibe in höchstens 3 Sätzen auf Deutsch, was zu sehen ist: das Programm "
     "oder die Seite, lesbare Überschriften, die Kernaussagen und genannte Zahlen. "
     "Nenne keine Personen anhand ihres Aussehens. Erfinde nichts: nur, was lesbar "
-    "oder eindeutig erkennbar ist."
+    "oder eindeutig erkennbar ist. "
+    "Zeigt das Bild eine Anmeldung mit Passwort- oder Kontoauswahl, eine Bezahlseite "
+    "mit Karten- oder Kontodaten oder ein E-Mail-Postfach bzw. eine geöffnete E-Mail, "
+    "antworte nur mit dem Wort HEIKEL."
 )
+
+# Antwort beginnt mit dem Wort HEIKEL (Satzzeichen danach ok; "Heikle ..." nicht).
+_HEIKEL = re.compile(r"^heikel\b", re.IGNORECASE)
 
 
 class Einbetter(Protocol):
@@ -76,6 +84,17 @@ def _fehler(bild_id, uid, e: Exception) -> str:
     return "fehler"
 
 
+def _heikel_entfernen(bild_id, uid) -> str:
+    """Die KI hat das Bild als heikel gemeldet: Zeile loeschen (Bild, Beschreibung und
+    beide Vektoren verschwinden mit ihr), nichts davor oder danach schreiben. Zaehlt
+    nur, wenn die Zeile noch da war (sonst war sie schon geloescht)."""
+    geloescht = server._q("delete from termin_bilder where id = %s returning id", (bild_id,))
+    if geloescht:
+        bildschirm.uebersprungen_zaehlen(uid)
+        log.info("Heikles Bild nach Beschreibung entfernt uid=%s", _h(uid))
+    return "heikel"
+
+
 def naechste_beschreiben(einbetter: Einbetter) -> bool:
     """Bearbeitet das aelteste offene Bild; True, wenn eines bearbeitet wurde."""
     return naechste_beschreiben_status(einbetter) is not None
@@ -83,7 +102,7 @@ def naechste_beschreiben(einbetter: Einbetter) -> bool:
 
 def naechste_beschreiben_status(einbetter: Einbetter) -> str | None:
     """Wie `naechste_beschreiben`, liefert aber das Ergebnis: None (nichts offen),
-    'fehler' (KI oder Einbettung gescheitert) oder 'fertig'. Der Beobachter
+    'fehler' (KI oder Einbettung gescheitert), 'heikel' (Bild entfernt) oder 'fertig'. Der Beobachter
     pausiert nach 'fehler', damit ein kurzer KI-Ausfall nicht alle Versuche
     verbrennt (Ruling R6)."""
     z = _beanspruchen()
@@ -102,6 +121,8 @@ def naechste_beschreiben_status(einbetter: Einbetter) -> str | None:
     try:
         text = ollama.chat(BILD_PROMPT, "Beschreibe dieses Bild.",
                            timeout_s=KI_TIMEOUT_S, bilder=[jpeg]).strip()
+        if _HEIKEL.match(text):
+            return _heikel_entfernen(bild_id, uid)
         if not text:
             raise ValueError("leere Beschreibung")
         v_text = _literal(einbetter.text(text))

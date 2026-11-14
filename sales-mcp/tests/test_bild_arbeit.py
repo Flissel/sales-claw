@@ -286,3 +286,73 @@ def test_fastembed_einbetter_masse():
     assert len(e.bild(_jpeg())) == 512
     assert len(e.text_clip("ein Diagramm")) == 512
     assert len(e.text("ein Diagramm")) == 384
+
+
+def _uebersprungen(uid="a1"):
+    return server._q("select bilder_uebersprungen from termin_akten where uid = %s",
+                     (uid,))[0]["bilder_uebersprungen"]
+
+
+def _heikel_antwort(monkeypatch, antwort):
+    _akte("a1")
+    bid = _bild()
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: antwort)
+    return bid
+
+
+def test_heikel_antwort_loescht_bild_vollstaendig(monkeypatch):
+    _heikel_antwort(monkeypatch, "HEIKEL")
+    assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "heikel"
+    assert server._q("select 1 from termin_bilder") == []
+    assert _uebersprungen() == 1
+
+
+def test_heikel_klein_geschrieben(monkeypatch):
+    _heikel_antwort(monkeypatch, "  heikel.\n")
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True
+    assert server._q("select 1 from termin_bilder") == []
+    assert _uebersprungen() == 1
+
+
+def test_normale_beschreibung_mit_wort_heikel_im_satz_bleibt(monkeypatch):
+    bid = _heikel_antwort(monkeypatch, "Eine heikle Folie mit Zahlen.")
+    assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "fertig"
+    assert _zeile(bid)["beschreibung"] == "Eine heikle Folie mit Zahlen."
+    assert _uebersprungen() == 0
+    bid2 = _bild("a1", 5)
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: "Heikle Folie mit Zahlen.")
+    assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "fertig"
+    bid3 = _bild("a1", 9)
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: "Heikelfoo")
+    assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "fertig"
+    assert _zeile(bid2)["beschreibung_status"] == "fertig"
+    assert _zeile(bid3)["beschreibung_status"] == "fertig"
+    assert _uebersprungen() == 0
+
+
+def test_heikel_bei_bereits_geloeschtem_bild_zaehlt_nicht(monkeypatch):
+    _akte("a1")
+    bid = _bild()
+
+    def chat(*a, **kw):
+        assert bildschirm.bild_loeschen("a1", bid)
+        return "HEIKEL"
+
+    monkeypatch.setattr(ollama, "chat", chat)
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True
+    assert server._q("select 1 from termin_bilder") == []
+    assert _uebersprungen() == 0
+
+
+def test_heikel_log_ohne_antworttext(monkeypatch, caplog):
+    _heikel_antwort(monkeypatch, "HEIKEL Passwort geheim123")
+    with caplog.at_level(logging.INFO):
+        bild_arbeit.naechste_beschreiben(Attrappe())
+    assert "Heikles Bild nach Beschreibung entfernt uid=" in caplog.text
+    assert "geheim123" not in caplog.text
+
+
+def test_prompt_enthaelt_heikel_regel():
+    assert ("Zeigt das Bild eine Anmeldung mit Passwort- oder Kontoauswahl, eine "
+            "Bezahlseite mit Karten- oder Kontodaten oder ein E-Mail-Postfach bzw. "
+            "eine geöffnete E-Mail, antworte nur mit dem Wort HEIKEL.") in bild_arbeit.BILD_PROMPT
