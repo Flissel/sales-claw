@@ -117,14 +117,22 @@ def eintraege_lesen(dokument) -> Tuple[List[Tuple[str, str]], int]:
 
 
 def rumpf(token: str, seite: str = SEITE) -> str:
-    """Der Wortlaut der Mail. Der Token steht hinter dem `#`: dieser Teil der
-    Adresse wird beim Aufruf an keinen Server geschickt und steht in keinem
-    Zugriffsprotokoll; die Seite liest ihn im Browser."""
+    """Der Wortlaut der Mail. Der Token haengt als letztes Pfadstueck an der
+    Adresse der Seite: `…/waitlist/confirm/<Token>`.
+
+    OHNE SONDERZEICHEN, und das ist gemessen (14.11.2026): die erste echte Mail
+    trug den Token hinter einem `#` und ging an eine GMX-Adresse. GMX leitet
+    Links ueber eine eigene Weiterleitung und machte aus dem `#` ein `%23` -
+    die Adresse gab es bei der Website nicht, der Empfaenger sah eine
+    404-Seite. Im Link stehen deshalb nur Buchstaben, Ziffern, Punkt,
+    Doppelpunkt und Schraegstrich; daran gibt es nichts umzukodieren. Die
+    Website nimmt den Token im Browser aus der Adresse, bevor sie etwas
+    anzeigt."""
     if not _TOKEN.fullmatch(token or ""):
         raise ValueError("Token hat nicht 64 Hex-Zeichen")
     if not _SEITE.fullmatch(seite or ""):
         raise ValueError("Bestaetigungsseite ist keine https-Adresse")
-    return RUMPF.format(link=f"{seite}#{token}")
+    return RUMPF.format(link=f"{seite.rstrip('/')}/{token}")
 
 
 def verschicken(eintraege: List[Tuple[str, str]], *,

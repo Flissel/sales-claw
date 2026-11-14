@@ -4197,7 +4197,7 @@ Basis-Laden.
 |---|---|---|
 | 1 | Website | Das Formular merkt die Adresse als „wartet auf ihre Mail“ vor (`waitlist_signup`) |
 | 2 | Wirt | `waitlist_mail_queue` liefert die wartenden Adressen, je mit einem frischen Einmal-Token; damit gelten sie bei der Website als bedient |
-| 3 | `sales-mail` | je Adresse eine Mail mit dem Link `https://vibemind.space/waitlist/confirm#<Token>` |
+| 3 | `sales-mail` | je Adresse eine Mail mit dem Link `https://vibemind.space/waitlist/confirm/<Token>` (ohne Sonderzeichen: GMX machte am 14.11.2026 aus einem `#` im Link ein `%23`, der Empfänger sah eine 404-Seite) |
 | 4 | Wirt | was der Mailserver nicht angenommen hat, geht mit `waitlist_mail_requeue` zurück und ist beim nächsten Lauf wieder dabei (höchstens drei Versuche in 24 Stunden) |
 | 5 | Website | der Klick bestätigt; der nächtliche Abgleich (oben) bringt die bestätigte Adresse als Kontakt hierher |
 

@@ -67,7 +67,7 @@ def test_die_fertige_mail(laden):
     assert nachricht["Cc"] is None and nachricht["Bcc"] is None
     assert nachricht["Subject"] == wb.BETREFF
     assert nachricht["Auto-Submitted"] == "auto-generated"
-    link = f"https://vibemind.space/waitlist/confirm#{TOKEN}"
+    link = f"https://vibemind.space/waitlist/confirm/{TOKEN}"
     text = nachricht.get_body(preferencelist=("plain",)).get_content()
     html = nachricht.get_body(preferencelist=("html",)).get_content()
     assert link in text
