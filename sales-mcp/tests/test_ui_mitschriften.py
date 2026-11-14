@@ -208,12 +208,46 @@ def test_verschieben_ablegen_fehler(monkeypatch):
     assert _z("a@x")["rubrik"] == "Kurse" and _z("a@x")["rubrik_manuell"] is True
 
 
+def _unveraendert(uid="a@x"):
+    z = _z(uid)
+    assert z["rubrik"] == "Unsortiert" and z["rubrik_manuell"] is False
+
+
+def test_verschieben_csrf_im_handler(scharf):
+    """Angemeldet mit schreibender Rolle: die Pruefung des Handlers greift, nicht die Wache."""
+    _mit("a@x", rubrik="Unsortiert")
+    frei = _anmelden("fred", "freigeben")
+    a = _post(csrf=False, client=frei, uid="a@x", rubrik="Kurse")
+    assert a.status_code == 403 and "CSRF" in a.text
+    _unveraendert()
+    b = frei.post("/mitschriften/verschieben",
+                  data={"uid": "a@x", "rubrik": "Kurse", "csrf": "falsches-token"},
+                  headers={"host": HOST_OK}, follow_redirects=False)
+    assert b.status_code == 403 and "CSRF" in b.text
+    _unveraendert()
+    assert _post(client=frei, uid="a@x", rubrik="Kurse").status_code == 303   # Gegenprobe
+
+
+def test_verschieben_rolle_lesen_im_handler():
+    """Die Wache ist hier offen; nur die Rollenpruefung des Handlers haelt Lesen ab."""
+    _mit("a@x", rubrik="Unsortiert")
+
+    async def als_lesen(scope, receive, send):
+        if scope["type"] == "http":
+            scope["benutzer_name"], scope["benutzer_rolle"] = "lena", "lesen"
+        await ui.app(scope, receive, send)
+    client = TestClient(als_lesen)
+    a = _post(client=client, uid="a@x", rubrik="Kurse")
+    assert a.status_code == 403 and "Nur Lesen" in a.text
+    _unveraendert()
+
+
 def test_verschieben_rechte(scharf):
     _mit("a@x", rubrik="Unsortiert")
     assert _post(csrf=False, uid="a@x", rubrik="Kurse").status_code == 403
     lesen = _anmelden("lena", "lesen")
     assert _post(client=lesen, uid="a@x", rubrik="Kurse").status_code == 403
-    assert _z("a@x")["rubrik"] == "Unsortiert"
+    _unveraendert()
     t = _get("/mitschriften?rubrik=Unsortiert", lesen)
     assert t.status_code == 200 and "Bericht öffnen" in t.text
     assert "/mitschriften/verschieben" not in t.text
