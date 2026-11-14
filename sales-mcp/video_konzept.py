@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 BLOCK_MAX = 20_000                     # Zeichen des kompakten JSON ohne auftrag/pfad/name
 BILDARTEN = ("slide", "avatar_slide", "avatar_gross", "clip")
@@ -18,6 +19,7 @@ KURZ_MAX = 300
 # Felder, die nicht zum Inhalt des Konzepts gehoeren: der Hash bleibt gleich, wenn sich nur sie aendern
 # (die Auftragsnummer wird nach der Uebergabe in die Datei geschrieben).
 _OHNE_HASH = ("auftrag", "pfad", "name")
+_HEX8 = re.compile("[0-9a-f]{8}")
 
 
 def _text(wert, kleinst: int, groesst: float) -> bool:
@@ -53,7 +55,10 @@ def pruefen(konzept) -> str | None:
                        ("abschluss", "Der Abschluss des Konzepts fehlt.")):
         if not _text(konzept.get(feld), 1, float("inf")):
             return satz
-    for feld in ("auftrag", "firma", "pfad", "name"):
+    auftrag = konzept.get("auftrag")
+    if auftrag is not None and not (isinstance(auftrag, str) and _HEX8.fullmatch(auftrag)):
+        return "Die Auftragsnummer des Konzepts muss leer sein oder aus 8 Hex-Zeichen bestehen."
+    for feld in ("firma", "pfad", "name"):
         wert = konzept.get(feld)
         if wert is not None and (not isinstance(wert, str) or len(wert) > 500):
             return f"Das Feld {feld} des Konzepts muss ein kurzer Text sein."

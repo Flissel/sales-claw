@@ -154,3 +154,13 @@ def test_hash_aendert_sich_mit_dem_inhalt():
     k = konzept()
     k["stufen"][0]["szenen"][0]["kurz"] = "anders"
     assert vk.block_hash(konzept()) != vk.block_hash(k)
+
+
+@pytest.mark.parametrize("auftrag", [None, "abcd1234", "00000000"])
+def test_auftrag_leer_oder_acht_hex(auftrag):
+    assert vk.pruefen(konzept(auftrag=auftrag)) is None
+
+
+@pytest.mark.parametrize("auftrag", ["", "abcd123", "ABCD1234", "abcd12345", "nicht-hex", 12345678])
+def test_auftrag_sonst_ungueltig(auftrag):
+    assert "Auftragsnummer" in vk.pruefen(konzept(auftrag=auftrag))
