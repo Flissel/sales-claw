@@ -3076,13 +3076,21 @@ Protokoll: `journalctl -u sales-linkedin-nachlauf -n 50`. Test:
 
 Taeglich um 19:45 Europe/Berlin (vor Hermes' Auswertung um 20:00) holt
 `sales-mcp/bewerbungs_eingang.py` die Warteliste der Bewerbungs-Zentrale
-(`GET {BEWERBUNG_PULT_URL}/api/eingang/warteliste`), liest die Postfaecher
-**nur lesend** (EXAMINE, BODY.PEEK, nichts markiert/verschoben/beantwortet) und
-meldet je passender Mail `POST /api/eingang/mails` (Vertrag v1). Passend heisst:
-Firmen-Domain (oder Subdomain) einer wartenden Bewerbung, Portal-Absender mit
-Firmenname, oder Kalendereinladung mit Organisator der Firma. Alle anderen
+(`GET {BEWERBUNG_PULT_URL}/api/eingang/warteliste`), liest die Mails aus der
+**Datenbank der Post-Sammelstelle** (`post_mails`/`post_konten`, nur `select`,
+kein IMAP, nichts geschrieben) und meldet je passender Mail
+`POST /api/eingang/mails` (Vertrag v1). Passend heisst: Firmen-Domain (oder
+Subdomain) oder genaue `an`-Adresse einer wartenden Bewerbung, oder
+Portal-Absender mit Firmenname in Absendername, Betreff oder Text. Alle anderen
 Mails verlassen sales-claw nie; das Protokoll zeigt nur Zahlen. Nur
 Basis-Laden, kein Sprachmodell, kein Versand.
+
+Welche Konten: die aktiven Konten mit demselben Besitzer wie das Konto mit
+`quelle = 'env'` (der Laden-Inhaber); Mails anderer Besitzer werden nie
+gelesen. Postfach-Name in der Meldung: Gmail -> `gmail`, GMX -> `gmx`,
+Namecheap -> `vibemind` (mehrere Konten eines Anbieters heissen im Protokoll
+`gmx`, `gmx-2`, ...). Gibt es kein env-Konto, meldet der Lauf "keine
+postfaecher" und tut nichts.
 
 Voraussetzungen (Werte traegt **Felix selbst** ein, nie ausgeben):
 
@@ -3090,14 +3098,23 @@ Voraussetzungen (Werte traegt **Felix selbst** ein, nie ausgeben):
   „zentrale nicht bereit" und schiebt nichts weiter.
 - `.env`: `BEWERBUNG_PULT_URL` (steht schon) und `BEWERBUNG_EINGANG_KEY` - ein
   **eigener** Schluessel, nicht der Pult-Schluessel.
-- Postfaecher: felix@vibemind.space ueber `IMAP_*`/`SMTP_*` wie bisher; Gmail
-  und GMX ueber `deploy/postfach-zugang.sh` (`POSTFACH_GMAIL_*`,
-  `POSTFACH_GMX_*`, App-Passwort; bei GMX vorher IMAP im Konto erlauben). Ein
-  fehlendes Postfach wird uebersprungen („nicht eingerichtet").
-- Tabelle `einstellungen` (provision.sql, 28.10.2026): dort liegt je Postfach
-  der Cursor unter `bewerbungs_eingang_cursor`.
+- **Keine Postfach-Zugaenge mehr noetig.** Quelle ist die Post-Sammelstelle:
+  der Container `sales-post` muss laufen (er holt alle Postfaecher alle paar
+  Minuten ab; steht er, fehlen die neuesten Mails), und `db/post-sammelstelle.sql`
+  muss eingespielt sein. Die Zugaenge dort sind versiegelt; dieses Modul sieht
+  sie nie. `IMAP_*`/`POSTFACH_*` braucht der Eingang nicht.
+- Kein Cursor: jeder Lauf prueft das ganze Fenster (fruehestes `gesendet_am`
+  minus einem Tag), die Zentrale antwortet auf schon Gemeldetes `bekannt`. Die
+  alte Zeile `bewerbungs_eingang_cursor` in `einstellungen` bleibt liegen und
+  wird nicht mehr gelesen.
 - `sales-mcp` neu erzeugt (`deploy/update.sh`), damit die beiden Variablen im
   Container stehen.
+
+Bekannte Grenze: eine Kalendereinladung, die **nur** ueber den Organisator im
+Kalenderteil zur Firma gehoert (Absender ist der Kalenderdienst), passt nicht
+mehr - die Sammelstelle speichert nur das Flag `kalenderteil`, nicht
+Organisator, Start und Ende. Darum ist `kalender` in jeder Meldung `null`.
+Einladungen direkt von der Firma-Domain passen weiter ueber die Absender-Domain.
 
 Erst trocken (zaehlt nur, meldet nichts, Cursor bleibt):
 
@@ -3105,7 +3122,7 @@ Erst trocken (zaehlt nur, meldet nichts, Cursor bleibt):
 bash ~/sales-claw/deploy/bewerbungs-eingang.sh --trocken
 ```
 
-Die Ausgabe nennt je Postfach `geprueft`/`passend`; der erste echte Lauf meldet
+Die Ausgabe nennt je Postfach `geprueft`/`passend`; jeder Lauf meldet
 alles Passende seit dem fruehesten `gesendet_am` minus einem Tag. Dann
 einschalten:
 
@@ -3117,15 +3134,16 @@ systemctl list-timers sales-bewerbungs-eingang.timer
 ```
 
 Verhalten bei Fehlern: Netzfehler oder eine Zentrale, die nicht bereit ist
-(401/403/404/408/429/5xx), beenden den Lauf **ohne** den Cursor zu schieben -
-der naechste Lauf holt dieselben Mails, die Zentrale antwortet `bekannt`. Lehnt
-sie eine einzelne Mail ab (400/409/413/415/422), steht nur Code und
-`message_id` im Protokoll und der Lauf geht weiter. Ein nicht lesbares Postfach
-behaelt seinen Cursor, die anderen laufen weiter (Exit 1, Unit „failed").
+(401/403/404/408/429/5xx), beenden den Lauf (Exit 1) - der naechste Lauf prueft
+dasselbe Fenster, die Zentrale antwortet `bekannt`. Lehnt sie eine einzelne
+Mail ab (400/409/413/415/422), steht nur Code und `message_id` im Protokoll und
+der Lauf geht weiter. Ist die Datenbank der Sammelstelle nicht lesbar, endet der
+Lauf mit "sammelstelle nicht lesbar" (Exit 1, Unit "failed"; im Protokoll nur
+die Fehlerklasse).
 
 Protokoll: `journalctl -u sales-bewerbungs-eingang -n 50`. Tests:
-`pytest sales-mcp/tests/test_bewerbungs_eingang.py` (IMAP und Zentrale als
-Attrappen) und `bash deploy/tests/test_bewerbungs_eingang.sh`.
+`pytest sales-mcp/tests/test_bewerbungs_eingang.py` (Sammelstelle und Zentrale
+als Attrappen, ein Test gegen `sales_test`) und `bash deploy/tests/test_bewerbungs_eingang.sh`.
 
 ### 8. Team-Mitglied per Tailscale einladen
 

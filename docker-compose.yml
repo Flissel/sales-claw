@@ -241,7 +241,8 @@ services:
       AUGE_URL: http://${LADEN_PRAEFIX:-sales}-auge:8790
       # Bewerbungs-Eingang (29.10.2026, bewerbungs_eingang.py): der Timer
       # sales-bewerbungs-eingang startet ihn per `docker exec` in DIESEM
-      # Dienst, weil hier die Postfach-Zugaenge schon liegen. Der Schluessel
+      # Dienst, weil hier die Datenbank der Post-Sammelstelle schon angebunden ist
+      # (der Eingang liest nur daraus, kein IMAP). Der Schluessel
       # oeffnet nur /api/eingang/* der Zentrale (nicht den Pult) und steht
       # bewusst NICHT im Anker oben - Versender, Inbox und Agent brauchen ihn
       # nicht. NUR in der Haupt-.env des Basis-Ladens setzen. Leer = Lauf
