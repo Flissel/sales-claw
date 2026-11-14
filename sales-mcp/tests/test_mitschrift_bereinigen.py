@@ -113,3 +113,12 @@ def test_untertitel_nur_mit_sender_am_ende():
            _s("A", _iso(150), "Untertitel von SWR")]
     assert [s["text"] for s in mb.bereinigen(ein)] == [
         "Untertitel der Videos sind fertig", "Untertitel von Max"]
+
+
+def test_betreiber_name_leer_aus_umgebung_ist_vorgabe(monkeypatch):
+    """Compose reicht BETREIBER_NAME leer durch (${BETREIBER_NAME:-}): Vorgabe gilt."""
+    for leer in ("", "   "):
+        monkeypatch.setenv("BETREIBER_NAME", leer)
+        assert mb.bereinigen([_s("felix", _iso(0), "Hallo")])[0]["sprecher"] == "Felix Baumann"
+    monkeypatch.setenv("BETREIBER_NAME", "Erika Muster")
+    assert mb.bereinigen([_s("erika", _iso(0), "Hallo")])[0]["sprecher"] == "Erika Muster"

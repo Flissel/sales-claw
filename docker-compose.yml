@@ -813,6 +813,9 @@ services:
       JITSI_BASIS: ${JITSI_BASIS:-}
       JITSI_HOSTS: ${JITSI_HOSTS:-}
       TERMIN_TEAM_ADRESSEN: ${TERMIN_TEAM_ADRESSEN:-}
+      # Betreiber fuer die Mitschrift-Bereinigung (Sprechernamen); leer = Vorgabe
+      # im Code (Felix Baumann). Andere Laeden setzen ihn in der .env.
+      BETREIBER_NAME: ${BETREIBER_NAME:-}
 
   # KI-Tor (12.11.2026, sales-ki/ki_tor.py): Uebergang des Betreibers - bis
   # eigene Server mit lokalem Modell da sind, beantwortet Claude Code (Abo,
@@ -879,6 +882,8 @@ services:
       AUGE_PORT: ${AUGE_PORT:-8790}
       AUGE_RUNDE_S: ${AUGE_RUNDE_S:-2}
       KI_BILD_TIMEOUT_S: ${KI_BILD_TIMEOUT_S:-60}
+      # Schwelle der Heikel-Pruefung vor dem Speichern (Schicht A); leer = 0.045.
+      AUGE_HEIKEL_ABSTAND: ${AUGE_HEIKEL_ABSTAND:-}
       # Nur Links auf diese Jitsi-Hosts werden betreten (wie sales-termine).
       JITSI_BASIS: ${JITSI_BASIS:-}
       JITSI_HOSTS: ${JITSI_HOSTS:-}

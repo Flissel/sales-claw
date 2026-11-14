@@ -71,3 +71,13 @@ def test_klassentexte_und_vorgabe():
     assert "an email inbox with a list of messages" in heikel.KLASSEN_HEIKEL
     assert "a presentation slide" in heikel.KLASSEN_NEUTRAL
     assert 0 < heikel.ABSTAND < 0.2
+
+
+def test_abstand_leer_aus_umgebung_ist_vorgabe(monkeypatch):
+    """Compose reicht AUGE_HEIKEL_ABSTAND leer durch: Vorgabe 0.045."""
+    import heikel
+    for wert in ("", "kaputt", "nan"):
+        monkeypatch.setenv("AUGE_HEIKEL_ABSTAND", wert)
+        assert heikel._abstand_aus_umgebung(0.045) == 0.045
+    monkeypatch.setenv("AUGE_HEIKEL_ABSTAND", "0.03")
+    assert heikel._abstand_aus_umgebung(0.045) == 0.03
