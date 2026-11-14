@@ -38,6 +38,8 @@ SCHLUESSEL = "SCHLUESSEL-xyz-123"
 TELEGRAM: list[str] = []
 SEGMENTE = [{"sprecher": "Karla", "beginn": "2099-01-09T12:01:00Z",
              "text": SEGMENT_TEXT, "sprache": "de"}]
+SEGMENTE_KARLA_11 = [{"sprecher": "Karla", "beginn": "2099-01-09T11:01:00Z",
+                      "text": SEGMENT_TEXT, "sprache": "de"}]
 
 
 class FakeVexa:
@@ -423,6 +425,19 @@ def test_null_segmente_leer(fake):
     m = _mit()
     assert m["auswertung_status"] == "leer" and m["segmente"] == []
     assert _zeile("u1")["status"] == "fertig" and fake.anzahl("loeschen") == 1
+
+
+def test_mitschrift_wird_bereinigt_abgelegt(fake):
+    _akte("u1", beginn=JETZT - timedelta(minutes=60), status="laeuft", vexa_meeting_id=7)
+    fake.meeting = {"status": "completed", "grund": "", "ende_grund": ""}
+    fake.segmente = [
+        {"sprecher": "", "beginn": "2099-01-09T11:00:00Z",
+         "text": "Untertitel im Auftrag des ZDF, 2017", "sprache": "de"},
+        {"sprecher": "Karla", "beginn": "2099-01-09T11:01:00Z",
+         "text": SEGMENT_TEXT, "sprache": "de"}]
+    termin_takt.runde(JETZT)
+    assert _mit()["segmente"] == SEGMENTE_KARLA_11
+    assert _mit()["auswertung_status"] == "offen"
 
 
 # ---------- Auswerten ----------

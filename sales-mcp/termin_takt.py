@@ -49,6 +49,7 @@ import auswertung
 import bildschirm
 import betreiber_hinweis
 import briefing
+import mitschrift_bereinigen
 import ollama
 import server
 import termin_akte
@@ -258,7 +259,11 @@ def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
     mehr auf wartet_auf_einlass/laeuft (z. B. "Nein" in der Oberflaeche), wird
     die Mitschrift verworfen (I2) und die Vexa-Ids bleiben fuer Schritt 5. Mit
     `fertig` faellt die Bot-Kennung (Plattform/native Id) weg - der Bot ist
-    gegangen; nur die Meeting-Id bleibt zum Loeschen."""
+    gegangen; nur die Meeting-Id bleibt zum Loeschen.
+
+    Die Segmente werden VOR dem Insert bereinigt: ihre Indizes in der
+    gespeicherten Mitschrift sind Bezug fuer Auswertung und Vorschaubilder."""
+    segmente = mitschrift_bereinigen.bereinigen(segmente)
     with server.pool.connection() as conn:
         with conn.transaction():
             z = conn.execute("select status from termin_akten where uid = %s for update",
