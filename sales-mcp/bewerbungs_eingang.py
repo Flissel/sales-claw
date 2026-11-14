@@ -1,13 +1,13 @@
-"""Bewerbungs-Eingang: Antworten auf Bewerbungen aus den Postfaechern an die
-Zentrale des Bewerbungs-Bots melden (29.10.2026).
+"""Bewerbungs-Eingang: Antworten auf Bewerbungen aus der Post-Sammelstelle an
+die Zentrale des Bewerbungs-Bots melden (29.10.2026, umgebaut 14.11.2026).
 
 Der Bewerbungs-Bot (Repo `bewerbung`, Zentrale mit dem Agenten Hermes)
 versendet Bewerbungen selbst und will messen, was zurueckkommt. Die Antworten
 landen in Felix' Postfaechern, oft von Portal-Absendern statt von der Adresse,
 an die gesendet wurde. Dieses Modul holt taeglich um 19:45 Europe/Berlin
 (Timer sales-bewerbungs-eingang, vor Hermes' Auswertung um 20:00) die
-Warteliste der Zentrale, sieht in die drei Postfaecher und meldet NUR die
-Mails, die zu einer wartenden Bewerbung passen. Zuordnen und Auswerten ist
+Warteliste der Zentrale, sieht in die Mails der Post-Sammelstelle und meldet
+NUR die, die zu einer wartenden Bewerbung passen. Zuordnen und Auswerten ist
 Sache der Zentrale, nicht dieses Moduls.
 
 Vertrag v1 (Auftrag vom 28.10.2026, Endpunkte baut die bewerbung-Sitzung):
@@ -15,53 +15,68 @@ Vertrag v1 (Auftrag vom 28.10.2026, Endpunkte baut die bewerbung-Sitzung):
   POST {BEWERBUNG_PULT_URL}/api/eingang/mails        Kopf X-Eingang-Key
 BEWERBUNG_EINGANG_KEY ist ein eigener Schluessel, nicht der Pult-Schluessel.
 
-Die Postfaecher: das des Ladens (felix@vibemind.space, IMAP_*/SMTP_*) sowie
-Gmail und GMX ueber dieselben Zugaenge wie postfach.py (POSTFACH_GMAIL_*,
-POSTFACH_GMX_*) - kein zweites Paar Variablen fuer dasselbe App-Passwort.
-Ein nicht eingerichtetes Postfach wird uebersprungen und als „nicht
-eingerichtet" protokolliert.
+QUELLE IST DIE DATENBANK, KEIN POSTFACH. sales-post (post_abholen.py) holt alle
+Postfaecher von Felix alle paar Minuten nur lesend ab und legt jede Mail in
+`post_mails` ab; die Zugaenge dazu sind versiegelt und nur sales-post kann sie
+oeffnen. Dieses Modul liest ausschliesslich per SELECT aus `post_mails` und
+`post_konten` (ueber server._q) - es oeffnet nie ein Postfach und schreibt nie
+in eine Tabelle. sales-post muss laufen, sonst fehlen die neuesten Mails.
+
+Welche Konten: die aktiven mit demselben `besitzer` wie das Konto mit
+`quelle = 'env'` (der Laden-Inhaber). Gibt es kein env-Konto, meldet der Lauf
+„keine postfaecher" und tut nichts. Mails anderer Besitzer verlassen sales-claw
+nie. Der Postfach-Name im Vertrag folgt dem Anbieter (gmail -> gmail, gmx ->
+gmx, namecheap -> vibemind); mehrere Konten desselben Anbieters heissen im
+Ergebnis und Protokoll „gmx", „gmx-2", ... (Reihenfolge `angelegt_am`), in der
+Meldung immer „gmx". Adresse und `kennung` eines Kontos stehen nie im Protokoll
+oder Ergebnis.
 
 Grenzen, die die Tests verteidigen (tests/test_bewerbungs_eingang.py):
 
-* NUR LESEN. EXAMINE (select readonly) und BODY.PEEK[] - kein \\Seen, kein
-  STORE/COPY/MOVE/EXPUNGE/APPEND. Nichts wird beantwortet oder markiert.
+* NUR LESEN. Kein Schreiben, nichts wird beantwortet oder markiert.
 * NUR PASSENDES GEHT HINAUS. Eine Mail passt, wenn sie nach dem fruehesten
-  `gesendet_am` minus einem Tag einging UND (a) die Absender-Domain oder eine
-  Subdomain davon in `domains` einer wartenden Bewerbung steht, (b) die
-  Absender-Domain ein Portal ist und der Firmenname in Betreff, Absendername
-  oder Text steht, oder (c) sie eine Kalendereinladung ist, deren Organisator
-  zu `domains` gehoert. Alle anderen Mails verlassen sales-claw nie, auch kein
-  Betreff und kein Absender; protokolliert werden nur Zahlen.
+  `gesendet_am` minus einem Tag einging (`datum`, ohne Kopfdatum `gesehen_am`)
+  UND (a) die Absender-Domain oder eine Subdomain davon in `domains` einer
+  wartenden Bewerbung steht oder die Absenderadresse genau `an` einer
+  wartenden Bewerbung ist, oder (b) die Absender-Domain ein Portal ist und der
+  Firmenname (ganzes Wort, ohne Rechtsform) in Betreff, Absendername oder Text
+  steht. Alle anderen Mails verlassen sales-claw nie, auch kein Betreff und
+  kein Absender; protokolliert werden nur Zahlen. Zeilen ohne `von` koennen
+  nicht passen. Den Text laedt das Modul nicht in der Massenabfrage, sondern
+  je Zeile und nur, wenn der Portal-Abgleich oder die Meldung ihn braucht.
+* BEKANNTE GRENZE: eine Einladung, die nur ueber den Organisator im
+  Kalenderteil zur Firma gehoert (Absender ist der Kalenderdienst), passt
+  nicht mehr. Die Sammelstelle speichert nur das Flag `kalenderteil`, nicht
+  Organisator, Start und Ende; darum ist `kalender` in jeder Meldung `null`.
 * FREEMAIL IST KEINE FIRMEN-DOMAIN. Steht `gmail.com` o. ae. in `domains`
   oder `portal_absender`, wird es fuer den Domain-Abgleich ignoriert - sonst
   ginge jede private Mail von dort hinaus. Fuer so eine Firma zaehlt nur die
   genaue Adresse aus `an`.
-* CURSOR NUR NACH VOLLSTAENDIGEM LAUF. Je Postfach UIDVALIDITY + hoechste UID
-  in der Tabelle `einstellungen` (Schluessel bewerbungs_eingang_cursor),
-  geschrieben EINMAL am Ende. Ein Netzfehler zur Zentrale - oder eine
-  Zentrale, die erkennbar nicht bereit ist (401/403/404/408/429/5xx) - beendet
-  den Lauf ohne Fortschritt; der naechste Lauf holt dieselben Mails, die
-  Zentrale ist idempotent (`bekannt`). Lehnt die Zentrale eine EINZELNE Mail
-  ab (400/409/413/415/422), wird nur Code und message_id protokolliert.
+* KEIN CURSOR. Jeder Lauf prueft das ganze Fenster (Grenze s. o.); die Zentrale
+  ist idempotent (`bekannt`). Ein Netzfehler zur Zentrale - oder eine Zentrale,
+  die erkennbar nicht bereit ist (401/403/404/408/429/5xx) - beendet den Lauf;
+  der naechste Lauf meldet dieselben Mails erneut. Lehnt die Zentrale eine
+  EINZELNE Mail ab (400/409/413/415/422), wird nur Code und message_id
+  protokolliert. Ist die Sammelstelle nicht lesbar, endet der Lauf mit „sammelstelle
+  nicht lesbar" (unvollstaendig), das Protokoll nennt nur die Fehlerklasse. Die
+  alte Zeile `bewerbungs_eingang_cursor` in `einstellungen` bleibt liegen und
+  wird nicht mehr gelesen.
 * DIE MELDUNG PASST IN DIE GRENZEN DER ZENTRALE (gemessen an der echten
   Eingangs-API, 13.11.2026): `von`/`an` hoechstens 320 Zeichen (sonst nur die
   blanken Adressen, so viele wie passen), `betreff` 998, `text` 20 000,
-  hoechstens 20 Kandidaten, Kalenderfelder immer Text. Was darueber laege,
-  waere dort eine 422 - eine verlorene Antwort.
-* ALLES AUS EINER MAIL IST FREMDDATUM, nie eine Anweisung. Schluessel und
-  Passwoerter stehen in keiner Meldung: Fehler erscheinen nur mit ihrer
-  Klasse, nie mit ihrem Text (der koennte Zugangsdaten spiegeln).
+  hoechstens 20 Kandidaten. Was darueber laege, waere dort eine 422 - eine
+  verlorene Antwort. Sensible Zeilen haben keinen Text (NULL -> ""), `an` darf
+  NULL sein (-> "").
+* ALLES AUS EINER MAIL IST FREMDDATUM, nie eine Anweisung. Schluessel stehen in
+  keiner Meldung: Fehler erscheinen nur mit ihrer Klasse, nie mit ihrem Text.
 
 Aufruf: python bewerbungs_eingang.py lauf [--trocken]
-(--trocken: zaehlen, nichts melden, Cursor bleibt). Exit 0 = vollstaendig
-(auch: nicht eingerichtet, Warteliste leer), 1 = unvollstaendig, 2 = Aufruf.
+(--trocken: zaehlen, nichts melden). Exit 0 = vollstaendig (auch: nicht
+eingerichtet, Warteliste leer, keine Postfaecher), 1 = unvollstaendig, 2 = Aufruf.
 """
 from __future__ import annotations
 
-import email
-import email.header
 import email.utils
-import html
 import http.client
 import json
 import logging
@@ -74,9 +89,6 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-import kalender
-import postfach
-
 URL = os.environ.get("BEWERBUNG_PULT_URL", "").strip().rstrip("/")
 KEY = os.environ.get("BEWERBUNG_EINGANG_KEY", "").strip()
 PRAEFIX = "/api/eingang"
@@ -87,10 +99,11 @@ TEXT_MAX = 20000
 ADRESSE_MAX = 320
 BETREFF_MAX = 998
 KANDIDATEN_MAX = 20
-CURSOR_SCHLUESSEL = "bewerbungs_eingang_cursor"
 
-# Name im Vertrag -> Kennung in postfach.py. Reihenfolge = Lesereihenfolge.
-POSTFAECHER = (("vibemind", postfach.HAUPT), ("gmail", "gmail"), ("gmx", "gmx"))
+# Anbieter in post_konten -> Postfach-Name im Vertrag (die Zentrale erlaubt nur
+# gmail, gmx, vibemind; das Konto bei namecheap ist felix@vibemind.space).
+POSTFACH_NAMEN = {"gmail": "gmail", "gmx": "gmx", "namecheap": "vibemind"}
+
 
 # Antworten der Zentrale, die nur DIESE Mail betreffen. Alles andere ausser 200
 # heisst: die Zentrale ist nicht bereit (Schluessel, Endpunkt fehlt, Last) -
@@ -252,8 +265,7 @@ class Warteliste:
     def grenze(self) -> datetime:
         return min(b.gesendet_am for b in self.bewerbungen) - timedelta(days=1)
 
-    def kandidaten(self, adresse, domain, absendername, betreff, text_holen,
-                   einladung) -> list:
+    def kandidaten(self, adresse, domain, absendername, betreff, text_holen) -> list:
         treffer = set()
         for b in self.bewerbungen:
             if _passt(domain, b.domains) or (b.an and adresse == b.an):
@@ -262,11 +274,6 @@ class Warteliste:
             felder = (absendername, betreff, text_holen())
             for b in self.bewerbungen:
                 if any(m.search(f or "") for m in b.namen for f in felder):
-                    treffer.add(b.application_id)
-        if einladung:
-            organisator = _domain(einladung["organisator"].rpartition("@")[2])
-            for b in self.bewerbungen:
-                if _passt(organisator, b.domains):
                     treffer.add(b.application_id)
         return [b.application_id for b in self.bewerbungen if b.application_id in treffer]
 
@@ -311,85 +318,15 @@ def _warteliste_holen() -> Warteliste:
     return Warteliste(tuple(bewerbungen), portale)
 
 
+
 # ---------------------------------------------------------------------------
-# Mail lesen (Fremddatum)
+# Meldung
 # ---------------------------------------------------------------------------
 
-def _dekodiert(roh) -> str:
-    teile = []
-    for wert, zeichensatz in email.header.decode_header(str(roh or "")):
-        if isinstance(wert, bytes):
-            try:
-                teile.append(wert.decode(zeichensatz or "utf-8", errors="replace"))
-            except LookupError:
-                teile.append(wert.decode("utf-8", errors="replace"))
-        else:
-            teile.append(wert)
-    return " ".join("".join(teile).split())
-
-
-def _aufgeraeumt(text: str) -> str:
-    zeilen = [re.sub(r"[^\S\n]+", " ", z).strip()
-              for z in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
-    ergebnis, leer = [], False
-    for z in zeilen:
-        if z or not leer:
-            ergebnis.append(z)
-        leer = not z
-    return "\n".join(ergebnis).strip()
-
-
-def _html_zu_text(roh: str) -> str:
-    t = re.sub(r"(?s)<!--.*?-->", " ", roh)
-    t = re.sub(r"(?is)<(script|style|head|title)\b.*?</\1\s*>", " ", t)
-    t = re.sub(r"(?i)<br\s*/?>", "\n", t)
-    t = re.sub(r"(?i)</(?:p|div|tr|li|h[1-6]|table|blockquote)\s*>", "\n", t)
-    t = re.sub(r"(?s)<[^>]*>", " ", t)
-    return _aufgeraeumt(html.unescape(t))
-
-
-def _teile(nachricht, passt):
-    """(Teil, dekodierter Text) fuer jeden Blatt-Teil, auf den `passt(teil)`
-    zutrifft - erst pruefen, dann dekodieren: ein PDF-Anhang wird nie Text."""
-    for teil in nachricht.walk():
-        if teil.is_multipart() or not passt(teil):
-            continue
-        roh = teil.get_payload(decode=True)
-        if roh is None:
-            continue
-        try:
-            wert = roh.decode(teil.get_content_charset() or "utf-8", errors="replace")
-        except LookupError:
-            wert = roh.decode("utf-8", errors="replace")
-        yield teil, wert
-
-
-def _ist_lesetext(teil) -> bool:
-    return (teil.get_content_disposition() != "attachment"
-            and teil.get_content_type() in ("text/plain", "text/html"))
-
-
-def _ist_kalender(teil) -> bool:
-    return (teil.get_content_type() in ("text/calendar", "application/ics")
-            or (teil.get_filename() or "").lower().endswith(".ics"))
-
-
-def _klartext(nachricht) -> str:
-    """text/plain bevorzugt, sonst HTML ohne Tags; Anhaenge zaehlen nicht."""
-    klar = gestaltet = None
-    for teil, wert in _teile(nachricht, _ist_lesetext):
-        typ = teil.get_content_type()
-        if typ == "text/plain" and klar is None and wert.strip():
-            klar = wert
-        elif typ == "text/html" and gestaltet is None:
-            gestaltet = wert
-    if klar is not None:
-        return _aufgeraeumt(klar)
-    return _html_zu_text(gestaltet) if gestaltet else ""
-
-
-def _utc_text(zeit: datetime | None) -> str | None:
-    return zeit.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if zeit else None
+def _utc_text(zeit: datetime) -> str:
+    if zeit.tzinfo is None:          # timestamptz kommt mit Zone; sicher ist sicher
+        zeit = zeit.replace(tzinfo=timezone.utc)
+    return zeit.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 _FALTUNG = re.compile(r"\r?\n(?=[ \t])")
@@ -419,140 +356,114 @@ def _adressen_kopf(wert: str) -> str:
     return gekuerzt or wert[:ADRESSE_MAX]
 
 
-def _einladung(nachricht) -> dict | None:
-    """Erste Kalendereinladung der Mail (text/calendar oder .ics-Anhang) ->
-    {start, ende, organisator} - oder None. Antworten, Absagen und
-    Gegenvorschlaege sind keine Einladung."""
-    for _, wert in _teile(nachricht, _ist_kalender):
-        entfaltet =wert.replace("\r\n", "\n").replace("\n ", "").replace("\n\t", "")
-        if "BEGIN:VEVENT" not in entfaltet:
-            continue
-        methode = ""
-        for zeile in entfaltet.split("\n"):
-            name, _, inhalt = zeile.partition(":")
-            if name.split(";")[0].strip().upper() == "METHOD":
-                methode = inhalt.strip().upper()
-                break
-        if methode in ("REPLY", "COUNTER", "CANCEL", "DECLINECOUNTER", "REFRESH"):
-            continue
-        # Erst den VEVENT-Block, dann darin lesen - ein VTIMEZONE davor traegt
-        # eigene DTSTART-Zeilen (dieselbe Falle wie in kalender.ics_antwort_lesen).
-        block = entfaltet.split("BEGIN:VEVENT", 1)[1].split("END:VEVENT", 1)[0]
-        organisator = kalender._ics_feld(block, "ORGANIZER")
-        if organisator.lower().startswith("mailto:"):
-            organisator = organisator[7:]
-        # Immer Text: ein `null` liesse die Zentrale den ganzen Kalender
-        # verwerfen (etwa DURATION statt DTEND).
-        return {
-            "start": _utc_text(kalender._ics_zeit(kalender._ics_feld(block, "DTSTART"),
-                                                  kalender._ics_tzid(block, "DTSTART"))) or "",
-            "ende": _utc_text(kalender._ics_zeit(kalender._ics_feld(block, "DTEND"),
-                                                 kalender._ics_tzid(block, "DTEND"))) or "",
-            "organisator": organisator.strip().lower()[:ADRESSE_MAX],
-        }
-    return None
+# ---------------------------------------------------------------------------
+# Sammelstelle lesen (nur SELECT; Fremddatum)
+# ---------------------------------------------------------------------------
+
+class _SammelstelleFehler(Exception):
+    """Die Sammelstelle (Datenbank) war nicht lesbar. Traegt nur die Klasse."""
 
 
-_MONATE = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
-           "Nov", "Dec")
-_INTERNALDATE = re.compile(
-    rb'INTERNALDATE "\s*(\d{1,2})-([A-Za-z]{3})-(\d{4}) (\d{2}):(\d{2}):(\d{2}) '
-    rb'([+-])(\d{2})(\d{2})"')
+def _konten() -> list:
+    """Alle Konten der Sammelstelle - bewusst OHNE `kennung`, `adresse` und
+    Zugang: das Modul braucht sie nicht und soll sie nie in der Hand haben."""
+    import server                    # erst hier: braucht SALES_DB_URL
+    return server._q(
+        "select id, besitzer, anbieter, quelle, aktiv, angelegt_am "
+        "from post_konten order by angelegt_am, id")
 
 
-def _imap_tag(zeit: datetime) -> str:
-    # Von Hand statt strftime("%b"): der Monatsname haengt sonst an der Locale.
-    return f"{zeit.day:02d}-{_MONATE[zeit.month - 1]}-{zeit.year}"
+def _mails(konto_id: str, besitzer: str, grenze: datetime) -> list:
+    """Mails eines Kontos im Fenster - ohne Text (der kommt je Zeile ueber
+    `_text`). `besitzer` zusaetzlich zur konto_id: eine Mail eines anderen
+    Besitzers verlaesst sales-claw auch bei falsch verknuepfter Zeile nie."""
+    import server
+    return server._q(
+        "select id, von, an, betreff, datum, gesehen_am, message_id, "
+        "message_id_ersatz from post_mails "
+        "where konto_id = %s and besitzer = %s "
+        "and (datum >= %s or (datum is null and gesehen_am >= %s)) "
+        "order by coalesce(datum, gesehen_am), id",
+        (konto_id, besitzer, grenze, grenze))
 
 
-def _eingang(kopf: bytes) -> datetime | None:
-    """INTERNALDATE (Eingang beim Server) aus der FETCH-Antwort."""
-    t = _INTERNALDATE.search(kopf or b"")
-    if not t:
-        return None
+def _text(mail_id: str):
+    """Der Text einer Mail (None bei sensiblen Zeilen, die keinen haben)."""
+    import server
+    zeilen = server._q("select text from post_mails where id = %s", (mail_id,))
+    return zeilen[0]["text"] if zeilen else None
+
+
+def _text_sicher(mail_id) -> str:
     try:
-        monat = _MONATE.index(t[2].decode().title()) + 1
-        versatz = timedelta(hours=int(t[8]), minutes=int(t[9]))
-        zone = timezone(versatz if t[7] == b"+" else -versatz)
-        return datetime(int(t[3]), monat, int(t[1]), int(t[4]), int(t[5]), int(t[6]),
-                        tzinfo=zone)
-    except ValueError:
-        return None
+        return _text(str(mail_id)) or ""
+    except Exception as e:           # noqa: BLE001 - nur die Klasse
+        raise _SammelstelleFehler(type(e).__name__) from None
 
 
-def _kopfdatum(nachricht) -> datetime | None:
-    try:
-        zeit = email.utils.parsedate_to_datetime(postfach._kopf(nachricht, "Date"))
-    except (TypeError, ValueError, IndexError):
-        return None
-    return zeit if zeit.tzinfo else zeit.replace(tzinfo=timezone.utc)
+def _lesbare_konten(zeilen: list) -> list:
+    """-> [(Name im Lauf, Name im Vertrag, konto_id, besitzer)]: die aktiven
+    Konten des Besitzers vom (aeltesten) env-Konto. Ohne env-Konto: nichts."""
+    zeilen = sorted(zeilen, key=lambda k: (k["angelegt_am"], str(k["id"])))
+    env = [k for k in zeilen if k.get("quelle") == "env"]
+    if not env:
+        return []
+    besitzer = env[0]["besitzer"]
+    gezaehlt, ergebnis = {}, []
+    for k in zeilen:
+        basis = POSTFACH_NAMEN.get(k.get("anbieter"))
+        if k.get("besitzer") != besitzer or not k.get("aktiv") or basis is None:
+            continue
+        gezaehlt[basis] = gezaehlt.get(basis, 0) + 1
+        name = basis if gezaehlt[basis] == 1 else f"{basis}-{gezaehlt[basis]}"
+        ergebnis.append((name, basis, str(k["id"]), besitzer))
+    return ergebnis
 
 
-def _auswerten(roh: bytes, kopf: bytes, liste: Warteliste, name: str,
-               uidvalidity, uid: int) -> dict | None:
+def _auswerten(zeile: dict, liste: Warteliste, postfach_name: str) -> dict | None:
     """Der Meldungsrumpf (Vertrag v1) - oder None, wenn die Mail nicht passt.
-    Bei None verlaesst nichts aus dieser Mail die Funktion."""
-    nachricht = email.message_from_bytes(roh)
-    eingang = _eingang(kopf) or _kopfdatum(nachricht)
-    if eingang is not None and eingang < liste.grenze:
-        return None
-    name_roh, adresse = email.utils.parseaddr(str(nachricht.get("From", "") or ""))
+    Bei None verlaesst nichts aus dieser Zeile die Funktion."""
+    von = zeile.get("von")
+    if not isinstance(von, str) or not von.strip():
+        return None                  # ohne Absender kann nichts passen
+    zeit = zeile.get("datum") or zeile.get("gesehen_am")
+    if zeit is None:
+        raise ValueError("kein Datum")
+    absendername, adresse = email.utils.parseaddr(von)
     adresse = adresse.strip().lower()
-    absendername = _dekodiert(name_roh)
-    betreff = _entfaltet(postfach._kopf(nachricht, "Subject"))
+    absendername = " ".join(absendername.split())
+    betreff = _entfaltet(zeile.get("betreff") or "")
     text = []
 
     def text_holen():
         if not text:
-            text.append(_klartext(nachricht))
+            text.append(_text_sicher(zeile["id"]))
         return text[0]
 
-    einladung = _einladung(nachricht)
     kandidaten = liste.kandidaten(
         adresse, _domain(adresse.rpartition("@")[2]) if "@" in adresse else "",
-        absendername, betreff, text_holen, einladung)
+        absendername, betreff, text_holen)
     if not kandidaten:
         return None
-    kennung = "".join(postfach._kopf(nachricht, "Message-ID").split())
-    if not kennung:
-        # Ohne Message-ID braucht die Zentrale trotzdem einen stabilen Schluessel.
-        kennung = f"<{name}.{uidvalidity}.{uid}@bewerbungs-eingang.sales-claw.invalid>"
+    kennung = (zeile.get("message_id") or "").strip()
+    if zeile.get("message_id_ersatz") or not kennung:
+        # Stabil auch nach einem UIDVALIDITY-Wechsel: die Zeilen-ID bleibt.
+        kennung = f"<post-{zeile['id']}@bewerbungs-eingang.sales-claw.invalid>"
     elif not kennung.startswith("<"):
         kennung = f"<{kennung}>"
     return {
-        "postfach": name,
+        "postfach": postfach_name,
         "message_id": kennung,
-        "von": _adressen_kopf(postfach._kopf(nachricht, "From")),
-        "an": _adressen_kopf(postfach._kopf(nachricht, "To")),
+        "von": _adressen_kopf(von),
+        "an": _adressen_kopf(zeile.get("an") or ""),
         "betreff": betreff[:BETREFF_MAX],
-        "datum": _utc_text(eingang) or "",
+        "datum": _utc_text(zeit),
         "text": text_holen()[:TEXT_MAX],
-        "kalender": einladung,
+        # Die Sammelstelle speichert nur das Flag, nicht Organisator/Start/Ende.
+        "kalender": None,
         # Die am laengsten Wartenden zuerst (Reihenfolge der Warteliste).
         "kandidaten": kandidaten[:KANDIDATEN_MAX],
     }
-
-
-# ---------------------------------------------------------------------------
-# Ein Postfach
-# ---------------------------------------------------------------------------
-
-class _PostfachFehler(Exception):
-    pass
-
-
-def _zahl(antwort):
-    try:
-        return int((antwort[1] or [None])[0])
-    except (TypeError, ValueError, IndexError):
-        return None
-
-
-def _abholen(daten) -> tuple:
-    for teil in daten or []:
-        if isinstance(teil, tuple) and len(teil) >= 2 and teil[1]:
-            return teil[0] or b"", teil[1]
-    return b"", None
 
 
 def _melden(rumpf: dict, zaehler: dict) -> None:
@@ -568,86 +479,38 @@ def _melden(rumpf: dict, zaehler: dict) -> None:
         raise ZentraleNichtBereit(status)
 
 
-def _postfach_abarbeiten(name: str, kennung: str, liste: Warteliste, alt,
-                         zaehler: dict, trocken: bool) -> dict:
-    """Ein Postfach lesen und Passendes melden -> neuer Cursor. Wirft bei
-    IMAP-Problemen (der Aufrufer zaehlt das Postfach dann als Fehler) und
-    reicht NetzFehler/ZentraleNichtBereit durch (Abbruch des ganzen Laufs)."""
-    kasten = postfach.oeffnen(kennung)
-    try:
-        status, _ = kasten.select("INBOX", readonly=True)
-        if status != "OK":
-            raise _PostfachFehler("select")
-        uidvalidity = _zahl(kasten.response("UIDVALIDITY"))
-        uidnext = _zahl(kasten.response("UIDNEXT"))
-        bisher = 0
-        if (isinstance(alt, dict) and alt.get("uidvalidity") == uidvalidity
-                and isinstance(alt.get("uid"), int)):
-            bisher = alt["uid"]
-        status, daten = kasten.uid("search", None, "UID", f"{bisher + 1}:*", "SINCE",
-                                   _imap_tag(liste.grenze - timedelta(days=1)))
-        if status != "OK":
-            raise _PostfachFehler("search")
-        # "n:*" liefert die hoechste UID auch dann, wenn sie kleiner als n ist
-        # (RFC 3501) - darum hier noch einmal filtern.
-        uids = sorted({int(u) for u in (daten[0] or b"").split()
-                       if u.isdigit() and int(u) > bisher})
-        for uid in uids:
-            status, daten = kasten.uid("fetch", str(uid), "(UID INTERNALDATE BODY.PEEK[])")
-            if status != "OK":
-                raise _PostfachFehler("fetch")
-            kopf, roh = _abholen(daten)
-            if roh is None:
-                continue                 # zwischen SEARCH und FETCH verschwunden
-            zaehler["geprueft"] += 1
-            try:
-                rumpf = _auswerten(roh, kopf, liste, name, uidvalidity, uid)
-            except Exception as e:   # noqa: BLE001 - Fremddatum, nur die Klasse
-                # Eine Mail, an der das Lesen scheitert, darf den Cursor nicht
-                # fuer immer festhalten; gemeldet wird von ihr nichts.
-                zaehler["unlesbar"] += 1
-                LOG.warning("%s: eine Mail nicht auswertbar (%s) - uebersprungen",
-                            name, type(e).__name__)
-                continue
-            if rumpf is None:
-                continue
-            zaehler["passend"] += 1
-            if not trocken:
-                _melden(rumpf, zaehler)
-        hoechste = max([bisher] + uids + ([uidnext - 1] if uidnext else []))
-        return {"uidvalidity": uidvalidity, "uid": hoechste,
-                "stand": _utc_text(datetime.now(timezone.utc))}
-    finally:
-        try:
-            kasten.logout()
-        except Exception:            # noqa: BLE001 - Abmelden ist kein Befund
-            pass
-
-
-# ---------------------------------------------------------------------------
-# Cursor (eigene Datenbank, nicht das Postfach)
-# ---------------------------------------------------------------------------
-
-def _cursor_lesen() -> dict:
-    import server                    # erst hier: braucht SALES_DB_URL
-    zeilen = server._q("select wert from einstellungen where schluessel = %s",
-                       (CURSOR_SCHLUESSEL,))
-    wert = zeilen[0]["wert"] if zeilen else {}
-    return wert if isinstance(wert, dict) else {}
-
-
-def _cursor_schreiben(daten: dict) -> None:
-    import server
-    server._q("insert into einstellungen (schluessel, wert, geaendert_von) "
-              "values (%s, %s::jsonb, %s) on conflict (schluessel) do update set "
-              "wert = excluded.wert, geaendert_am = now(), "
-              "geaendert_von = excluded.geaendert_von returning schluessel",
-              (CURSOR_SCHLUESSEL, json.dumps(daten), "bewerbungs-eingang"))
-
 
 # ---------------------------------------------------------------------------
 # Lauf
 # ---------------------------------------------------------------------------
+
+def _konto_abarbeiten(name: str, basis: str, konto_id: str, besitzer: str,
+                      liste: Warteliste, zaehler: dict, trocken: bool) -> None:
+    """Ein Konto: Mails im Fenster lesen und Passendes melden. Reicht
+    NetzFehler/ZentraleNichtBereit/_SammelstelleFehler durch (Abbruch des Laufs)."""
+    try:
+        zeilen = _mails(konto_id, besitzer, liste.grenze)
+    except Exception as e:           # noqa: BLE001 - nur die Klasse
+        raise _SammelstelleFehler(type(e).__name__) from None
+    for zeile in zeilen:
+        zaehler["geprueft"] += 1
+        try:
+            rumpf = _auswerten(zeile, liste, basis)
+        except _SammelstelleFehler:
+            raise
+        except Exception as e:       # noqa: BLE001 - Fremddatum, nur die Klasse
+            # Eine Zeile, an der das Lesen scheitert, haelt den Lauf nicht auf;
+            # gemeldet wird von ihr nichts.
+            zaehler["unlesbar"] += 1
+            LOG.warning("%s: eine Mail nicht auswertbar (%s) - uebersprungen",
+                        name, type(e).__name__)
+            continue
+        if rumpf is None:
+            continue
+        zaehler["passend"] += 1
+        if not trocken:
+            _melden(rumpf, zaehler)
+
 
 def lauf(trocken: bool = False) -> dict:
     """Ein Lauf -> {"status", "vollstaendig", "postfaecher": {name: Zahlen}}.
@@ -677,56 +540,45 @@ def lauf(trocken: bool = False) -> dict:
         ergebnis.update(status="warteliste leer", vollstaendig=True)
         return ergebnis
     try:
-        cursor = _cursor_lesen()
-    except Exception as e:           # noqa: BLE001
-        LOG.error("Cursor nicht lesbar (%s) - Lauf beendet", type(e).__name__)
-        ergebnis["status"] = "cursor nicht lesbar"
+        konten = _lesbare_konten(_konten())
+    except Exception as e:           # noqa: BLE001 - nur die Klasse
+        LOG.error("Sammelstelle nicht lesbar (%s) - Lauf beendet", type(e).__name__)
+        ergebnis["status"] = "sammelstelle nicht lesbar"
+        return ergebnis
+    if not konten:
+        LOG.info("Keine Postfaecher in der Sammelstelle - nichts zu tun")
+        ergebnis.update(status="keine postfaecher", vollstaendig=True)
         return ergebnis
 
-    vollstaendig, neu = True, {}
     try:
-        for name, kennung in POSTFAECHER:
-            if kennung not in postfach.kennungen():
-                LOG.info("%s: nicht eingerichtet", name)
-                ergebnis["postfaecher"][name] = {"status": "nicht eingerichtet"}
-                continue
+        for name, basis, konto_id, besitzer in konten:
             zaehler = {"status": "ok", "geprueft": 0, "passend": 0, "angenommen": 0,
                        "bekannt": 0, "abgelehnt": 0, "unlesbar": 0}
             ergebnis["postfaecher"][name] = zaehler
             try:
-                neu[name] = _postfach_abarbeiten(name, kennung, liste, cursor.get(name),
-                                                 zaehler, trocken)
-            except (NetzFehler, ZentraleNichtBereit):
+                _konto_abarbeiten(name, basis, konto_id, besitzer, liste, zaehler,
+                                  trocken)
+            except (NetzFehler, ZentraleNichtBereit, _SammelstelleFehler):
                 zaehler["status"] = "abgebrochen"
                 raise
-            except Exception as e:   # noqa: BLE001 - je Postfach, nur die Klasse
-                zaehler["status"] = "fehler"
-                vollstaendig = False
-                LOG.warning("%s: nicht lesbar (%s) - Cursor bleibt", name, type(e).__name__)
-                continue
             LOG.info("%s: %d geprueft, %d passend, %d angenommen, %d bekannt, "
                      "%d abgelehnt, %d unlesbar", name, zaehler["geprueft"],
                      zaehler["passend"], zaehler["angenommen"], zaehler["bekannt"],
                      zaehler["abgelehnt"], zaehler["unlesbar"])
     except NetzFehler as e:
-        LOG.error("Zentrale nicht erreichbar (%s) - Lauf beendet, Cursor bleibt", e)
+        LOG.error("Zentrale nicht erreichbar (%s) - Lauf beendet", e)
         ergebnis["status"] = "zentrale nicht erreichbar"
         return ergebnis
     except ZentraleNichtBereit as e:
-        LOG.error("Zentrale nicht bereit (HTTP %s) - Lauf beendet, Cursor bleibt",
-                  e.code)
+        LOG.error("Zentrale nicht bereit (HTTP %s) - Lauf beendet", e.code)
         ergebnis["status"] = "zentrale nicht bereit"
         return ergebnis
+    except _SammelstelleFehler as e:
+        LOG.error("Sammelstelle nicht lesbar (%s) - Lauf beendet", e)
+        ergebnis["status"] = "sammelstelle nicht lesbar"
+        return ergebnis
 
-    if neu and not trocken:
-        try:
-            _cursor_schreiben({**cursor, **neu})
-        except Exception as e:       # noqa: BLE001
-            LOG.error("Cursor nicht gespeichert (%s) - naechster Lauf meldet erneut",
-                      type(e).__name__)
-            vollstaendig = False
-    ergebnis.update(status="ok" if vollstaendig else "unvollstaendig",
-                    vollstaendig=vollstaendig)
+    ergebnis.update(status="ok", vollstaendig=True)
     return ergebnis
 
 
