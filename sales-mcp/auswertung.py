@@ -55,6 +55,8 @@ ARTEN = ("kundentermin", "intern")
 _NUR_KUNDENTERMIN = ("painpoints", "einwaende", "zusagen_kunde")
 _ZEITZONE = ZoneInfo("Europe/Berlin")
 _DATUM = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_SEGMENTZEILE = re.compile(r"^\[\d+\] ")
+_SEGMENTZEILE_IM_STUECK = re.compile(r"^\[\d+\] ", re.MULTILINE)
 
 SYSTEM_PROMPT = """Du bist ein sorgfaeltiger Protokollant und wertest die Mitschrift eines Gespraechs aus,
 das Felix (Betreiber, Berater) gefuehrt hat. Ziel: Wer nicht dabei war, weiss danach alles
@@ -422,7 +424,24 @@ def _stuecke(zeilen: list[str]) -> list[str]:
         laenge += len(z) + 1
     if aktuell:
         stuecke.append("\n".join(aktuell))
-    return stuecke
+    return _bildstuecke_falten(stuecke)
+
+
+def _bildstuecke_falten(stuecke: list[str]) -> list[str]:
+    """Kein Stueck ohne Segmentzeile: ein reines Bild-Stueck haengt am vorigen (das erste
+    am folgenden), auch ueber die Zeichengrenze hinaus. Sonst ueberschriebe die Antwort
+    zu einem Stueck ohne Gespraech Stimmung und Ergebnis. Ohne Segmentzeile: []."""
+    ergebnis: list[str] = []
+    vorab: list[str] = []
+    for s in stuecke:
+        if _SEGMENTZEILE_IM_STUECK.search(s):
+            ergebnis.append("\n".join(vorab + [s]))
+            vorab = []
+        elif ergebnis:
+            ergebnis[-1] += "\n" + s
+        else:
+            vorab.append(s)
+    return ergebnis
 
 
 def _vereinen(teile: list[dict]) -> dict:

@@ -5,7 +5,7 @@ Ollama wird per Stub ersetzt, der feste JSON-Antworten liefert.
 import json
 import logging
 import pathlib
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -598,3 +598,54 @@ def test_auswerten_reicht_bilder_in_den_prompt(stub):
     auswertung.auswerten(_fixture(), bilder=[
         (datetime(2026, 11, 12, 9, 0, 8, tzinfo=timezone.utc), "Tabelle mit Zahlen")])
     assert "[Bild 10:00] Tabelle mit Zahlen" in s.aufrufe[0]["nutzer"]
+
+
+# ---------- reine Bild-Stuecke falten ----------
+
+def _hat_segmentzeile(stueck: str) -> bool:
+    return any(auswertung._SEGMENTZEILE.match(z) for z in stueck.splitlines())
+
+
+def test_stuecke_haengen_reines_bildstueck_ans_vorige(monkeypatch):
+    monkeypatch.setenv("AUSWERTUNG_STUECK_ZEICHEN", "100")
+    z = ["[0] A: " + "x" * 40, "[1] A: " + "y" * 40, "[Bild 10:58] " + "b" * 30]
+    # ohne Falten: Grenze bricht nach der letzten Segmentzeile -> 2 Stuecke, das letzte nur Bild
+    assert len(z[0]) + len(z[1]) + 2 <= 100 < len(z[0]) + len(z[1]) + len(z[2]) + 3
+    stuecke = auswertung._stuecke(z)
+    assert len(stuecke) == 2 - 1
+    assert stuecke[-1].splitlines()[-1] == z[2]
+    assert all(_hat_segmentzeile(s) for s in stuecke)
+
+
+def test_stuecke_erstes_bildstueck_geht_ans_folgende(monkeypatch):
+    monkeypatch.setenv("AUSWERTUNG_STUECK_ZEICHEN", "100")
+    z = ["[Bild 10:00] " + "b" * 60, "[0] A: " + "x" * 60, "[1] A: " + "y" * 20]
+    stuecke = auswertung._stuecke(z)
+    assert all(_hat_segmentzeile(s) for s in stuecke)
+    assert stuecke[0].splitlines()[0] == z[0]
+    assert "\n".join(stuecke).splitlines() == z
+
+
+def test_stuecke_ohne_segmentzeile_ist_leer():
+    assert auswertung._stuecke(["[Bild 10:00] Folie"]) == []
+
+
+def test_auswerten_ohne_segmente_fragt_nicht(stub):
+    s = stub()
+    t = datetime(2026, 11, 12, 10, 58, tzinfo=timezone.utc)
+    assert auswertung.auswerten([], bilder=[(t, "Folie")]) == auswertung._leer()
+    assert s.aufrufe == []
+
+
+def test_auswerten_bildstueck_ueberschreibt_stimmung_nicht(stub, monkeypatch):
+    monkeypatch.setenv("AUSWERTUNG_STUECK_ZEICHEN", "200")
+    seg = [{"sprecher": "A", "beginn": f"2026-11-12T09:0{i}:00Z",
+            "text": "wort " * 18, "sprache": "de"} for i in range(2)]
+    t = datetime(2026, 11, 12, 10, 58, tzinfo=timezone.utc)
+    # wuerde das Bild-Stueck gefragt, kaeme dessen "Keine Aussage moeglich" zuletzt und gewaenne
+    s = stub({"stimmung": "offen und interessiert"},
+             {"stimmung": "Keine Aussage möglich"})
+    a = auswertung.auswerten(seg, bilder=[(t, "Folie")])
+    assert a["stimmung"] == "offen und interessiert"
+    assert len(s.aufrufe) == 1
+    assert "[Bild 11:58] Folie" in s.aufrufe[0]["nutzer"]
