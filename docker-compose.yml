@@ -842,7 +842,7 @@ services:
   # (fastembed, Modelle im Abbild). HTTP (/gesund, /suche) nur im Compose-Netz,
   # kein Port nach aussen, keine Einhaengung (Bilder nur in der DB). Harte
   # Grenzen, damit Vexa nicht leidet (gemessen 13.11.: Modelle ~1,15 GB plus
-  # Chromium mit einem Termin ~0,5 GB, darum 2048m). Not-Aus: `docker stop sales-auge`.
+  # Chromium mit einem Termin ~0,5 GB, Leerlauf gemessen 1,54 GiB, darum 2560m seit 14.11.). Not-Aus: `docker stop sales-auge`.
   # deploy/update.sh baut ihn nur neu, wenn er vorher schon lief.
   # BEWUSST OHNE den Anker x-sales-mcp-umgebung: der Dienst fuehrt einen Browser
   # auf fremden Seiten aus und bekommt deshalb NUR, was er braucht (DB, KI-Tor,
@@ -856,9 +856,9 @@ services:
     command: python auge.py
     restart: unless-stopped
     cpus: "1.5"
-    mem_limit: 2048m
+    mem_limit: 2560m
     # Kein Auslagern: die Grenze ist hart (M2).
-    memswap_limit: 2048m
+    memswap_limit: 2560m
     # Haertung (Ruling R17): keine Linux-Capabilities, keine neuen Rechte per
     # setuid. Chromium laeuft ohnehin ohne eigene Sandbox (Playwright-Vorgabe)
     # als uid 10001; geprueft auf der VM mit genau diesen Optionen.

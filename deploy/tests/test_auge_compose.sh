@@ -43,8 +43,8 @@ hat '^    container_name:[[:space:]]*\$\{LADEN_PRAEFIX:-sales\}-auge[[:space:]]*
 hat '^    command:[[:space:]]*python auge\.py[[:space:]]*$'          "command: python auge.py fehlt"
 hat '^    restart:[[:space:]]*unless-stopped[[:space:]]*$'           "restart: unless-stopped fehlt"
 hat '^    cpus:[[:space:]]*"1\.5"[[:space:]]*$'                      'cpus: "1.5" fehlt'
-hat '^    mem_limit:[[:space:]]*2048m[[:space:]]*$'                  "mem_limit: 2048m fehlt (R7)"
-hat '^    memswap_limit:[[:space:]]*2048m[[:space:]]*$'              "memswap_limit: 2048m fehlt (M2, kein Auslagern)"
+hat '^    mem_limit:[[:space:]]*2560m[[:space:]]*$'                  "mem_limit: 2560m fehlt (R7)"
+hat '^    memswap_limit:[[:space:]]*2560m[[:space:]]*$'              "memswap_limit: 2560m fehlt (M2, kein Auslagern)"
 # Haertung (R17): keine Capabilities, keine neuen Rechte, /tmp im RAM begrenzt (M1).
 hat '^    cap_drop:[[:space:]]*$'                                   "cap_drop: fehlt (R17)"
 hat '^      - ALL[[:space:]]*$'                                     "cap_drop: [ALL] fehlt (R17)"
@@ -138,8 +138,8 @@ a = c["sales-auge"]
 assert a["container_name"] == "sales-auge", a["container_name"]
 assert not a.get("ports"), "sales-auge veroeffentlicht Ports"
 assert float(a["cpus"]) == 1.5, a.get("cpus")
-assert int(a["mem_limit"]) == 2048 * 1024 * 1024, a.get("mem_limit")
-assert int(a["memswap_limit"]) == 2048 * 1024 * 1024, a.get("memswap_limit")
+assert int(a["mem_limit"]) == 2560 * 1024 * 1024, a.get("mem_limit")
+assert int(a["memswap_limit"]) == 2560 * 1024 * 1024, a.get("memswap_limit")
 assert a["cap_drop"] == ["ALL"], a.get("cap_drop")
 assert not a.get("cap_add"), a.get("cap_add")
 assert a["security_opt"] == ["no-new-privileges:true"], a.get("security_opt")
