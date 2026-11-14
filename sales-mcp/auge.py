@@ -12,9 +12,11 @@ Jede Runde (`AUGE_RUNDE_S`, Vorgabe 2 s):
   1. Soll-Abgleich aus der DB (`bildschirm.beobachtung_soll`): neue Termine
      betreten (eine Seite je Termin), nicht mehr gewollte sofort verlassen
      (Seite schliessen, offenes Bild bekommt `bis`).
-  2. Je Sitzung `window.__lauraBild()`; bei Bildschirmfreigabe und spuerbarer
-     Aenderung (dHash des ROHEN Frames gegen den rohen Hash des letzten
-     abgelegten Frames, Ruling R4) ablegen; Ende der Freigabe -> `freigabe_ende`.
+  2. Je Sitzung `window.__lauraBild()`; je gleichzeitiger Freigabe (Quelle,
+     hoechstens MAX_QUELLEN) bei spuerbarer Aenderung (dHash des ROHEN Frames
+     gegen den rohen Hash des letzten abgelegten Frames DIESER Quelle, Ruling R4)
+     ablegen; Drossel je Quelle, Obergrenze je Akte. Teilt keine Quelle mehr ->
+     `freigabe_ende`.
 
 Ein Browser-Prozess, eine Seite (in eigenem Kontext) je Termin. Playwright und
 fastembed werden erst in `main()` importiert, damit Tests ohne sie laufen.
@@ -66,6 +68,7 @@ FEHLER_PAUSE_S = 30          # nach einem Fehlversuch der Beschreibung (Ruling R
 LEER_PAUSE_S = 3             # nichts offen
 NEUSTART_PAUSE = timedelta(seconds=30)   # nach gescheitertem Beitritt
 MAX_SEITENFEHLER = 5         # so viele Fehler am Stueck -> Seite schliessen, neu betreten
+MAX_QUELLEN = 3              # gleichzeitige Freigaben je Termin (wie MAX_QUELLEN in auge_jitsi.js)
 SUCHE_MAX_TEXT = 1000
 SUCHE_MAX_LIMIT = 50
 SUCHE_MAX_BYTES = 16 * 1024
@@ -96,15 +99,25 @@ def _typ(e: BaseException) -> str:
 # ---------- Soll-Abgleich ----------
 
 @dataclass
+class Quelle:
+    """Eine laufende Bildschirmfreigabe (ein Desktop-Track) in einer Sitzung:
+    Drossel und Aenderungserkennung (R4) gelten je Quelle."""
+    von: str | None
+    letzter_hash: int | None             # dHash des letzten abgelegten (oder heiklen) rohen Frames
+    letzte_zeit: datetime | None
+
+
+@dataclass
 class Sitzung:
-    """Eine Seite in einem Termin; Zustand der Aenderungserkennung (R4)."""
+    """Eine Seite in einem Termin. `letzter_hash`/`letzte_zeit`/`anzahl` gelten fuer die
+    ganze Akte (letztes abgelegtes Bild, Start aus der DB); je Freigabe eine `Quelle`."""
     uid: str
     seite: Any
-    letzter_hash: int | None = None      # dHash des letzten ABGELEGTEN rohen Frames
+    letzter_hash: int | None = None      # dHash des letzten ABGELEGTEN rohen Frames (Akte)
     letzte_zeit: datetime | None = None
     anzahl: int = 0                      # Bilder dieser Akte (Start aus der DB)
     teilt: bool = False
-    von: str | None = None
+    quellen: dict[str, Quelle] = field(default_factory=dict)
     fehler: int = 0
     gestartet: datetime | None = field(default=None)
     uebersprungen: int = 0               # heikle, nicht gespeicherte Bilder dieser Sitzung
@@ -221,29 +234,50 @@ def alle_beenden(sitzungen: dict[str, Sitzung], jetzt: datetime) -> None:
 
 # ---------- Runde ----------
 
-def _frame(antwort: Any) -> tuple[bool, str | None, bytes | None]:
-    """(teilt, von, jpeg-Bytes oder None). Wirft bei kaputten Bilddaten."""
+def _frame(antwort: Any) -> tuple[bool, list[tuple[str, str | None, Any]]]:
+    """(teilt, [(quelle, von, jpeg-Base64 oder None)]) aus der Antwort von
+    __lauraBild, sortiert nach Quelle, hoechstens MAX_QUELLEN. Nur die Form
+    {teilt, quellen: [{quelle, von, jpeg}]} gilt; alles andere (auch die alte Form
+    {teilt, von, jpeg}) heisst "teilt nicht". Dekodiert wird erst je Quelle."""
     if not isinstance(antwort, dict) or not antwort.get("teilt"):
-        return False, None, None
-    von = antwort.get("von")
-    von = str(von) if von is not None else None
-    roh = antwort.get("jpeg")
+        return False, []
+    roh = antwort.get("quellen")
+    if not isinstance(roh, list):
+        return False, []
+    je: dict[str, tuple[str, str | None, Any]] = {}
+    for eintrag in roh:
+        if not isinstance(eintrag, dict):
+            continue
+        quelle = eintrag.get("quelle")
+        if not isinstance(quelle, str) or not quelle or quelle in je:
+            continue
+        von = eintrag.get("von")
+        je[quelle] = (quelle, str(von) if von is not None else None, eintrag.get("jpeg"))
+    quellen = [je[q] for q in sorted(je)][:MAX_QUELLEN]
+    return bool(quellen), quellen
+
+
+def _jpeg(roh: Any) -> bytes | None:
+    """Base64 -> Bytes; None, wenn (noch) kein Bild. Wirft bei kaputten Daten."""
     if not roh:
-        return True, von, None
+        return None
     if not isinstance(roh, str):
         raise TypeError("jpeg ist kein Text")
-    return True, von, base64.b64decode(roh, validate=True)
+    return base64.b64decode(roh, validate=True)
 
 
-def _neu_beginnen(s: Sitzung) -> None:
-    """Neue Freigabe oder neuer Teilender: unter der Obergrenze zaehlt das naechste
-    Bild als neu (Hash vergessen). Ab der Obergrenze bleibt der Hash, dann darf nur
-    eine starke Aenderung ein Bild erzeugen. `letzte_zeit` bleibt immer (Drossel)."""
-    if s.anzahl < bildschirm.OBERGRENZE:
-        s.letzter_hash = None
+def _neu_beginnen(s: Sitzung, von: str | None, alt: Quelle | None = None) -> Quelle:
+    """Neue Quelle (neue Freigabe) oder neuer Teilender auf einer Quelle: unter der
+    Obergrenze zaehlt das naechste Bild als neu (kein Hash). Ab der Obergrenze gilt der
+    Akte-weite letzte Hash, dann darf nur eine starke Aenderung ein Bild erzeugen.
+    Drossel: die Zeit der bisherigen Quelle bzw. des letzten Bildes der Akte bleibt."""
+    return Quelle(von=von,
+                  letzter_hash=s.letzter_hash if s.anzahl >= bildschirm.OBERGRENZE else None,
+                  letzte_zeit=alt.letzte_zeit if alt is not None else s.letzte_zeit)
 
 
-def _heikel_pruefen(s: Sitzung, jpeg: bytes, jetzt: datetime) -> tuple[bool | None, list[float] | None]:
+def _heikel_pruefen(s: Sitzung, q: Quelle, jpeg: bytes,
+                    jetzt: datetime) -> tuple[bool | None, list[float] | None]:
     """Schicht A: (heikel?, Bildvektor). None als Urteil, wenn die Pruefung scheitert
     (dann wird nichts abgelegt). Ohne Pruefer: (False, None)."""
     if pruefer is None:
@@ -252,58 +286,74 @@ def _heikel_pruefen(s: Sitzung, jpeg: bytes, jetzt: datetime) -> tuple[bool | No
         ist, vektor = pruefer.heikel(jpeg)
     except Exception as e:  # noqa: BLE001 - Modellfehler: Bild nicht ablegen
         LOG.warning("Heikel-Pruefung uid=%s fehlgeschlagen (%s)", _h(s.uid), _typ(e))
-        s.letzte_zeit = jetzt        # Drossel: kaputtes Modell nicht jede Runde neu versuchen
+        q.letzte_zeit = jetzt        # Drossel: kaputtes Modell nicht jede Runde neu versuchen
         return None, None
     return bool(ist), vektor
 
 
-def _eine(s: Sitzung, jetzt: datetime) -> None:
-    antwort = s.seite.evaluate(AUFRUF)
-    s.fehler = 0
+def _quelle_aufnehmen(s: Sitzung, q: Quelle, roh: Any, jetzt: datetime) -> None:
+    """Ein Frame einer Quelle: Drossel und Hash je Quelle, Obergrenze je Akte."""
     try:
-        teilt, von, jpeg = _frame(antwort)
+        jpeg = _jpeg(roh)
     except (binascii.Error, ValueError, TypeError) as e:
         LOG.warning("Standbild uid=%s unbrauchbar (%s)", _h(s.uid), _typ(e))
         return
-    if not teilt:
-        if s.teilt:
-            bildschirm.freigabe_ende(s.uid, jetzt)
-            LOG.info("Freigabe beendet uid=%s", _h(s.uid))
-            _neu_beginnen(s)
-        s.teilt, s.von = False, None
-        return
-    if s.teilt and von != s.von:
-        _neu_beginnen(s)             # anderer Teilender: naechstes erlaubtes Bild nehmen
-    s.teilt, s.von = True, von
     if jpeg is None:
         return                       # Freigabe laeuft, noch kein Bild
     # Drossel gilt immer, auch nach Ende der Freigabe oder Wechsel des Teilenden.
-    if s.letzte_zeit is not None and jetzt - s.letzte_zeit < bildschirm.MIN_ABSTAND:
+    if q.letzte_zeit is not None and jetzt - q.letzte_zeit < bildschirm.MIN_ABSTAND:
         return
     try:
         neu = bildschirm.dhash(jpeg)
     except Exception as e:  # noqa: BLE001 - kaputte Bytes von der Seite
         LOG.warning("Standbild uid=%s unbrauchbar (%s)", _h(s.uid), _typ(e))
         return
-    if not bildschirm.soll_aufnehmen(s.letzter_hash, neu, s.letzte_zeit, jetzt, s.anzahl):
+    if not bildschirm.soll_aufnehmen(q.letzter_hash, neu, q.letzte_zeit, jetzt, s.anzahl):
         return
-    heikel, vektor = _heikel_pruefen(s, jpeg, jetzt)
+    heikel, vektor = _heikel_pruefen(s, q, jpeg, jetzt)
     if heikel is None:
         return                       # Pruefung gescheitert: im Zweifel nichts ablegen
     if heikel:
         # Nie speichern; Hash und Zeit trotzdem merken (gleiches Bild nicht neu pruefen).
-        s.letzter_hash, s.letzte_zeit = neu, jetzt
+        q.letzter_hash, q.letzte_zeit = neu, jetzt
         s.uebersprungen += 1
         bildschirm.uebersprungen_zaehlen(s.uid)
         LOG.info("Heikles Bild verworfen uid=%s (Nr. übersprungen %d)",
                  _h(s.uid), s.uebersprungen)
         return
-    bild_id = bildschirm.bild_ablegen(s.uid, jpeg, jetzt, von, vektor_bild=vektor)
+    bild_id = bildschirm.bild_ablegen(s.uid, jpeg, jetzt, q.von, vektor_bild=vektor)
     if bild_id is None:
         LOG.info("Ablage verweigert uid=%s (nicht mehr beobachtet)", _h(s.uid))
         return
+    q.letzter_hash, q.letzte_zeit = neu, jetzt
     s.letzter_hash, s.letzte_zeit, s.anzahl = neu, jetzt, s.anzahl + 1
-    LOG.info("Standbild abgelegt uid=%s (Nr. %d)", _h(s.uid), s.anzahl)
+    LOG.info("Standbild abgelegt uid=%s (Nr. %d, Quellen %d)", _h(s.uid), s.anzahl,
+             len(s.quellen))
+
+
+def _eine(s: Sitzung, jetzt: datetime) -> None:
+    antwort = s.seite.evaluate(AUFRUF)
+    s.fehler = 0
+    teilt, frames = _frame(antwort)
+    if not teilt:
+        if s.teilt:
+            bildschirm.freigabe_ende(s.uid, jetzt)
+            LOG.info("Freigabe beendet uid=%s", _h(s.uid))
+        s.teilt, s.quellen = False, {}
+        return
+    # Verschwundene Quellen vergessen: kein Freigabe-Ende, solange eine andere teilt.
+    aktuell = {quelle for quelle, _, _ in frames}
+    for quelle in [x for x in s.quellen if x not in aktuell]:
+        del s.quellen[quelle]
+    # Neue Quellen (oder neuer Teilender) VOR der Ablage anlegen: gleichzeitig neue
+    # Quellen drosseln sich nicht gegenseitig.
+    for quelle, von, _ in frames:
+        alt = s.quellen.get(quelle)
+        if alt is None or alt.von != von:
+            s.quellen[quelle] = _neu_beginnen(s, von, alt)
+    s.teilt = True
+    for quelle, _, roh in frames:
+        _quelle_aufnehmen(s, s.quellen[quelle], roh, jetzt)
 
 
 def runde(sitzungen: dict[str, Sitzung], jetzt: datetime) -> None:

@@ -1,12 +1,14 @@
 // Seiten-Skript des Beobachters "Laura (Bildschirm)" (sales-auge, Bildauswertung live).
 //
-// window.__lauraBild() -> Promise<{teilt, von, jpeg}>
-//   Sucht im Jitsi-Store (APP.store, 'features/base/tracks') den ENTFERNTEN
-//   Bildschirm-Track (mediaType 'screenshare' UND videoType === 'desktop'; nur
-//   Multistream-Jitsi, siehe istDesktop), spielt NUR dessen Videospur in
-//   einem losgeloesten <video> ab, zeichnet ein Standbild in ein Canvas
-//   (hoechstens 1600 px breit) und liefert es als JPEG (Qualitaet 0.8, Base64)
-//   plus Anzeigenamen des Teilenden.
+// window.__lauraBild() -> Promise<{teilt, quellen: [{quelle, von, jpeg}]}>
+//   Sucht im Jitsi-Store (APP.store, 'features/base/tracks') die ENTFERNTEN
+//   Bildschirm-Tracks (mediaType 'screenshare' UND videoType === 'desktop'; nur
+//   Multistream-Jitsi, siehe istDesktop). Je Track (Quelle: getSourceName(),
+//   Rueckfall participantId) laeuft NUR dessen Videospur in einem eigenen
+//   losgeloesten <video>; hoechstens MAX_QUELLEN gleichzeitig (sortiert nach
+//   Quelle). Je Quelle ein Standbild im Canvas (hoechstens 1600 px breit) als
+//   JPEG (Qualitaet 0.8, Base64) plus Anzeigename des Teilenden. Verschwundene
+//   Quellen geben ihr Video sofort frei.
 //
 // Kamera-Tracks werden NIE angefasst: kein Rendern, kein Lesen. Der Filter
 // prueft den Store-Eintrag UND den Track selbst (getVideoType()).
@@ -28,11 +30,13 @@
   const QUALITAET = 0.8;
   const BILD_WARTEN_MS = 3000;
   const DESKTOP = 'desktop';
-  const NICHTS = () => ({ teilt: false, von: null, jpeg: null });
+  const MAX_QUELLEN = 3;
+  const NICHTS = () => ({ teilt: false, quellen: [] });
 
-  let video = null;      // losgeloestes <video> fuer genau EINEN Desktop-Track
-  let spur = null;       // der JitsiTrack, der gerade in `video` laeuft
-  let letzterVon = null; // Anzeigename zur laufenden Spur (fuer die Zeitgrenze)
+  // Quelle -> { video, spur }: je Desktop-Track ein losgeloestes <video> und
+  // die JitsiTrack-Spur, die darin laeuft.
+  const videos = new Map();
+  let aktuelle = [];     // [{quelle, von}] des laufenden Aufrufs (fuer die Zeitgrenze)
   let gepatcht = null;   // Konferenz, deren Empfangs-Vorgaben umgebogen sind
   let original = null;   // urspruengliches setReceiverConstraints dieser Konferenz
   let gesendet = null;   // zuletzt gesendete Quellenliste (Schluessel)
@@ -140,33 +144,45 @@
     return null;
   };
 
-  const loesen = () => {
-    if (video) {
-      try { video.pause(); } catch (e) { /* egal */ }
-      video.srcObject = null;
+  // Name der Quelle: Jitsi-Quellname (Multistream, z. B. "<endpoint>-v1"),
+  // Rueckfall die Teilnehmer-Id.
+  const quelleVon = (t) => {
+    const jt = t.jitsiTrack;
+    const n = typeof jt.getSourceName === 'function' ? jt.getSourceName() : null;
+    if (n) return String(n);
+    return t.participantId ? String(t.participantId) : null;
+  };
+
+  const loesen = (quelle) => {
+    const e = videos.get(quelle);
+    if (e && e.video) {
+      try { e.video.pause(); } catch (err) { /* egal */ }
+      e.video.srcObject = null;
     }
-    video = null;
-    spur = null;
+    videos.delete(quelle);
   };
 
   const warten = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  const standbild = async (jt) => {
-    if (spur !== jt) {
-      loesen();
+  const standbild = async (quelle, jt) => {
+    let e = videos.get(quelle);
+    if (!e || e.spur !== jt) {
+      loesen(quelle);
       const stream = typeof jt.getOriginalStream === 'function' ? jt.getOriginalStream() : jt.stream;
       const spuren = stream && typeof stream.getVideoTracks === 'function' ? stream.getVideoTracks() : [];
       if (!spuren.length) return null;
-      video = document.createElement('video');
-      video.muted = true;
-      video.playsInline = true;
-      video.autoplay = true;
-      video.srcObject = new MediaStream([spuren[0]]);
-      spur = jt;
+      const neu = document.createElement('video');
+      neu.muted = true;
+      neu.playsInline = true;
+      neu.autoplay = true;
+      neu.srcObject = new MediaStream([spuren[0]]);
+      e = { video: neu, spur: jt };
+      videos.set(quelle, e);
       // Nicht auf play() warten: ohne Frames bliebe das Versprechen offen und
       // der Beobachter haengt. Stattdessen unten begrenzt auf Frames warten.
-      try { video.play().catch(() => {}); } catch (e) { /* Bild kommt ggf. spaeter */ }
+      try { neu.play().catch(() => {}); } catch (err) { /* Bild kommt ggf. spaeter */ }
     }
+    const video = e.video;
     const ende = Date.now() + BILD_WARTEN_MS;
     while ((video.readyState < 2 || !video.videoWidth) && Date.now() < ende) await warten(100);
     if (!video.videoWidth || !video.videoHeight) return null;
@@ -180,28 +196,37 @@
     return url.startsWith('data:image/jpeg') && komma > 0 ? url.slice(komma + 1) : null;
   };
 
-  // Obergrenze je Aufruf: der Beobachter wartet nie unbegrenzt auf die Seite.
+  // Obergrenze je Aufruf (fuer ALLE Quellen zusammen): der Beobachter wartet nie
+  // unbegrenzt auf die Seite. Die Quellen werden parallel abgefragt.
   const HOECHSTENS_MS = 8000;
   window.__lauraBild = () => Promise.race([
     holen(),
-    warten(HOECHSTENS_MS).then(() => ({ teilt: !!spur, von: spur ? letzterVon : null, jpeg: null })),
+    warten(HOECHSTENS_MS).then(() => ({
+      teilt: aktuelle.length > 0,
+      quellen: aktuelle.map((q) => ({ quelle: q.quelle, von: q.von, jpeg: null })),
+    })),
   ]);
 
   const holen = async () => {
     const s = zustand();
     if (!s) return NICHTS();
     try { empfangBegrenzen(s); } catch (e) { /* Empfang bleibt wie er ist */ }
-    const tracks = desktopTracks(s).filter((t) => !t.muted);
-    if (!tracks.length) {
-      loesen();
-      return NICHTS();
-    }
-    const t = tracks.find((x) => x.jitsiTrack === spur) || tracks[tracks.length - 1];
-    const von = anzeigename(s, konferenz(s), t.participantId);
-    letzterVon = von;
-    let jpeg = null;
-    try { jpeg = await standbild(t.jitsiTrack); } catch (e) { jpeg = null; }
-    return { teilt: true, von, jpeg };
+    const je = new Map();
+    desktopTracks(s).filter((t) => !t.muted).forEach((t) => {
+      const q = quelleVon(t);
+      if (q && !je.has(q)) je.set(q, t);
+    });
+    const gewaehlt = [...je.keys()].sort().slice(0, MAX_QUELLEN);
+    [...videos.keys()].forEach((q) => { if (!gewaehlt.includes(q)) loesen(q); });
+    const room = konferenz(s);
+    aktuelle = gewaehlt.map((q) => ({ quelle: q, von: anzeigename(s, room, je.get(q).participantId) }));
+    if (!aktuelle.length) return NICHTS();
+    const quellen = await Promise.all(aktuelle.map(async ({ quelle, von }) => {
+      let jpeg = null;
+      try { jpeg = await standbild(quelle, je.get(quelle).jitsiTrack); } catch (e) { jpeg = null; }
+      return { quelle, von, jpeg };
+    }));
+    return { teilt: true, quellen };
   };
 
   // Empfang so frueh wie moeglich begrenzen: sobald die Konferenz existiert,
@@ -229,7 +254,8 @@
       entfernt_audio: entfernt.filter((t) => t.mediaType === 'audio').length,
       desktop_quellen: room ? desktopQuellen(s, room).length : 0,
       empfang_begrenzt: !!room && gepatcht === room,
-      video_aktiv: !!video,
+      video_aktiv: videos.size > 0,
+      videos_aktiv: videos.size,
     };
   };
 })();
