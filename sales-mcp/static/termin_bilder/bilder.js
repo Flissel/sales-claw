@@ -1,7 +1,8 @@
 /* Bildschirm-Reiter der Termin-Akte: holt bilder.json alle 3 s, solange der
- * Termin live ist (danach einmalig), fuegt nur neue Karten an und sucht per
- * ?q=. Fremdtexte (Beschreibung, Name) landen ausschliesslich per textContent
- * im DOM, nie als HTML. */
+ * Termin live ist (danach einmalig), fuegt neue Karten an, entfernt nicht mehr
+ * gelieferte (geloescht, z. B. als heikel erkannt) und sucht per ?q=. Der
+ * Heikel-Hinweis folgt bilder_uebersprungen. Fremdtexte (Beschreibung, Name)
+ * landen ausschliesslich per textContent im DOM, nie als HTML. */
 (function () {
   "use strict";
   var wurzel = document.getElementById("bilder");
@@ -12,6 +13,7 @@
   var meldung = document.getElementById("bild-meldung");
   var vorlage = document.getElementById("bild-loeschen-vorlage");
   var leer = wurzel.querySelector(".bild-leer");
+  var heikel = document.getElementById("bild-heikel");
   var TAKT = 3000;
   var suchtext = "";
   var timer = null;
@@ -65,10 +67,34 @@
     if (leer) { leer.hidden = raster.children.length > 0; }
   }
 
+  /* Gleicher Text wie ui_termin.heikel_satz. */
+  function heikelHinweis(n) {
+    if (!heikel || typeof n !== "number") { return; }
+    var text = "";
+    if (n === 1) {
+      text = "1 heikler Bildschirm (Anmeldung, Bezahlung, Postfach) wurde nicht gespeichert.";
+    } else if (n > 1) {
+      text = n + " heikle Bildschirme (Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert.";
+    }
+    if (heikel.textContent !== text) { heikel.textContent = text; }
+    heikel.hidden = !text;
+  }
+
   /* Normalbetrieb: neue Karten oben anfuegen (Liste ist alt -> neu), vorhandene
-   * nur in der Beschreibung auffrischen. */
+   * nur in der Beschreibung auffrischen, nicht mehr gelieferte entfernen. Nie im
+   * Suchmodus (dort zeigt das Raster nur Treffer). */
   function ergaenzen(liste) {
     var da = bekannt();
+    if (wurzel.getAttribute("data-modus") !== "suche") {
+      var geliefert = {};
+      for (var j = 0; j < liste.length; j++) { geliefert[liste[j].id] = true; }
+      for (var id in da) {
+        if (Object.prototype.hasOwnProperty.call(da, id) && !geliefert[id]) {
+          raster.removeChild(da[id]);
+          delete da[id];
+        }
+      }
+    }
     for (var i = 0; i < liste.length; i++) {
       var b = liste[i];
       var k = da[b.id];
@@ -97,6 +123,7 @@
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("http")); })
       .then(function (d) {
         if (nr !== laufnummer) { return; }   // veraltete Antwort
+        heikelHinweis(d.bilder_uebersprungen);
         if (q) {
           ersetzen(d.bilder || []);
           meldung.textContent = d.fehler ? d.fehler

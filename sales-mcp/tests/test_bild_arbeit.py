@@ -101,7 +101,8 @@ def test_beschreiben_schreibt_text_und_vektoren(monkeypatch):
     assert bild_arbeit.naechste_beschreiben(Attrappe()) is False
 
 
-def test_beschreiben_fehler_zaehlt_versuche_bis_drei(monkeypatch):
+def test_fehler_wird_weiter_versucht(monkeypatch):
+    """R11: 'fehler' ist kein Endzustand; der Zaehler bleibt nur Statistik."""
     _akte("a1")
     bid = _bild()
 
@@ -109,13 +110,71 @@ def test_beschreiben_fehler_zaehlt_versuche_bis_drei(monkeypatch):
         raise ollama.OllamaFehler("aus")
 
     monkeypatch.setattr(ollama, "chat", chat)
-    for n in (1, 2, 3):
+    for n in range(1, 7):
         assert bild_arbeit.naechste_beschreiben(Attrappe()) is True
         z = _zeile(bid)
         assert z["beschreibung_status"] == "fehler" and z["beschreibung_versuche"] == n
+        assert bild_arbeit.naechste_beschreiben(Attrappe()) is False    # Pause laeuft
         _zurueckdatieren(bid, 3600)
-    assert bild_arbeit.naechste_beschreiben(Attrappe()) is False
-    assert _zeile(bid)["beschreibung_versuche"] == 3
+    assert not hasattr(bild_arbeit, "MAX_VERSUCHE")
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: "Folie")
+    assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "fertig"
+    z = _zeile(bid)
+    assert z["beschreibung_status"] == "fertig" and z["beschreibung_versuche"] == 7
+
+
+def _alter(bid, stunden):
+    server._q("update termin_bilder set aufgenommen_am = now() - make_interval(hours => %s) "
+              "where id = %s returning id", (stunden, bid))
+
+
+def test_ungeprueft_nach_24h_geloescht(monkeypatch, caplog):
+    _akte("a1")
+    fertig_alt = _fertig(monkeypatch, "a1", 0, "Folie")
+    offen_alt, fehler_alt, offen_neu = _bild("a1", 1), _bild("a1", 2), _bild("a1", 3)
+    server._q("update termin_bilder set beschreibung_status = 'fehler' where id = %s "
+              "returning id", (fehler_alt,))
+    for bid in (fertig_alt, offen_alt, fehler_alt):
+        _alter(bid, 25)
+    _alter(offen_neu, 23)
+    assert bild_arbeit.UNGEPRUEFT_LOESCHEN_NACH == timedelta(hours=24)
+    caplog.set_level(logging.DEBUG)
+    assert bild_arbeit.ungepruefte_loeschen() == 2
+    rest = {str(z["id"]) for z in server._q("select id from termin_bilder")}
+    assert rest == {fertig_alt, offen_neu}
+    assert "a1" not in caplog.text and "Jemand" not in caplog.text
+    assert "Ungepruefte Bilder geloescht: 2" in caplog.text
+    assert bild_arbeit.ungepruefte_loeschen() == 0
+    assert _uebersprungen() == 0           # kein heikles Bild, nur ungeprueft
+
+
+@pytest.mark.parametrize("antwort", [
+    "Eine Anmeldeseite mit Feldern für Benutzername und Passwort.",
+    "Ein Outlook-Fenster mit dem Posteingang.",
+    "Checkout-Seite eines Shops mit Kreditkartenfeldern.",
+    "Login-Maske von GMX.",
+    "Online-Banking: Überweisung an IBAN DE00 1234.",
+    "Die Zahlungsübersicht eines Kontos.",
+])
+def test_stichwort_netz_loescht(monkeypatch, caplog, antwort):
+    """R11: beschreibt das Modell statt HEIKEL zu antworten, faengt das Stichwort-Netz."""
+    _heikel_antwort(monkeypatch, antwort)
+    caplog.set_level(logging.DEBUG)
+    assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "heikel"
+    assert server._q("select 1 from termin_bilder") == []
+    assert _uebersprungen() == 1
+    assert antwort not in caplog.text
+
+
+@pytest.mark.parametrize("antwort", [
+    "Eine Folie mit Umsatzzahlen 2025 und Wachstum je Quartal.",
+    "Ein Architekturdiagramm mit drei Diensten und einer Datenbank.",
+])
+def test_stichwort_netz_harmlose_beschreibung_bleibt(monkeypatch, antwort):
+    bid = _heikel_antwort(monkeypatch, antwort)
+    assert bild_arbeit.naechste_beschreiben_status(Attrappe()) == "fertig"
+    assert _zeile(bid)["beschreibung"] == antwort
+    assert _uebersprungen() == 0
 
 
 def test_neuversuch_wartet_wachsende_pause(monkeypatch):
@@ -159,8 +218,9 @@ def test_pause_haelt_andere_bilder_nicht_auf(monkeypatch):
     assert _zeile(b1)["beschreibung_status"] == "fehler"
 
 
-def test_vektor_bild_steht_nach_ki_fehler_und_ist_suchbar(monkeypatch):
-    """R16: der Bild-Vektor haengt nicht an der KI; das Bild ist ohne Beschreibung findbar."""
+def test_vektor_bild_steht_nach_ki_fehler_aber_ungeprueft_nicht_suchbar(monkeypatch):
+    """R16: der Bild-Vektor haengt nicht an der KI. R11: gesucht wird trotzdem nur in
+    geprueften (fertig beschriebenen) Bildern."""
     _akte("a1")
     bid = _bild()
 
@@ -174,9 +234,7 @@ def test_vektor_bild_steht_nach_ki_fehler_und_ist_suchbar(monkeypatch):
     z = _zeile(bid)
     assert z["beschreibung_status"] == "fehler" and z["vb"] and not z["vt"]
     assert z["beschreibung"] is None
-    r = bild_arbeit.suchen(Attrappe(), "bild")
-    assert [x["id"] for x in r] == [bid] and r[0]["score"] == pytest.approx(1.0)
-    assert r[0]["beschreibung"] is None
+    assert bild_arbeit.suchen(Attrappe(), "bild") == []      # ungeprueft: unsichtbar
     # Neuversuch berechnet den Bild-Vektor nicht noch einmal
     _zurueckdatieren(bid, 3600)
 
@@ -192,6 +250,24 @@ def test_vektor_bild_steht_nach_ki_fehler_und_ist_suchbar(monkeypatch):
     assert Zaehler.n == 0
     z = _zeile(bid)
     assert z["beschreibung_status"] == "fertig" and z["vb"] and z["vt"]
+    r = bild_arbeit.suchen(Attrappe(), "bild")
+    assert [x["id"] for x in r] == [bid] and r[0]["score"] == pytest.approx(1.0)
+
+
+def test_suchen_nur_gepruefte(monkeypatch):
+    """R11: Bilder mit Bild-Vektor, aber offen/fehler, tauchen in der Suche nie auf."""
+    _akte("a1")
+    ok = _fertig(monkeypatch, "a1", 0, "Folie text")
+    offen = _bild("a1", 1)
+    fehler = _bild("a1", 2)
+    server._q("update termin_bilder set vektor_bild = (select vektor_bild from termin_bilder "
+              "where id = %s), vektor_text = (select vektor_text from termin_bilder "
+              "where id = %s) where id in (%s, %s) returning id", (ok, ok, offen, fehler))
+    server._q("update termin_bilder set beschreibung_status = 'fehler' where id = %s "
+              "returning id", (fehler,))
+    for text in ("bild", "text"):
+        assert [x["id"] for x in bild_arbeit.suchen(Attrappe(), text)] == [ok]
+        assert [x["id"] for x in bild_arbeit.suchen(Attrappe(), text, uid="a1")] == [ok]
 
 
 def test_einbettungsfehler_ist_fehler_nie_fertig(monkeypatch):

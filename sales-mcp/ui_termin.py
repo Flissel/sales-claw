@@ -335,9 +335,18 @@ def _bild_json(uid: str, b: dict, zone, score=None) -> dict:
 
 
 def _beschreibung_text(b: dict) -> str:
-    if b["beschreibung"]:
-        return _e(b["beschreibung"])
-    return "keine Beschreibung möglich" if b["status"] == "fehler" else "wird beschrieben …"
+    # Angezeigt werden nur gepruefte Bilder (R11), die haben immer eine Beschreibung.
+    return _e(b["beschreibung"] or "")
+
+
+def heikel_satz(n: int) -> str:
+    """Hinweis auf nicht gespeicherte heikle Bildschirme (leer bei 0). Gleicher Text
+    in static/termin_bilder/bilder.js (Live-Auffrischung)."""
+    if n <= 0:
+        return ""
+    if n == 1:
+        return "1 heikler Bildschirm (Anmeldung, Bezahlung, Postfach) wurde nicht gespeichert."
+    return f"{n} heikle Bildschirme (Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert."
 
 
 def _loeschen_formular(uid: str, bild_id: str) -> str:
@@ -378,10 +387,10 @@ def _bildschirm(akte: dict, schreiben: bool) -> str:
     if (akte["bilder_anzahl"] or 0) >= bildschirm.OBERGRENZE:
         kopf += (f'<p class="meta bild-obergrenze">Obergrenze von {bildschirm.OBERGRENZE} '
                  'Standbildern erreicht – weitere nur noch bei starker Änderung.</p>')
-    n_heikel = int(akte.get("bilder_uebersprungen") or 0)
-    if n_heikel > 0:
-        kopf += (f'<p class="meta bild-heikel">{n_heikel} heikle Bildschirme '
-                 '(Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert.</p>')
+    satz = heikel_satz(int(akte.get("bilder_uebersprungen") or 0))
+    # Immer da (bei 0 versteckt), damit bilder.js den Hinweis live auffrischen kann.
+    kopf += (f'<p class="meta bild-heikel" id="bild-heikel"{"" if satz else " hidden"}>'
+             f'{_e(satz)}</p>')
     karten = "".join(_karte(uid, b, schreiben) for b in reversed(bilder))
     leer = "" if bilder else '<p class="meta bild-leer">Noch keine Bilder.</p>'
     vorlage = ""
@@ -659,26 +668,28 @@ def routen(ui) -> list:
     @_gesichert_json
     async def bilder_json(request):
         uid = request.path_params["kennung"]
-        akte_z = server._q("select status, zeitzone from termin_akten where uid = %s", (uid,))
+        akte_z = server._q("select status, zeitzone, bilder_uebersprungen from termin_akten "
+                           "where uid = %s", (uid,))
         if not akte_z:
             return _grund(404, "Keine Akte zu dieser uid.")
         zone = _zone_der(akte_z[0])
-        live = akte_z[0]["status"] in _BILDSTATUS_LIVE
+        kopf = {"live": akte_z[0]["status"] in _BILDSTATUS_LIVE,
+                "bilder_uebersprungen": int(akte_z[0].get("bilder_uebersprungen") or 0)}
         q = " ".join(str(request.query_params.get("q") or "").split())[:200]
+        # Nur gepruefte Bilder (R11); auch Suchtreffer muessen hier enthalten sein.
         alle = {str(b["id"]): b for b in bildschirm.bilder(uid)}
         if not q:
-            return _ok({"bilder": [_bild_json(uid, b, zone) for b in alle.values()],
-                        "live": live})
+            return _ok({"bilder": [_bild_json(uid, b, zone) for b in alle.values()], **kopf})
         try:
             treffer = await run_in_threadpool(bildschirm.suchen, q, uid, 20)
         except bildschirm.SucheFehler as e:
-            return _ok({"bilder": [], "live": live, "fehler": str(e)})
+            return _ok({"bilder": [], **kopf, "fehler": str(e)})
         aus = []
         for t in treffer:
             b = alle.get(str(t.get("id")))
-            if b is not None and t.get("uid", uid) == uid:   # nur dieser Termin, nur Vorhandenes
+            if b is not None and t.get("uid", uid) == uid:   # nur dieser Termin, nur Gepruefte
                 aus.append(_bild_json(uid, b, zone, t.get("score")))
-        return _ok({"bilder": aus, "live": live})
+        return _ok({"bilder": aus, **kopf})
 
     @ui._gesichert_seite
     async def bild_jpg(request):

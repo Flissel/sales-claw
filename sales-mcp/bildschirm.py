@@ -133,17 +133,43 @@ def quelle_ende(uid: str, geteilt_von: str | None, zeitpunkt: datetime) -> None:
               (zeitpunkt, uid, name_norm(geteilt_von)))
 
 
-def bilder(uid: str) -> list[dict]:
+# Schicht B fail-closed (Ruling R11): sichtbar ist nur ein geprueftes (fertig
+# beschriebenes) Bild; offen/fehler koennten noch heikel sein.
+_GEPRUEFT = "beschreibung_status = 'fertig'"
+
+
+def bilder(uid: str, auch_ungeprueft: bool = False) -> list[dict]:
+    """Bilder einer Akte ohne Bytes. Vorgabe: nur gepruefte (fuer jede Anzeige);
+    `auch_ungeprueft=True` nur fuer interne Zwecke, nie fuer eine Ausgabe."""
+    filter_ = "" if auch_ungeprueft else f" and {_GEPRUEFT}"
     return server._q(
         "select id, uid, aufgenommen_am, bis, geteilt_von, breite, hoehe, dhash, "
         "beschreibung, beschreibung_status, beschreibung_versuche, erstellt_am "
-        "from termin_bilder where uid = %s order by aufgenommen_am, erstellt_am", (uid,))
+        f"from termin_bilder where uid = %s{filter_} order by aufgenommen_am, erstellt_am",
+        (uid,))
 
 
 def bild_daten(uid: str, bild_id: str) -> bytes | None:
-    z = server._q("select bild from termin_bilder where uid = %s and id = %s",
+    """Bildbytes eines GEPRUEFTEN Bildes; ungepruefte gibt es nicht (R11)."""
+    z = server._q(f"select bild from termin_bilder where uid = %s and id = %s and {_GEPRUEFT}",
                   (uid, bild_id))
     return bytes(z[0]["bild"]) if z else None
+
+
+def gepruefte_ids(ids: list[str]) -> set[str]:
+    """Teilmenge der Ids, die als gepruefte Bilder existieren (Nicht-UUIDs fallen weg)."""
+    import uuid
+    gueltig = []
+    for i in ids:
+        try:
+            gueltig.append(str(uuid.UUID(str(i))))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not gueltig:
+        return set()
+    z = server._q(f"select id from termin_bilder where id = any(%s::uuid[]) and {_GEPRUEFT}",
+                  (gueltig,))
+    return {str(r["id"]) for r in z}
 
 
 def bild_loeschen(uid: str, bild_id: str) -> bool:

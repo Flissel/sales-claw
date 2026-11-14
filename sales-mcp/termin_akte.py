@@ -344,9 +344,11 @@ def lesen(uid: str) -> dict | None:
         "abgesagt": a["abgesagt_am"] is not None, "briefing": briefing,
         "mitschrift": mitschrift, "vorschlaege": vorschlaege,
         "bildschirm_auswerten": bool(a["bildschirm_auswerten"]),
-        "bilder_uebersprungen": int(a["bilder_uebersprungen"] or 0),
+        "bilder_uebersprungen": int(a.get("bilder_uebersprungen") or 0),
+        # Nur gepruefte Bilder zaehlen (R11): ungepruefte sind nirgends sichtbar.
         "bilder_anzahl": int(server._q(
-            "select count(*) as n from termin_bilder where uid = %s", (uid,))[0]["n"])}
+            "select count(*) as n from termin_bilder where uid = %s "
+            "and beschreibung_status = 'fertig'", (uid,))[0]["n"])}
 
 
 def status_setzen(uid: str, status: str, grund: str = "", **felder) -> None:

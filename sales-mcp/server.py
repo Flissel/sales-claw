@@ -10601,8 +10601,12 @@ def termin_bilder_suchen(text: str, uid: str = "", limit: int = 10) -> str:
         return _json({"fehler": str(e)})
     # Ruling R15: der Agent laeuft ueber ein Cloud-Modell und bekommt keinen
     # Termininhalt (vgl. termin_akte.fuer_agenten), also keine Beschreibung.
+    # R11 fail-closed: nur gepruefte Bilder, auch wenn die Suche anderes meldet.
+    gepruefte = bildschirm.gepruefte_ids([str(t.get("id")) for t in treffer])
     aus = []
     for t in treffer:
+        if str(t.get("id")) not in gepruefte:
+            continue
         tuid = str(t.get("uid") or "")
         aus.append({"id": t.get("id"), "uid": tuid, "aufgenommen_am": t.get("aufgenommen_am"),
                     "score": t.get("score"),

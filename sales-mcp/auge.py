@@ -5,7 +5,7 @@ Ein headless Chromium tritt internen Jitsi-Terminen als sichtbarer Teilnehmer
 Seiten-Skript `auge_jitsi.js` liest ausschliesslich entfernte Tracks mit
 videoType 'desktop', nie Kameras) und legt sie bei spuerbarer Aenderung in
 `termin_bilder` ab. Ein eigener Thread beschreibt und bettet die Bilder ein,
-eines nach dem anderen. Ein kleiner HTTP-Dienst (nur im Compose-Netz) bietet
+eines nach dem anderen, und loescht ungepruefte nach 24 h (R11). Ein kleiner HTTP-Dienst (nur im Compose-Netz) bietet
 `GET /gesund` und `POST /suche`.
 
 Jede Runde (`AUGE_RUNDE_S`, Vorgabe 2 s):
@@ -38,6 +38,7 @@ import os
 import signal
 import sys
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -66,6 +67,7 @@ KI_BILD_TIMEOUT_STANDARD_S = 60.0
 KI_PUFFER_S = 15.0           # Client wartet etwas laenger als die Bild-Spur des KI-Tors
 FEHLER_PAUSE_S = 30          # nach einem Fehlversuch der Beschreibung (Ruling R6)
 LEER_PAUSE_S = 3             # nichts offen
+AUFRAEUMEN_ABSTAND_S = 600   # ungepruefte Bilder nach 24 h loeschen, hoechstens je 10 min (R11)
 NEUSTART_PAUSE = timedelta(seconds=30)   # nach gescheitertem Beitritt
 MAX_SEITENFEHLER = 5         # so viele Fehler am Stueck -> Seite schliessen, neu betreten
 MAX_QUELLEN = 3              # gleichzeitige Freigaben je Termin (wie MAX_QUELLEN in auge_jitsi.js)
@@ -394,8 +396,22 @@ def beschreib_schritt(einbetter: bild_arbeit.Einbetter) -> float:
     return 0
 
 
+def aufraeum_schritt(zuletzt: float | None, jetzt: float) -> float | None:
+    """Hoechstens einmal je AUFRAEUMEN_ABSTAND_S: ungepruefte Bilder nach 24 h loeschen
+    (R11). Liefert den Zeitpunkt des letzten Laufs (auch nach einem Fehler)."""
+    if zuletzt is not None and jetzt - zuletzt < AUFRAEUMEN_ABSTAND_S:
+        return zuletzt
+    try:
+        bild_arbeit.ungepruefte_loeschen()
+    except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
+        LOG.warning("Aufraeumen ungepruefter Bilder fehlgeschlagen (%s)", _typ(e))
+    return jetzt
+
+
 def beschreib_schleife(einbetter: bild_arbeit.Einbetter, stopp: threading.Event) -> None:
+    aufgeraeumt: float | None = None
     while not stopp.is_set():
+        aufgeraeumt = aufraeum_schritt(aufgeraeumt, time.monotonic())
         pause = beschreib_schritt(einbetter)
         if pause:
             stopp.wait(pause)

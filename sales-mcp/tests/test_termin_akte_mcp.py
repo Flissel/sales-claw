@@ -130,15 +130,24 @@ class _Antwort:
         return self._d
 
 
+def _bild(uid, status="fertig"):
+    return str(server._q(
+        "insert into termin_bilder (uid, aufgenommen_am, bild, breite, hoehe, dhash, "
+        "beschreibung, beschreibung_status) values (%s, %s, %s, 1, 1, 0, 'x', %s) "
+        "returning id", (uid, JETZT, b"\xff\xd8", status))[0]["id"])
+
+
 def test_mcp_termin_bilder_suchen(monkeypatch):
     import urllib.request
 
+    _akte("u1/x")
+    i1 = _bild("u1/x")
     gesehen = {}
 
     def urlopen(req, timeout=None):
         gesehen["url"], gesehen["body"] = req.full_url, json.loads(req.data)
         gesehen["timeout"] = timeout
-        return _Antwort([{"id": "i1", "uid": "u1/x", "aufgenommen_am": "2099-01-09T12:00:00Z",
+        return _Antwort([{"id": i1, "uid": "u1/x", "aufgenommen_am": "2099-01-09T12:00:00Z",
                           "beschreibung": "Geheime Folie", "score": 0.8, "bild": "ROHBYTES"}])
 
     monkeypatch.setenv("AUGE_URL", "http://auge:8790")
@@ -150,7 +159,7 @@ def test_mcp_termin_bilder_suchen(monkeypatch):
     assert gesehen["body"] == {"text": "Preisliste", "uid": "u1", "limit": 3}
     d = json.loads(roh)
     # Ruling R15: nur Fundstellen, keine Beschreibung, keine Bytes.
-    assert d == [{"id": "i1", "uid": "u1/x", "aufgenommen_am": "2099-01-09T12:00:00Z",
+    assert d == [{"id": i1, "uid": "u1/x", "aufgenommen_am": "2099-01-09T12:00:00Z",
                   "score": 0.8,
                   "link": "https://ui.invalid/termine/u1%2Fx?reiter=bildschirm"}]
     assert "beschreibung" not in d[0] and "Geheime" not in roh and "ROHBYTES" not in roh
@@ -171,3 +180,19 @@ def test_mcp_termin_bilder_suchen_fehlerfaelle(monkeypatch):
     roh = server.termin_bilder_suchen("x")
     assert "fehler" in json.loads(roh) and "geheim" not in roh
     assert "fehler" in json.loads(server.termin_bilder_suchen("   "))
+
+
+def test_mcp_termin_bilder_suchen_nur_gepruefte(monkeypatch):
+    """R11 fail-closed: auch wenn die Bildsuche ungepruefte oder fremde Ids meldet,
+    gibt das Werkzeug nur fertig beschriebene, vorhandene Bilder heraus."""
+    import urllib.request
+    _akte("u1")
+    ok, offen, fehler = _bild("u1"), _bild("u1", "offen"), _bild("u1", "fehler")
+    treffer = [{"id": b, "uid": "u1", "aufgenommen_am": "x", "score": 0.5}
+               for b in (offen, ok, fehler, "kein-uuid", "00000000-0000-0000-0000-000000000009")]
+    monkeypatch.setenv("AUGE_URL", "http://auge:8790")
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Antwort(treffer))
+    d = json.loads(server.termin_bilder_suchen("Preis", uid="u1"))
+    assert [x["id"] for x in d] == [ok]
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Antwort([]))
+    assert json.loads(server.termin_bilder_suchen("Preis")) == []
