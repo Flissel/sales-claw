@@ -64,9 +64,11 @@ def _sprecher_abbilden(namen: list[str], betreiber: str) -> dict[str, str]:
     """Rohname -> vereinheitlichter Name (nur nicht-leere Namen)."""
     abbild = {n: n for n in set(namen) if n.strip()}
     if betreiber:
-        erstes = betreiber.split()[0].lower()
+        # Nur Namen, deren Woerter alle im Betreibernamen stecken ("felix",
+        # "Felix", "felix baumann"); "Felix Meier" bleibt (Ruling R6).
+        bw = frozenset(betreiber.lower().split())
         for n in abbild:
-            if n.split()[0].lower() == erstes:
+            if frozenset(n.lower().split()) <= bw:
                 abbild[n] = betreiber
     haeufig: dict[str, int] = {}
     for n in namen:
@@ -80,8 +82,16 @@ def _sprecher_abbilden(namen: list[str], betreiber: str) -> dict[str, str]:
 
     ziel: dict[str, str] = {}
     for w, m in mengen.items():
-        kandidaten = [v for v, mv in mengen.items() if m <= mv]
-        ziel[w] = max(kandidaten, key=rang)
+        echt_mehr = [v for v, mv in mengen.items() if m < mv]
+        if not echt_mehr:
+            ziel[w] = max((v for v, mv in mengen.items() if mv == m), key=rang)
+            continue
+        oben = [v for v in echt_mehr
+                if not any(mengen[v] < mengen[u] for u in echt_mehr)]
+        if len({mengen[v] for v in oben}) > 1:
+            ziel[w] = w         # mehrdeutig (Diana -> Marx oder Klein?): nicht raten
+        else:
+            ziel[w] = max(oben, key=rang)
     return {n: ziel[w] for n, w in abbild.items()}
 
 

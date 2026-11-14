@@ -76,3 +76,29 @@ def test_zahlen_als_beginn_und_eingabe_unveraendert():
     kopie = [dict(s) for s in ein]
     aus = mb.bereinigen(ein, betreiber="")
     assert len(aus) == 1 and ein == kopie
+
+
+def test_anderer_felix_bleibt(monkeypatch):
+    monkeypatch.delenv("BETREIBER_NAME", raising=False)
+    ein = [_s("felix", _iso(0), "a"), _s("Felix Meier", _iso(60), "b"),
+           _s("felix baumann", _iso(120), "c")]
+    assert [s["sprecher"] for s in mb.bereinigen(ein)] == \
+        ["Felix Baumann", "Felix Meier", "Felix Baumann"]
+
+
+def test_kurzname_mehrdeutig_bleibt():
+    ein = [_s("Diana", _iso(0), "a"), _s("Diana Marx", _iso(60), "b"),
+           _s("Diana Klein", _iso(120), "c")]
+    assert [s["sprecher"] for s in mb.bereinigen(ein, betreiber="")] == \
+        ["Diana", "Diana Marx", "Diana Klein"]
+
+
+def test_verbinden_kettet_ueber_vorgaenger():
+    ein = [_s("A", _iso(0), "eins"), _s("A", _iso(5), "zwei"), _s("A", _iso(10), "drei")]
+    aus = mb.bereinigen(ein, betreiber="")
+    assert len(aus) == 1 and aus[0]["text"] == "eins zwei drei"
+
+
+def test_sender_im_satz_bleibt():
+    ein = [_s("A", _iso(0), "ARD und ZDF zeigen das heute")]
+    assert [s["text"] for s in mb.bereinigen(ein, betreiber="")] == ["ARD und ZDF zeigen das heute"]
