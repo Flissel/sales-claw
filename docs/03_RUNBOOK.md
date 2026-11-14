@@ -4246,6 +4246,64 @@ stehen (am PC im Startskript der Marketing-Dienste; leer = nichts). Details: vib
 **Erster Lauf (12.11.2026).** Testauftrag `a86339b9`: 8 Szenen, 2:10 min, 6 Modellaufrufe. Gliederung etwa
 2 min, alle Szenentexte zusammen etwa 5 min, je Clip etwa 1,5 min, Zusammenfügen etwa 20 s.
 
+**Übergaben aus Rowboat (Konzept-Fläche, seit 14.11.2026).** Im Rowboat-Chat sagt der Betreiber „Gib das Konzept an
+die Werkbank“. Der Rowboat-Dienst `rowboat-auftraege` schickt das Konzept an `POST /api/auftraege/video`
+(Bearer-Schlüssel der Herkunft `rowboat`). Das legt **keinen Auftrag** an, sondern eine *vorbereitete Übergabe*
+(Tabelle `video_uebergabe`). Den Auftrag gibt es erst, wenn der Betreiber auf der Seite `/marketing/werkbank` im
+Abschnitt „Übergaben aus Rowboat“ (`#uebergaben`) unter seinem Login „Ja, übergeben“ drückt; erst dann gelten die
+Prüfungen und die Tagesgrenze (zwei Videos je Laden und Tag). „Nein“ verwirft. Die Karte zeigt alles, was an das
+Videomodell geht (Vorgang, Zeit, Datei, Thema, Zielgruppe, Hook, Kernaussage, Abschluss, Stufen und Szenen).
+
+- Höchstens **5 offene** Übergaben je Laden (die sechste bekommt 429 „Es sind schon 5 Übergaben offen. Bitte erst in
+  Sales entscheiden.“); dasselbe Konzept (gleicher Inhalt) kann nicht zweimal gleichzeitig offen sein (409).
+- Eine Übergabe **verfällt nach 24 Stunden** (sie erscheint nicht mehr und lässt sich nicht bestätigen).
+- Bestätigen geht **nur mit Anmeldung**: läuft die Oberfläche ohne `UI_SESSION_SECRET`, zeigt die Seite die Übergaben
+  nur zum Lesen („Bestätigen geht nur mit Anmeldung.“) und beide Aktionen antworten 403. Zusätzlich verlangen die
+  Aktionen die CSRF-Marke und eine Anfrage von derselben Seite (`Origin`/`Sec-Fetch-Site`).
+- Fehlt die Tabelle im Schema des Ladens, zeigt die Seite im Abschnitt „Die Übergabe ist auf diesem Laden noch nicht
+  eingerichtet.“ und die Annahme antwortet 503 mit demselben Satz.
+
+**Not-Aus für Rowboat-Übergaben.** Den Schlüssel der Herkunft `rowboat` ersetzen und den neuen Wert verwerfen (die
+CLI gibt den Wert nur in eine Pipe aus; danach kennt niemand einen gültigen Schlüssel):
+
+    docker compose exec -T sales-ui python -m freigabe_schluessel anlegen rowboat > /dev/null
+
+Oder ihn nur abschalten (Anfragen bekommen 401):
+`update <schema>.freigabe_schluessel set aktiv = false where herkunft = 'rowboat'`. Neuen Schlüssel für den Dienst
+anlegen wie bei den anderen Herkünften (Wert nur in die Schlüsseldatei des Dienstes, 0600). Bereits vorbereitete
+Übergaben bleiben liegen, bis sie entschieden werden oder verfallen; offene Karten lassen sich auf der Seite mit
+„Nein“ verwerfen.
+
+**Vor dem Ausrollen (je Laden-Schema, in dieser Reihenfolge).**
+
+1. Tabellen anlegen; beide Skripte sind wiederholbar (`create ... if not exists`, ein zweiter Lauf ändert nichts).
+   Als `supabase_admin`, `<schema>` = Schema des Ladens (`sales`, `sales_<laden>`):
+
+       psql "<DB-URL>" -v ON_ERROR_STOP=1 -v schema=<schema> -f db/freigabe-eingang.sql
+       psql "<DB-URL>" -v ON_ERROR_STOP=1 -v schema=<schema> -f db/video-uebergabe.sql
+
+   (`freigabe-eingang.sql` erweitert die Schlüssel-Herkünfte um `rowboat`; ohne diesen Lauf lässt sich der Schlüssel
+   nicht anlegen. Die Form für den Offload-Host steht oben unter „Freigabe-Eingang: Tabellen“.)
+2. Schlüssel `rowboat` anlegen (Wert nur in die Schlüsseldatei des Dienstes `rowboat-auftraege` auf dem Mini-PC).
+3. Prüfen, dass `LADEN_PRAEFIX` des Basis-Ladens `sales` ist: `sales-ui` bekommt die Variable nicht in der Compose-Datei,
+   die Annahme und die Werkbank-Seite rechnen mit dem Vorgabewert `sales` (offen aus der Prüfung vom 14.11.2026, M4).
+   Heißt der Laden anders, zählen Rowboat und Salesman die Tagesgrenze unter verschiedenen Namen.
+4. Die Testsuite läuft nie mit `--env-file .env` gegen die echte Datenbank (die DB-Tests der Übergaben legen ein
+   Test-Schema `auftrag` an und überspringen sich, wenn ein fremdes `auftrag` existiert; ein echtes Auftragsbuch fassen
+   sie nie an). Die Rolle `sales_app` ist von allen Läden geteilt und darf `video_uebergabe` in allen Spalten
+   ändern (bewusst, nur nicht löschen).
+5. Abnahme am echten System: „Gib es an die Werkbank“ in Rowboat, Link öffnen, „Ja“ drücken, Auftragsnummer und
+   Werkbank-Seite des Auftrags prüfen (zeigt auch, dass `sales_app` `auftrag.sales_anlegen` ausführen darf).
+
+**Aufräumen.** Entschiedene Zeilen (bis zu 64 KiB Konzept je Zeile) bleiben zunächst als Spur liegen. Wer sie
+nach 90 Tagen entfernen will, tut das von Hand als `supabase_admin` (`sales_app` darf nicht löschen), nie automatisch:
+
+    delete from <schema>.video_uebergabe
+     where status in ('bestaetigt', 'verworfen', 'abgelaufen')
+       and entschieden_am < now() - interval '90 days';
+
+Gelöschte `bestaetigt`-Zeilen fehlen danach beim Hinweis „Dieses Konzept wurde schon einmal übergeben“.
+
 ## Wartelisten-Abgleich: vibemind.space → Kontakte (seit 13.11.2026)
 
 Wer sich auf vibemind.space auf die Warteliste setzt, soll als Kontakt mit dem Kennzeichen „Waitinglist“ hier
