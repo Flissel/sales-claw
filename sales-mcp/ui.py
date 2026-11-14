@@ -215,6 +215,7 @@ import mailadresse
 import laden_marke
 import marketing_pult
 import ui_editor
+import ui_auftraege_api
 import ui_freigabe_api
 import ui_freigabe_bewerbung
 import ui_freigabe_eingang
@@ -692,6 +693,11 @@ class AnmeldeWache:
             # Sie sind nicht ungeschuetzt: /passwort-neu verlangt einen
             # gueltigen Einmal-Token, und /passwort-vergessen kann nichts
             # aendern, nur eine Mail an eine HINTERLEGTE Adresse ausloesen.
+            await self.app(scope, receive, send)
+            return
+        if scope["path"] == ui_auftraege_api.PFAD:
+            # Auftragsannahme fuer Rowboat: eigener Bearer-Schluessel
+            # (Herkunft rowboat, ui_auftraege_api), keine Sitzung, kein CSRF.
             await self.app(scope, receive, send)
             return
         if scope["path"].startswith("/api/freigaben/"):
@@ -10399,6 +10405,7 @@ app = Starlette(routes=[
     *ui_freigabe_newsletter.routen(sys.modules[__name__]),
     *ui_portal_fenster.routen(sys.modules[__name__]),
     *ui_freigabe_bewerbung.routen(sys.modules[__name__]),
+    *ui_auftraege_api.routen(sys.modules[__name__]),
     *ui_freigabe_api.routen(sys.modules[__name__]),
     *ui_freigabe_eingang.routen(sys.modules[__name__]),
     Route("/medien", medien),

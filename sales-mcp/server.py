@@ -10480,17 +10480,28 @@ _AUFTRAG_SCHEMAS = ("sales", "sales_test")
 VIDEO_ZIELGRUPPE_VORGABE = "Entscheider 34+, die eine Schulung suchen"
 
 
+def video_auftrag_pruefen(thema, minuten, zielgruppe, beschreibung) -> str | None:
+    """Gemeinsame Pruefung der Video-Angaben (Salesman-Werkzeug und Annahme `POST /api/auftraege/video`).
+    -> der erste Fehlersatz oder None. Die Reihenfolge bleibt die des Werkzeugs."""
+    if not 3 <= len((thema or "").strip()) <= 300:
+        return "Das Thema braucht 3 bis 300 Zeichen."
+    if len("" if beschreibung is None else str(beschreibung)) > 4000:
+        return "Die Beschreibung darf höchstens 4000 Zeichen haben."
+    if isinstance(minuten, bool) or not isinstance(minuten, int) or not 3 <= minuten <= 5:
+        return "Das Video dauert 3 bis 5 Minuten."
+    if len(str(zielgruppe or "").strip()) > 300:
+        return "Die Zielgruppe darf höchstens 300 Zeichen haben."
+    return None
+
+
 def _video_auftrag_geben(thema: str, beschreibung, minuten, zielgruppe) -> str:
     """art="video" von auftrag_geben. Die Beschreibung geht UNVERAENDERT durch (nicht gestrippt, nicht
     gekuerzt) und steht in keiner Antwort an den Betreiber."""
+    fehler = video_auftrag_pruefen(thema, minuten, zielgruppe, beschreibung)
+    if fehler:
+        return _json({"fehler": fehler})
     beschreibung = "" if beschreibung is None else str(beschreibung)
-    if len(beschreibung) > 4000:
-        return _json({"fehler": "Die Beschreibung darf höchstens 4000 Zeichen haben."})
-    if isinstance(minuten, bool) or not isinstance(minuten, int) or not 3 <= minuten <= 5:
-        return _json({"fehler": "Das Video dauert 3 bis 5 Minuten."})
     zielgruppe = (str(zielgruppe or "").strip()) or VIDEO_ZIELGRUPPE_VORGABE
-    if len(zielgruppe) > 300:
-        return _json({"fehler": "Die Zielgruppe darf höchstens 300 Zeichen haben."})
     laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
     mandant = os.environ.get("MARKETING_MANDANT", "").strip()
     if not mandant:
