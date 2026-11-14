@@ -3977,7 +3977,7 @@ entfernte Tracks mit `mediaType` `screenshare`, nie Kameras und nie Ton. Es ents
 siehe Abschnitt KI-Tor und `docs/06_DSGVO.md`). Die Vektoren rechnet fastembed lokal im Container; kein Bild geht
 anderswohin.
 
-**Grenzen und Aufbau.** `mem_limit` 2048m, `cpus` 1,5 (Chromium mit einem Termin ≈ 0,5 GB), läuft als uid 10001. Der
+**Grenzen und Aufbau.** `mem_limit` 2560m (Leerlauf mit Modellen gemessen 1,54 GiB), `cpus` 1,5 (Chromium mit einem Termin ≈ 0,5 GB), läuft als uid 10001. Der
 HTTP-Teil (`GET /gesund`, `POST /suche`, Port `AUGE_PORT`, Vorgabe 8790) ist nur im Compose-Netz erreichbar. Die
 Umgebung ist bewusst schmal (DB, KI-Tor, Jitsi-Hosts), ohne den Anker `x-sales-mcp-umgebung`: keine Kanal-Schlüssel,
 Passwörter oder Token. `deploy/update.sh` baut ihn nur neu, wenn er schon lief (`KERN_OPTIONAL`).
@@ -3985,7 +3985,7 @@ Passwörter oder Token. `deploy/update.sh` baut ihn nur neu, wenn er schon lief 
 **Härtung.** `cap_drop: [ALL]` (keine Linux-Capabilities) und `security_opt: no-new-privileges:true`; Chromium läuft
 ohne eigene Sandbox (Playwright-Vorgabe) als uid 10001. `/tmp` ist ein `tmpfs` mit 256m: Chromium legt sein Shared
 Memory wegen `--disable-dev-shm-usage` dorthin, also in den RAM statt auf die Overlay-Platte; es zählt zum `mem_limit`.
-`memswap_limit` 2048m: kein Auslagern, die Speichergrenze ist hart. Der Start von Chromium mit genau diesen Optionen
+`memswap_limit` 2560m: kein Auslagern, die Speichergrenze ist hart. Der Start von Chromium mit genau diesen Optionen
 ist auf der VM geprüft (13.11.2026).
 
 **Offen vor Kundenterminen** (Stufe 1 läuft nur in internen Terminen):
