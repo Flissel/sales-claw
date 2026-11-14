@@ -101,11 +101,26 @@ class Oeffner:
         return s
 
 
+def _quelle(muster, von="Anna", quelle=None):
+    """Ein Eintrag aus __lauraBild().quellen; Quelle vorgabemaessig je Teilendem."""
+    return {"quelle": quelle or f"{von}-v1", "von": von,
+            "jpeg": _b64(muster) if muster else None}
+
+
+def _roh(jpeg, von="Anna"):
+    """Freigabe mit einer Quelle und beliebigem (auch kaputtem) jpeg-Feld."""
+    return {"teilt": True, "quellen": [{"quelle": f"{von}-v1", "von": von, "jpeg": jpeg}]}
+
+
 def _teilt(muster, von="Anna"):
-    return {"teilt": True, "von": von, "jpeg": _b64(muster)}
+    return {"teilt": True, "quellen": [_quelle(muster, von)]}
 
 
-AUS = {"teilt": False, "von": None, "jpeg": None}
+def _mehrere(*quellen):
+    return {"teilt": True, "quellen": list(quellen)}
+
+
+AUS = {"teilt": False, "quellen": []}
 
 
 # ---------- Abgleich ----------
@@ -129,14 +144,14 @@ def test_abgleich_beendet_wenn_schalter_aus():
     # Es teilt jemand, ein Bild liegt offen (bis = null)
     sitzungen["a1"].seite.antworten.append(_teilt("links"))
     auge.runde(sitzungen, T0 + timedelta(seconds=1))
-    assert len(bildschirm.bilder("a1")) == 1
+    assert len(bildschirm.bilder("a1", auch_ungeprueft=True)) == 1
 
     server._q("update termin_akten set bildschirm_auswerten = false where uid = 'a1' "
               "returning uid")
     auge.abgleichen(sitzungen, oeffner, T0 + timedelta(seconds=3))
     assert sitzungen == {}
     assert oeffner.seiten[0].geschlossen
-    assert bildschirm.bilder("a1")[0]["bis"] == T0 + timedelta(seconds=3)
+    assert bildschirm.bilder("a1", auch_ungeprueft=True)[0]["bis"] == T0 + timedelta(seconds=3)
     # Nichts mehr abgelegt, auch wenn noch ein Bild "in Arbeit" ist
     assert bildschirm.bild_ablegen("a1", _jpeg("oben"), T0 + timedelta(seconds=9), "Anna") is None
 
@@ -197,14 +212,14 @@ def test_runde_legt_bei_aenderung_ab():
         _teilt("links"),                     # +10 s: gleich -> nein
         _teilt("diagonal"),                  # +12 s: anders -> ablegen
         _teilt("oben"),                      # +14 s: anders, aber < 5 s -> nein
-        {"teilt": True, "von": "Anna", "jpeg": "kein-base64!"},   # kaputt -> weiter
-        {"teilt": True, "von": "Anna", "jpeg": base64.b64encode(b"kein jpeg").decode()},
-        {"teilt": True, "von": "Anna", "jpeg": None},              # noch kein Bild
+        _roh("kein-base64!"),                                     # kaputt -> weiter
+        _roh(base64.b64encode(b"kein jpeg").decode()),
+        _roh(None),                                               # noch kein Bild
         _teilt("oben"),                      # +20 s: anders -> ablegen
     ])
     for sek in (0, 10, 12, 14, 15, 16, 17, 20):
         auge.runde(sitzungen, T0 + timedelta(seconds=sek))
-    liste = bildschirm.bilder("a1")
+    liste = bildschirm.bilder("a1", auch_ungeprueft=True)
     assert [x["aufgenommen_am"] for x in liste] == [
         T0, T0 + timedelta(seconds=12), T0 + timedelta(seconds=20)]
     assert {x["geteilt_von"] for x in liste} == {"Anna"}
@@ -233,7 +248,7 @@ def test_runde_freigabe_ende():
     ])
     for sek in (0, 30, 32, 33):
         auge.runde(sitzungen, T0 + timedelta(seconds=sek))
-    liste = bildschirm.bilder("a1")
+    liste = bildschirm.bilder("a1", auch_ungeprueft=True)
     assert len(liste) == 2
     assert liste[0]["bis"] == T0 + timedelta(seconds=30)
     assert liste[1]["aufgenommen_am"] == T0 + timedelta(seconds=33)
@@ -247,10 +262,11 @@ def test_runde_wechsel_des_teilenden_nimmt_naechstes_erlaubtes_bild():
                                 _teilt("links", "Ben")])
     for sek in (0, 1, 5):
         auge.runde(sitzungen, T0 + timedelta(seconds=sek))
-    liste = bildschirm.bilder("a1")
+    liste = bildschirm.bilder("a1", auch_ungeprueft=True)
     assert [x["geteilt_von"] for x in liste] == ["Anna", "Ben"]
     assert liste[1]["aufgenommen_am"] == T0 + timedelta(seconds=5)
-    assert liste[0]["bis"] == T0 + timedelta(seconds=5)
+    # R9b: Annas Quelle endet, als Ben uebernimmt (+1), nicht erst mit Bens Bild
+    assert liste[0]["bis"] == T0 + timedelta(seconds=1)
 
 
 def test_runde_drossel_gilt_auch_nach_freigabe_ende():
@@ -260,7 +276,7 @@ def test_runde_drossel_gilt_auch_nach_freigabe_ende():
                                 _teilt("diagonal")])
     for sek in (0, 2, 3, 5):
         auge.runde(sitzungen, T0 + timedelta(seconds=sek))
-    liste = bildschirm.bilder("a1")
+    liste = bildschirm.bilder("a1", auch_ungeprueft=True)
     assert [x["aufgenommen_am"] for x in liste] == [T0, T0 + timedelta(seconds=5)]
     assert liste[0]["bis"] == T0 + timedelta(seconds=2)
 
@@ -275,7 +291,7 @@ def test_runde_ab_obergrenze_nur_starke_aenderung_auch_nach_wechsel():
     s.letzte_zeit = T0 - timedelta(minutes=1)
     for sek in (0, 10, 20, 30):
         auge.runde(sitzungen, T0 + timedelta(seconds=sek))
-    assert bildschirm.bilder("a1") == []          # gleiches Bild, Wechsel hilft nicht
+    assert bildschirm.bilder("a1", auch_ungeprueft=True) == []          # gleiches Bild, Wechsel hilft nicht
     assert s.letzter_hash == bildschirm.dhash(_jpeg("links"))
 
 
@@ -300,7 +316,7 @@ def test_runde_seitenfehler_stoppt_andere_nicht_und_loggt_nichts(caplog):
     sitzungen = {**_sitzung("a1", [RuntimeError(GEHEIM)]),
                  **_sitzung("a2", [_teilt("links", von=GEHEIM)])}
     auge.runde(sitzungen, T0)
-    assert len(bildschirm.bilder("a2")) == 1
+    assert len(bildschirm.bilder("a2", auch_ungeprueft=True)) == 1
     assert sitzungen["a1"].fehler == 1
     text = caplog.text
     assert GEHEIM not in text and "a1" not in text.replace(auge._h("a1"), "")
@@ -323,7 +339,149 @@ def test_beenden_schliesst_alle_und_setzt_bis():
     auge.runde(sitzungen, T0)
     auge.alle_beenden(sitzungen, T0 + timedelta(seconds=7))
     assert sitzungen == {} and seite.geschlossen
-    assert bildschirm.bilder("a1")[0]["bis"] == T0 + timedelta(seconds=7)
+    assert bildschirm.bilder("a1", auch_ungeprueft=True)[0]["bis"] == T0 + timedelta(seconds=7)
+
+
+# ---------- Mehrere gleichzeitige Freigaben (Abnahme-Befunde Task 6) ----------
+
+def test_zwei_quellen_beide_abgelegt():
+    _akte("a1")
+    sitzungen = _sitzung("a1", [_mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben"))])
+    auge.runde(sitzungen, T0)
+    liste = bildschirm.bilder("a1", auch_ungeprueft=True)
+    assert sorted(x["geteilt_von"] for x in liste) == ["Anna", "Ben"]
+    assert {x["aufgenommen_am"] for x in liste} == {T0}
+    s = sitzungen["a1"]
+    assert s.anzahl == 2 and s.teilt
+    assert set(s.quellen) == {"Anna-v1", "Ben-v1"}
+    assert s.quellen["Anna-v1"].von == "Anna" and s.quellen["Ben-v1"].von == "Ben"
+    assert s.quellen["Anna-v1"].letzter_hash == bildschirm.dhash(_jpeg("links"))
+    assert s.quellen["Ben-v1"].letzter_hash == bildschirm.dhash(_jpeg("oben"))
+
+
+def test_drossel_je_quelle():
+    """Quelle A legt ab, B im selben Moment auch; danach drosselt jede Quelle fuer sich."""
+    _akte("a1")
+    sitzungen = _sitzung("a1", [
+        _mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben")),          # T0: beide
+        _mehrere(_quelle("diagonal", "Anna"), _quelle("diagonal", "Ben")),   # +2: beide gedrosselt
+        _mehrere(_quelle("diagonal", "Anna"), _quelle("diagonal", "Ben")),   # +5: beide
+    ])
+    for sek in (0, 2, 5):
+        auge.runde(sitzungen, T0 + timedelta(seconds=sek))
+    liste = bildschirm.bilder("a1", auch_ungeprueft=True)
+    assert sorted((x["aufgenommen_am"], x["geteilt_von"]) for x in liste) == [
+        (T0, "Anna"), (T0, "Ben"),
+        (T0 + timedelta(seconds=5), "Anna"), (T0 + timedelta(seconds=5), "Ben")]
+    s = sitzungen["a1"]
+    assert s.quellen["Anna-v1"].letzte_zeit == s.quellen["Ben-v1"].letzte_zeit \
+        == T0 + timedelta(seconds=5)
+    assert s.anzahl == 4
+
+
+def test_quelle_endet_andere_laeuft_weiter(monkeypatch):
+    _akte("a1")
+    enden = []
+    echt = bildschirm.freigabe_ende
+
+    def ende(uid, zeitpunkt):
+        enden.append(zeitpunkt)
+        echt(uid, zeitpunkt)
+
+    monkeypatch.setattr(bildschirm, "freigabe_ende", ende)
+    sitzungen = _sitzung("a1", [
+        _mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben")),   # T0: beide
+        _mehrere(_quelle("oben", "Ben")),                              # +10: Anna weg
+        AUS,                                                           # +20: auch Ben weg
+    ])
+    s = sitzungen["a1"]
+    auge.runde(sitzungen, T0)
+    ben = s.quellen["Ben-v1"]
+    vorher = (ben.von, ben.letzter_hash, ben.letzte_zeit)
+    auge.runde(sitzungen, T0 + timedelta(seconds=10))
+    assert enden == []                               # Ben teilt noch: kein Freigabe-Ende
+    assert s.teilt and set(s.quellen) == {"Ben-v1"}
+    assert s.quellen["Ben-v1"] is ben and (ben.von, ben.letzter_hash, ben.letzte_zeit) == vorher
+    liste = {x["geteilt_von"]: x for x in bildschirm.bilder("a1", auch_ungeprueft=True)}
+    assert len(liste) == 2                           # Bens Bild unveraendert -> nichts Neues
+    # R9b: Annas offenes Bild endet mit ihrer Quelle, Bens bleibt offen
+    assert liste["Anna"]["bis"] == T0 + timedelta(seconds=10)
+    assert liste["Ben"]["bis"] is None
+    auge.runde(sitzungen, T0 + timedelta(seconds=20))
+    assert enden == [T0 + timedelta(seconds=20)]
+    assert not s.teilt and s.quellen == {}
+    assert all(x["bis"] is not None for x in bildschirm.bilder("a1", auch_ungeprueft=True))
+
+
+def test_bis_je_quelle():
+    """R9b: zwei Quellen abwechselnd -> bis jedes Bildes = naechstes Bild DERSELBEN Quelle."""
+    _akte("a1")
+    sitzungen = _sitzung("a1", [
+        _mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben")),          # T0: A1, B1
+        _mehrere(_quelle("diagonal", "Anna"), _quelle("oben", "Ben")),       # +5: A2
+        _mehrere(_quelle("diagonal", "Anna"), _quelle("diagonal", "Ben")),   # +10: B2
+        AUS,                                                                 # +15: Ende
+    ])
+    for sek in (0, 5, 10, 15):
+        auge.runde(sitzungen, T0 + timedelta(seconds=sek))
+    t = lambda s: T0 + timedelta(seconds=s)  # noqa: E731
+    assert sorted((x["geteilt_von"], x["aufgenommen_am"], x["bis"])
+                  for x in bildschirm.bilder("a1", auch_ungeprueft=True)) == [
+        ("Anna", t(0), t(5)), ("Anna", t(5), t(15)),
+        ("Ben", t(0), t(10)), ("Ben", t(10), t(15))]
+
+
+def test_quelle_endet_gleicher_name_schliesst_nicht():
+    """Endet eine Quelle, deren Name eine andere laufende Quelle auch traegt (z. B. zwei
+    Gaeste), bleibt das offene Bild offen (es koennte der laufenden gehoeren)."""
+    _akte("a1")
+    sitzungen = _sitzung("a1", [
+        _mehrere(_quelle("links", "Gast", "g1-v1"), _quelle("oben", "Gast", "g2-v1")),
+        _mehrere(_quelle("oben", "Gast", "g2-v1")),
+    ])
+    auge.runde(sitzungen, T0)
+    auge.runde(sitzungen, T0 + timedelta(seconds=10))
+    assert any(x["bis"] is None for x in bildschirm.bilder("a1", auch_ungeprueft=True))
+
+
+def test_obergrenze_gemeinsam():
+    """anzahl und Obergrenze gelten je Akte; eine neue Quelle ab der Obergrenze beginnt
+    mit dem Akte-weiten letzten Hash (gleiches Bild -> nichts Neues)."""
+    _akte("a1")
+    sitzungen = _sitzung("a1", [
+        _mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben")),             # T0
+        _mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben"),
+                 _quelle("oben", "Cleo")),                                      # +10: Cleo neu
+    ])
+    s = sitzungen["a1"]
+    s.anzahl = bildschirm.OBERGRENZE - 2
+    auge.runde(sitzungen, T0)
+    assert s.anzahl == bildschirm.OBERGRENZE          # beide Quellen zaehlen in einen Topf
+    assert s.letzter_hash == bildschirm.dhash(_jpeg("oben"))   # zuletzt abgelegt: Ben
+    auge.runde(sitzungen, T0 + timedelta(seconds=10))
+    assert s.quellen["Cleo-v1"].letzter_hash == bildschirm.dhash(_jpeg("oben"))
+    assert len(bildschirm.bilder("a1", auch_ungeprueft=True)) == 2 and s.anzahl == bildschirm.OBERGRENZE
+
+
+def test_frame_nur_neue_form_hoechstens_drei_quellen(monkeypatch):
+    """Alte Form ({teilt, von, jpeg}) gilt als 'teilt nicht'; mehr als MAX_QUELLEN
+    Quellen werden (sortiert) gekappt."""
+    _akte("a1")
+    enden = []
+    monkeypatch.setattr(bildschirm, "freigabe_ende", lambda uid, t: enden.append(t))
+    alt = {"teilt": True, "von": "Anna", "jpeg": _b64("links")}
+    sitzungen = _sitzung("a1", [_teilt("links"), alt])
+    auge.runde(sitzungen, T0)
+    auge.runde(sitzungen, T0 + timedelta(seconds=10))
+    assert enden == [T0 + timedelta(seconds=10)] and not sitzungen["a1"].teilt
+    assert len(bildschirm.bilder("a1", auch_ungeprueft=True)) == 1
+
+    assert auge.MAX_QUELLEN == 3
+    viele = _mehrere(*[_quelle("links", n) for n in ("Eva", "Dora", "Cleo", "Ben", "Anna")])
+    teilt, quellen = auge._frame(viele)
+    assert teilt and [q for q, _, _ in quellen] == ["Anna-v1", "Ben-v1", "Cleo-v1"]
+    assert auge._frame(alt) == (False, [])
+    assert auge._frame({"teilt": True, "quellen": []}) == (False, [])
 
 
 # ---------- Beschreib-Arbeit (R6) ----------
@@ -391,6 +549,42 @@ def test_beschreib_schleife_endet_mit_stopp(monkeypatch):
     monkeypatch.setattr(auge, "beschreib_schritt", schritt)
     auge.beschreib_schleife(Attrappe(), stopp)
     assert len(aufrufe) == 3
+
+
+def test_aufraeumen_hoechstens_alle_10_minuten(monkeypatch, caplog):
+    """R11: ungepruefte Bilder nach 24 h loeschen, im Beschreib-Thread hoechstens je 10 min."""
+    aufrufe = []
+    monkeypatch.setattr(bild_arbeit, "ungepruefte_loeschen", lambda: aufrufe.append(1) or 0)
+    assert auge.AUFRAEUMEN_ABSTAND_S == 600
+    z = auge.aufraeum_schritt(None, 1000.0)
+    assert aufrufe == [1] and z == 1000.0
+    assert auge.aufraeum_schritt(z, 1599.0) == z and aufrufe == [1]
+    assert auge.aufraeum_schritt(z, 1600.0) == 1600.0 and len(aufrufe) == 2
+
+    def kaputt():
+        raise RuntimeError(GEHEIM)
+
+    monkeypatch.setattr(bild_arbeit, "ungepruefte_loeschen", kaputt)
+    caplog.set_level(logging.DEBUG)
+    assert auge.aufraeum_schritt(None, 5.0) == 5.0     # auch nach Fehler erst in 10 min
+    assert GEHEIM not in caplog.text and "RuntimeError" in caplog.text
+
+
+def test_beschreib_schleife_raeumt_auf(monkeypatch):
+    stopp = threading.Event()
+    geloescht, schritte = [], []
+    monkeypatch.setattr(bild_arbeit, "ungepruefte_loeschen",
+                        lambda: geloescht.append(1) or 0)
+
+    def schritt(_e):
+        schritte.append(1)
+        if len(schritte) == 3:
+            stopp.set()
+        return 0
+
+    monkeypatch.setattr(auge, "beschreib_schritt", schritt)
+    auge.beschreib_schleife(Attrappe(), stopp)
+    assert len(schritte) == 3 and geloescht == [1]     # beim Start, dann erst nach 10 min
 
 
 # ---------- HTTP ----------
@@ -519,6 +713,47 @@ def test_seitenskript_liest_nur_desktop_tracks():
         assert verboten not in js, verboten
 
 
+def test_max_drei_quellen_js():
+    js = (auge.SKRIPT_PFAD).read_text(encoding="utf-8")
+    assert "const MAX_QUELLEN = 3;" in js
+    assert ".slice(0, MAX_QUELLEN)" in js
+    assert "const HOECHSTENS_MS = 8000;" in js
+    # je Quelle ein eigenes <video> in einer Map nach getSourceName(), Rueckfall participantId
+    assert "new Map()" in js and "getSourceName" in js and "participantId" in js
+    assert "quellen:" in js
+    # nur noch EIN Video-Slot gibt es nicht mehr
+    assert "let video = null" not in js
+
+
+def test_empfang_nur_erfasste_quellen_js():
+    """R9c: die Empfangs-Vorgaben fordern hoechstens MAX_QUELLEN Desktop-Quellen an,
+    dieselben (gleiche Sortierung, nur ungemutete) wie die erfassten."""
+    js = (auge.SKRIPT_PFAD).read_text(encoding="utf-8")
+    teil = js.split("const desktopQuellen = ")[1].split("const vorgaben = ")[0]
+    assert "return [...namen].sort().slice(0, MAX_QUELLEN);" in teil
+    assert "desktopTracks(s).filter((t) => !t.muted)" in teil
+    assert "info.muted" in teil
+    # vorgaben bekommt nur diese Liste (lastN = deren Laenge)
+    assert "original(vorgaben(desktopQuellen(zustand(), room)))" in js
+    assert "original(vorgaben(quellen))" in js and "lastN: quellen.length" in js
+
+
+def test_kamera_bleibt_ausgeschlossen_js():
+    js = (auge.SKRIPT_PFAD).read_text(encoding="utf-8")
+    # istDesktop unveraendert (R11): nur entfernte Multistream-Bildschirmtracks
+    for zeile in ("if (!t || t.local || !t.jitsiTrack) return false;",
+                  "if (t.mediaType !== 'screenshare') return false;",
+                  "if (t.videoType !== DESKTOP) return false;",
+                  "if (typeof jt.isLocal === 'function' && jt.isLocal()) return false;",
+                  "jt.getVideoType() !== DESKTOP) return false;",
+                  "const desktopTracks = (s) => ((s && s['features/base/tracks']) || [])"
+                  ".filter(istDesktop);"):
+        assert zeile in js, zeile
+    # holen nimmt seine Tracks nur aus desktopTracks
+    assert "desktopTracks(s).filter((t) => !t.muted)" in js
+    assert "'camera'" not in js.split("window.__lauraInfo")[0]
+
+
 # ---------- Browser weg ----------
 
 class Browser:
@@ -560,3 +795,159 @@ def test_gesund_meldet_toten_browser_mit_503():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# ---------- Heikle Bildschirme (Schicht A) ----------
+
+class PrueferAttrappe:
+    """Meldet jedes Bild als heikel (oder nicht) und zaehlt die Aufrufe."""
+
+    def __init__(self, heikel=True):
+        self._heikel = heikel
+        self.aufrufe = 0
+
+    def heikel(self, jpeg):
+        self.aufrufe += 1
+        v = [0.0] * 512
+        v[2] = 1.0
+        return self._heikel, v
+
+
+def test_heikles_bild_wird_nicht_abgelegt_und_gezaehlt(monkeypatch, caplog):
+    _akte("a1")
+    monkeypatch.setattr(auge, "pruefer", PrueferAttrappe(True))
+    sitzungen = _sitzung("a1", [_teilt("links")])
+    with caplog.at_level("INFO", logger="sales-auge"):
+        auge.runde(sitzungen, T0)
+    assert bildschirm.bilder("a1", auch_ungeprueft=True) == []
+    assert server._q("select count(*) as n from termin_bilder")[0]["n"] == 0
+    assert server._q("select bilder_uebersprungen from termin_akten "
+                     "where uid = 'a1'")[0]["bilder_uebersprungen"] == 1
+    s = sitzungen["a1"]
+    q = s.quellen["Anna-v1"]                     # Hash und Zeit je Quelle (Task 6)
+    assert s.anzahl == 0 and q.letzte_zeit == T0 and q.letzter_hash is not None
+    assert s.letzter_hash is None                # Akte-weit: nichts abgelegt
+    assert "Heikles Bild verworfen" in caplog.text
+    assert "Geheimer" not in caplog.text
+
+
+def test_heikles_bild_nicht_alle_runden_neu_geprueft(monkeypatch):
+    _akte("a1")
+    p = PrueferAttrappe(True)
+    monkeypatch.setattr(auge, "pruefer", p)
+    sitzungen = _sitzung("a1", [_teilt("links"), _teilt("links")])
+    auge.runde(sitzungen, T0)
+    auge.runde(sitzungen, T0 + timedelta(seconds=10))
+    assert p.aufrufe == 1                       # zweiter, gleicher Frame: kein Pruefen
+    assert server._q("select bilder_uebersprungen from termin_akten "
+                     "where uid = 'a1'")[0]["bilder_uebersprungen"] == 1
+
+
+def test_unheikles_bild_wird_abgelegt_mit_vorberechnetem_vektor(monkeypatch):
+    _akte("a1")
+    monkeypatch.setattr(auge, "pruefer", PrueferAttrappe(False))
+    sitzungen = _sitzung("a1", [_teilt("links")])
+    auge.runde(sitzungen, T0)
+    z = server._q("select vektor_bild is not null as hat from termin_bilder")
+    assert len(z) == 1 and z[0]["hat"] is True
+    assert sitzungen["a1"].anzahl == 1
+
+
+def test_pruefer_fehler_legt_nichts_ab(monkeypatch):
+    _akte("a1")
+
+    class Kaputt:
+        def heikel(self, jpeg):
+            raise RuntimeError("Modell weg")
+
+    k = Kaputt()
+    k.aufrufe = 0
+    orig = k.heikel
+
+    def zaehlend(jpeg):
+        k.aufrufe += 1
+        return orig(jpeg)
+
+    k.heikel = zaehlend
+    monkeypatch.setattr(auge, "pruefer", k)
+    sitzungen = _sitzung("a1", [_teilt("links"), _teilt("diagonal")])
+    auge.runde(sitzungen, T0)
+    auge.runde(sitzungen, T0 + timedelta(seconds=2))   # < MIN_ABSTAND: gedrosselt
+    assert bildschirm.bilder("a1", auch_ungeprueft=True) == []
+    assert k.aufrufe == 1
+
+
+class InhaltsPruefer:
+    """Urteilt nach Bildinhalt: das Muster 'links' ist heikel bzw. laesst die Pruefung
+    scheitern (fehler=True), alles andere ist unbedenklich."""
+
+    def __init__(self, fehler=False):
+        self.fehler = fehler
+        self.aufrufe = []
+
+    def heikel(self, jpeg):
+        ist = jpeg == _jpeg("links")
+        self.aufrufe.append("links" if ist else "anders")
+        if ist and self.fehler:
+            raise RuntimeError("Modell weg")
+        v = [0.0] * 512
+        v[2] = 1.0
+        return ist, v
+
+
+def test_heikel_je_quelle(monkeypatch):
+    """Schicht A je Quelle: A (heikel) wird verworfen, B (unbedenklich) im selben
+    Moment mit eigenem `von` abgelegt; A beeinflusst Bs Zustand nicht."""
+    _akte("a1")
+    p = InhaltsPruefer()
+    monkeypatch.setattr(auge, "pruefer", p)
+    sitzungen = _sitzung("a1", [_mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben"))])
+    auge.runde(sitzungen, T0)
+    liste = bildschirm.bilder("a1", auch_ungeprueft=True)
+    assert [x["geteilt_von"] for x in liste] == ["Ben"]
+    assert sorted(p.aufrufe) == ["anders", "links"]
+    assert server._q("select bilder_uebersprungen from termin_akten "
+                     "where uid = 'a1'")[0]["bilder_uebersprungen"] == 1
+    s = sitzungen["a1"]
+    a, b = s.quellen["Anna-v1"], s.quellen["Ben-v1"]
+    assert s.uebersprungen == 1 and s.anzahl == 1
+    assert (a.letzter_hash, a.letzte_zeit) == (bildschirm.dhash(_jpeg("links")), T0)
+    assert (b.von, b.letzter_hash, b.letzte_zeit) == ("Ben", bildschirm.dhash(_jpeg("oben")), T0)
+    # Akte-weit zaehlt nur das abgelegte Bild (Bens)
+    assert s.letzter_hash == bildschirm.dhash(_jpeg("oben"))
+
+
+def test_pruefer_fehler_zwei_quellen(monkeypatch):
+    """Pruefer scheitert nur fuer A: fuer A nichts abgelegt (nur As letzte_zeit gesetzt,
+    kein Hash), B wird abgelegt."""
+    _akte("a1")
+    p = InhaltsPruefer(fehler=True)
+    monkeypatch.setattr(auge, "pruefer", p)
+    sitzungen = _sitzung("a1", [_mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben"))])
+    auge.runde(sitzungen, T0)
+    assert [x["geteilt_von"] for x in bildschirm.bilder("a1", auch_ungeprueft=True)] == ["Ben"]
+    s = sitzungen["a1"]
+    a, b = s.quellen["Anna-v1"], s.quellen["Ben-v1"]
+    assert a.letzte_zeit == T0 and a.letzter_hash is None
+    assert b.letzte_zeit == T0 and b.letzter_hash == bildschirm.dhash(_jpeg("oben"))
+    assert s.anzahl == 1 and s.uebersprungen == 0
+    assert server._q("select bilder_uebersprungen from termin_akten "
+                     "where uid = 'a1'")[0]["bilder_uebersprungen"] == 0
+
+
+def test_beschreiben_rechnet_vektor_bild_nur_wenn_null(monkeypatch):
+    _akte("a1")
+    v = [0.0] * 512
+    v[5] = 1.0
+    bildschirm.bild_ablegen("a1", _jpeg("links"), T0, "Anna", vektor_bild=v)
+    gerechnet = []
+
+    class Zaehler(Attrappe):
+        def bild(self, jpeg):
+            gerechnet.append(1)
+            return super().bild(jpeg)
+
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: "Folie")
+    assert bild_arbeit.naechste_beschreiben(Zaehler()) is True
+    assert gerechnet == []
+    assert server._q("select vektor_bild is not null as h from termin_bilder")[0]["h"]

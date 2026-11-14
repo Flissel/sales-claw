@@ -49,6 +49,7 @@ import auswertung
 import bildschirm
 import betreiber_hinweis
 import briefing
+import mitschrift_bereinigen
 import ollama
 import server
 import termin_akte
@@ -258,7 +259,11 @@ def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
     mehr auf wartet_auf_einlass/laeuft (z. B. "Nein" in der Oberflaeche), wird
     die Mitschrift verworfen (I2) und die Vexa-Ids bleiben fuer Schritt 5. Mit
     `fertig` faellt die Bot-Kennung (Plattform/native Id) weg - der Bot ist
-    gegangen; nur die Meeting-Id bleibt zum Loeschen."""
+    gegangen; nur die Meeting-Id bleibt zum Loeschen.
+
+    Die Segmente werden VOR dem Insert bereinigt: ihre Indizes in der
+    gespeicherten Mitschrift sind Bezug fuer Auswertung und Vorschaubilder."""
+    segmente = mitschrift_bereinigen.bereinigen(segmente)
     with server.pool.connection() as conn:
         with conn.transaction():
             z = conn.execute("select status from termin_akten where uid = %s for update",
@@ -474,13 +479,18 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
         # ERST Ergebnis und Vorschlaege gemeinsam festschreiben, dann der Entwurf:
         # scheitert der, gibt es keine zweite Auswertung und keinen zweiten Entwurf.
         # Die Mitschrift ist gesperrt; wurde sie waehrend der Auswertung
-        # verworfen ("Nein", Loeschantrag), entsteht nichts daraus.
-        verworfen = False
+        # verworfen ("Nein", Loeschantrag), entsteht nichts daraus. Haben sich
+        # ihre Segmente inzwischen geaendert (Neu-Auswertung), passt das Ergebnis
+        # nicht mehr zu den Indizes: verwerfen, die neue Fassung kommt danach dran.
+        verworfen = veraltet = False
         with server.pool.connection() as conn:
             with conn.transaction():
-                if conn.execute("select id from termin_mitschriften where id = %s for update",
-                                (m["id"],)).fetchone() is None:
-                    verworfen = True
+                zeile = conn.execute(
+                    "select segmente = %s::jsonb as gleich from termin_mitschriften "
+                    "where id = %s for update",
+                    (json.dumps(m["segmente"]), m["id"])).fetchone()
+                if zeile is None or not zeile["gleich"]:
+                    verworfen, veraltet = zeile is None, zeile is not None
                     vorschlaege = []
                 else:
                     conn.execute(
@@ -501,6 +511,10 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
         return
     if verworfen:
         LOG.info("Auswertung uid=%s: Mitschrift verworfen waehrend Auswertung", _h(uid))
+        return
+    if veraltet:
+        LOG.info("Auswertung uid=%s: Segmente geaendert waehrend Auswertung - verworfen",
+                 _h(uid))
         return
     entwurf = None
     # Internes Gespraech (art "intern"): keine Zusammenfassung an einen Kunden,

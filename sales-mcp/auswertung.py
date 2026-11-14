@@ -55,6 +55,8 @@ ARTEN = ("kundentermin", "intern")
 _NUR_KUNDENTERMIN = ("painpoints", "einwaende", "zusagen_kunde")
 _ZEITZONE = ZoneInfo("Europe/Berlin")
 _DATUM = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Eine Segmentzeile "[n] ..." irgendwo im Stueck (Zeilenanfang).
+_SEGMENTZEILE_IM_STUECK = re.compile(r"^\[\d+\] ", re.MULTILINE)
 
 SYSTEM_PROMPT = """Du bist ein sorgfaeltiger Protokollant und wertest die Mitschrift eines Gespraechs aus,
 das Felix (Betreiber, Berater) gefuehrt hat. Ziel: Wer nicht dabei war, weiss danach alles
@@ -116,7 +118,8 @@ Regeln:
 - Nenne keine Uhrzeiten. Nimm nur auf, was im Text steht. Leere Abschnitte sind leere Listen
   oder leere Texte. Datum nur, wenn ein konkretes Datum genannt wurde, sonst null.
 - "felder" nur fuellen, wenn der Kunde ausdruecklich eine neue Position (title) oder eine
-  neue Firma (company) nennt; sonst {} bzw. den Schluessel weglassen."""
+  neue Firma (company) nennt; sonst {} bzw. den Schluessel weglassen.
+- "beteiligte": nur Menschen, die am Gespraech teilnehmen. Aufnahme- und Beobachter-Bots (z. B. "Laura (Bildschirm)", "VibeMind Mitschrift") sind keine Beteiligten. Jede Person nur einmal, mit vollem Namen, wenn er vorkommt."""
 
 SYSTEM_ZUSAMMENFUEHREN = """Du bekommst Kurzfassungen aufeinanderfolgender Teile eines Gespraechs.
 Fasse sie zu einer einzigen Kurzfassung in 6 bis 12 Saetzen zusammen: Anlass, Teilnehmer,
@@ -422,7 +425,24 @@ def _stuecke(zeilen: list[str]) -> list[str]:
         laenge += len(z) + 1
     if aktuell:
         stuecke.append("\n".join(aktuell))
-    return stuecke
+    return _bildstuecke_falten(stuecke)
+
+
+def _bildstuecke_falten(stuecke: list[str]) -> list[str]:
+    """Kein Stueck ohne Segmentzeile: ein reines Bild-Stueck haengt am vorigen (das erste
+    am folgenden), auch ueber die Zeichengrenze hinaus. Sonst ueberschriebe die Antwort
+    zu einem Stueck ohne Gespraech Stimmung und Ergebnis. Ohne Segmentzeile: []."""
+    ergebnis: list[str] = []
+    vorab: list[str] = []
+    for s in stuecke:
+        if _SEGMENTZEILE_IM_STUECK.search(s):
+            ergebnis.append("\n".join(vorab + [s]))
+            vorab = []
+        elif ergebnis:
+            ergebnis[-1] += "\n" + s
+        else:
+            vorab.append(s)
+    return ergebnis
 
 
 def _vereinen(teile: list[dict]) -> dict:
@@ -464,6 +484,47 @@ def _vereinen(teile: list[dict]) -> dict:
     return _nach_art(a)
 
 
+BOT_NAMEN = ("laura (bildschirm)", "laura", "vibemind mitschrift", "vibemind", "vexa")
+
+
+def _name_norm(text) -> str:
+    return " ".join(str(text).casefold().split())
+
+
+def beteiligte_bereinigen(liste: list[str], sprecher: set[str]) -> list[str]:
+    """Entfernt Aufnahme-Bots (ausser sie sprechen) und fasst Namensdoppel zusammen.
+
+    Ein Bot-Name gilt als sprechend, wenn seine Woerter Teilmenge der Woerter eines
+    Sprechers sind ("Laura" bei Sprecherin "Laura Schmidt"). Eintrag = "Name - Rolle".
+    Ist die Wortmenge eines Namens Teilmenge eines anderen, bleibt ein Eintrag am
+    Platz des ersten Vorkommens: laengerer Name, Rolle des ersten.
+    """
+    sprechende = [set(_name_norm(x).split()) for x in sprecher if x]
+    ergebnis: list[list] = []  # [Name, Rolle, Wortmenge]
+    for eintrag in liste:
+        if not isinstance(eintrag, str):
+            continue
+        teile = re.split(r" [-–] ", eintrag.strip(), maxsplit=1)
+        name = " ".join(teile[0].split())
+        if not name:
+            continue
+        rolle = teile[1].strip() if len(teile) > 1 else ""
+        schluessel = _name_norm(name)
+        worte = set(schluessel.split())
+        if schluessel in BOT_NAMEN and not any(worte <= sw for sw in sprechende):
+            continue
+        for i, vorhanden in enumerate(ergebnis):
+            if worte <= vorhanden[2] or vorhanden[2] <= worte:
+                if len(worte) > len(vorhanden[2]):
+                    vorhanden[0], vorhanden[2] = name, worte
+                    # gewachsener Name kann spaetere Eintraege einschliessen (transitiv)
+                    ergebnis[i + 1:] = [e for e in ergebnis[i + 1:] if not e[2] <= worte]
+                break
+        else:
+            ergebnis.append([name, rolle, worte])
+    return [f"{n} - {r}" if r else n for n, r, _ in ergebnis]
+
+
 def auswerten(segmente: list[dict],
               bilder: list[tuple[datetime, str]] | None = None) -> dict:
     """Mitschrift -> Auswertung (Schluessel aus ABSCHNITTE plus `ergebnis`, `felder`, `art`).
@@ -479,9 +540,12 @@ def auswerten(segmente: list[dict],
     for stueck in stuecke:
         roh = _json_aufruf(SYSTEM_PROMPT, stueck)
         teile.append(_normalisieren(roh, segmente, beginne))
+    sprechende = {x["sprecher"] for x in segmente if x.get("sprecher")}
     if len(teile) == 1:
+        teile[0]["beteiligte"] = beteiligte_bereinigen(teile[0]["beteiligte"], sprechende)
         return teile[0]
     a = _vereinen(teile)
+    a["beteiligte"] = beteiligte_bereinigen(a["beteiligte"], sprechende)
     kurz = [t["kurzfassung"] for t in teile if t["kurzfassung"]]
     if len(kurz) > 1:
         roh = _json_aufruf(SYSTEM_ZUSAMMENFUEHREN,

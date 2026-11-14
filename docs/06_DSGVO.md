@@ -143,6 +143,23 @@ Checkliste für den Dienst `sales-auge` („Laura (Bildschirm)“, Runbook: Absc
       also bei **Claude Code (Anthropic)**; das Bild selbst geht dafür an diesen Cloud-Anbieter. Es gilt derselbe
       Vorbehalt wie im Absatz „Übergang seit 12.11.2026“ im Abschnitt Mitschriften (AV-Vertrag, Drittland, Hinweis;
       vor echten Kundengesprächen klären).
+- [ ] **Heikle Bildschirme werden nicht gespeichert:** Anmelde-, Bezahl- und Postfach-Bildschirme sollen nicht in der
+      Akte landen. Schicht A (lokale Bildprüfung vor dem Speichern, Schwelle `AUGE_HEIKEL_ABSTAND`) fängt nach der
+      Kalibrierung vom 14.11.2026 nur **etwa 15 %** (Fehlalarme 1,4 %). Schicht B ist die eigentliche Absicherung: das
+      Bildmodell meldet beim Beschreiben HEIKEL, dann wird die ganze Zeile gelöscht (Bild, Beschreibung, Vektoren).
+      Beschreibt das Modell das Bild stattdessen, greift ein **Stichwort-Netz** (Passwort, Anmeldung, Login, Checkout,
+      Zahlung, Kreditkarte, IBAN, Posteingang, Outlook, GMX u. ä. in der Beschreibung): das Bild wird ebenso gelöscht.
+      **Nur geprüfte Bilder sind sichtbar (fail-closed):** solange ein Bild nicht fertig beschrieben ist (offen oder
+      nach einem KI-Fehler), zeigen es weder die Akte noch die Vorschaubilder noch die Bildsuche (Oberfläche und
+      MCP-Werkzeug) noch der Einzelabruf – für niemanden. Fällt die KI aus, wird ohne Obergrenze weiter versucht (30 s,
+      danach alle 5 min); ein nach **24 Stunden** noch ungeprüftes Bild wird vollständig gelöscht (es geht dann verloren).
+      **Ehrlich dazu:** ein heikles Bild liegt bis zur Beschreibung in der Datenbank – je nach Warteschlange **Minuten,
+      nicht nur Sekunden** (bei KI-Ausfall bis zu 24 h) –, ist in dieser Zeit aber nicht abrufbar. Und es **ist für die
+      Prüfung an das KI-Tor und damit im Übergang an Anthropic gegangen**; gelöscht wird es erst danach. Es gibt keinen
+      Weg, das Bild vorher zu prüfen, ohne es zu sehen. Die Akte zeigt, wie viele Bildschirme nicht gespeichert wurden
+      (Zähler `bilder_uebersprungen`, nur die Zahl). Bleibt trotzdem eines gespeichert, löscht der Betreiber es in der
+      Akte („Löschen“). Vor Kundenterminen gehört das in den Einladungshinweis (siehe unten).
+- [ ] **Mehrere Freigaben:** bis zu 3 gleichzeitig geteilte Bildschirme werden erfasst; Kameras und Ton nie.
 - [ ] **Löschung mit der Mitschrift:** Bilder, Beschreibungen und Vektoren verschwinden auf jedem Löschweg der
       Mitschrift (`mitschrift_entfernen`, Sicherheitsnetz `_mitschriften_abraeumen`, `loeschantrag_vermerken`). Einzelne
       Bilder löscht der Betreiber in der Akte („Löschen“).

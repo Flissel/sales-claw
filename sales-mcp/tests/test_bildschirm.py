@@ -95,7 +95,7 @@ def test_bild_ablegen_verkleinert_und_setzt_bis():
     assert id1
     id2 = bildschirm.bild_ablegen("a1", _jpeg("oben"), T0 + timedelta(seconds=30), "Anna")
     assert id2 and id2 != id1
-    liste = bildschirm.bilder("a1")
+    liste = bildschirm.bilder("a1", auch_ungeprueft=True)
     assert [str(x["id"]) for x in liste] == [id1, id2]
     assert all("bild" not in x and "vektor_bild" not in x and "vektor_text" not in x
                for x in liste)
@@ -103,35 +103,60 @@ def test_bild_ablegen_verkleinert_und_setzt_bis():
     assert liste[0]["bis"] == T0 + timedelta(seconds=30)
     assert liste[1]["bis"] is None
     assert liste[0]["geteilt_von"] == "Anna"
+    # R11: ungeprueft (offen) ist nicht abrufbar, erst nach der Beschreibung
+    assert bildschirm.bild_daten("a1", id1) is None and bildschirm.bilder("a1") == []
+    server._q("update termin_bilder set beschreibung = 'Folie', beschreibung_status = 'fertig' "
+              "where id = %s returning id", (id1,))
+    assert [str(x["id"]) for x in bildschirm.bilder("a1")] == [id1]
     daten = bildschirm.bild_daten("a1", id1)
     assert Image.open(io.BytesIO(daten)).size == (bildschirm.MAX_BREITE, 900)
     assert liste[0]["dhash"] == bildschirm.dhash(daten)
     bildschirm.freigabe_ende("a1", T0 + timedelta(minutes=5))
-    assert bildschirm.bilder("a1")[1]["bis"] == T0 + timedelta(minutes=5)
+    assert bildschirm.bilder("a1", auch_ungeprueft=True)[1]["bis"] == T0 + timedelta(minutes=5)
     assert bildschirm.bild_daten("a1", id1) and bildschirm.bild_daten("x", id1) is None
     assert bildschirm.bild_loeschen("a1", id1) is True
     assert bildschirm.bild_loeschen("a1", id1) is False
-    assert len(bildschirm.bilder("a1")) == 1
+    assert len(bildschirm.bilder("a1", auch_ungeprueft=True)) == 1
 
 
 def test_wechsel_des_teilenden_setzt_bis():
+    """R9b: ein Bild endet nur mit dem naechsten Bild DESSELBEN Teilenden (null-sicher)
+    oder per quelle_ende/freigabe_ende - nicht mit dem Bild eines anderen."""
     _akte()
     bildschirm.bild_ablegen("a1", _jpeg("links"), T0, "Anna")
     bildschirm.bild_ablegen("a1", _jpeg("links"), T0 + timedelta(seconds=20), "Ben")
-    a, b = bildschirm.bilder("a1")
-    assert a["bis"] == T0 + timedelta(seconds=20)
+    a, b = bildschirm.bilder("a1", auch_ungeprueft=True)
     assert a["geteilt_von"] == "Anna" and b["geteilt_von"] == "Ben"
+    assert a["bis"] is None and b["bis"] is None          # Ben schliesst Anna nicht
+    bildschirm.quelle_ende("a1", "  Anna ", T0 + timedelta(seconds=25))
+    a, b = bildschirm.bilder("a1", auch_ungeprueft=True)
+    assert a["bis"] == T0 + timedelta(seconds=25) and b["bis"] is None
+
+
+def test_bis_je_teilendem_null_sicher():
+    _akte()
+    bildschirm.bild_ablegen("a1", _jpeg("links"), T0, None)
+    bildschirm.bild_ablegen("a1", _jpeg("oben"), T0 + timedelta(seconds=10), "Anna")
+    bildschirm.bild_ablegen("a1", _jpeg("diagonal"), T0 + timedelta(seconds=20), None)
+    erst, anna, zweit = bildschirm.bilder("a1", auch_ungeprueft=True)
+    assert erst["bis"] == T0 + timedelta(seconds=20)       # naechstes Bild ohne Namen
+    assert anna["bis"] is None and zweit["bis"] is None
+    bildschirm.quelle_ende("a1", None, T0 + timedelta(seconds=30))
+    erst, anna, zweit = bildschirm.bilder("a1", auch_ungeprueft=True)
+    assert zweit["bis"] == T0 + timedelta(seconds=30) and anna["bis"] is None
+    bildschirm.freigabe_ende("a1", T0 + timedelta(seconds=40))
+    assert bildschirm.bilder("a1", auch_ungeprueft=True)[1]["bis"] == T0 + timedelta(seconds=40)
 
 
 def test_ablegen_verweigert_wenn_nicht_mehr_soll():
     _akte(schalter=False)
     assert bildschirm.bild_ablegen("a1", _jpeg(), T0, None) is None
-    assert bildschirm.bilder("a1") == []
+    assert bildschirm.bilder("a1", auch_ungeprueft=True) == []
     _akte("a2")
     assert bildschirm.bild_ablegen("a2", _jpeg(), T0, None)
     server._q("update termin_akten set abgesagt_am = %s where uid = 'a2' returning uid", (T0,))
     assert bildschirm.bild_ablegen("a2", _jpeg("oben"), T0 + timedelta(seconds=9), None) is None
-    assert len(bildschirm.bilder("a2")) == 1
+    assert len(bildschirm.bilder("a2", auch_ungeprueft=True)) == 1
 
 
 def test_bilder_zeilen_nur_fertige():

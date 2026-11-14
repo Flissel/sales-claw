@@ -60,6 +60,8 @@ hat '^      OLLAMA_URL:[[:space:]]*\$\{OLLAMA_URL:-\}[[:space:]]*$'  "OLLAMA_URL
 hat '^      AUGE_PORT:[[:space:]]*\$\{AUGE_PORT:-8790\}[[:space:]]*$' "AUGE_PORT (Vorgabe 8790) fehlt"
 hat '^      AUGE_RUNDE_S:[[:space:]]*\$\{AUGE_RUNDE_S:-2\}[[:space:]]*$' "AUGE_RUNDE_S (Vorgabe 2) fehlt"
 hat '^      KI_BILD_TIMEOUT_S:[[:space:]]*\$\{KI_BILD_TIMEOUT_S:-60\}[[:space:]]*$' "KI_BILD_TIMEOUT_S fehlt"
+# Schwelle der Heikel-Pruefung (Schicht A); leer = Vorgabe im Code (0.045).
+hat '^      AUGE_HEIKEL_ABSTAND:[[:space:]]*\$\{AUGE_HEIKEL_ABSTAND:-\}[[:space:]]*$' "AUGE_HEIKEL_ABSTAND fehlt"
 hat '^      JITSI_BASIS:'                                             "JITSI_BASIS fehlt (Link-Pruefung)"
 hat '^      JITSI_HOSTS:'                                             "JITSI_HOSTS fehlt (Link-Pruefung)"
 hat '^    logging:'                                                 "logging-Begrenzung fehlt"
@@ -76,6 +78,10 @@ block sales-ui | grep -qE '^      - AUGE_URL=http://\$\{LADEN_PRAEFIX:-sales\}-a
   || fehler "sales-ui: AUGE_URL fehlt"
 block sales-mcp | grep -qE '^      AUGE_URL:[[:space:]]*http://\$\{LADEN_PRAEFIX:-sales\}-auge:8790[[:space:]]*$' \
   || fehler "sales-mcp: AUGE_URL fehlt"
+# Der Taktgeber (Mitschrift-Bereinigung, Neu-Auswertung) kennt den Betreiber;
+# leer = Vorgabe im Code.
+block sales-termine | grep -qE '^      BETREIBER_NAME:[[:space:]]*\$\{BETREIBER_NAME:-\}[[:space:]]*$' \
+  || fehler "sales-termine: BETREIBER_NAME fehlt"
 # Das KI-Tor kennt dieselbe Zeitgrenze der Bild-Spur.
 block sales-ki | grep -qE '^      KI_BILD_TIMEOUT_S:[[:space:]]*\$\{KI_BILD_TIMEOUT_S:-60\}[[:space:]]*$' \
   || fehler "sales-ki: KI_BILD_TIMEOUT_S fehlt"
@@ -85,7 +91,7 @@ block sales-ki | grep -qE '^      KI_BILD_TIMEOUT_S:[[:space:]]*\$\{KI_BILD_TIME
 BEISPIEL_LF="$(mktemp)"
 trap 'rm -f "$BEISPIEL_LF"' EXIT
 sed 's/\r$//' "$BEISPIEL" > "$BEISPIEL_LF"
-for name in AUGE_PORT AUGE_RUNDE_S KI_BILD_TIMEOUT_S; do
+for name in AUGE_PORT AUGE_RUNDE_S KI_BILD_TIMEOUT_S AUGE_HEIKEL_ABSTAND BETREIBER_NAME; do
   grep -qE "^$name=$" "$BEISPIEL_LF" || fehler ".env.example kennt $name nicht (leer)"
 done
 
@@ -149,9 +155,12 @@ assert a["build"]["context"].replace("\\", "/").endswith("/sales-mcp")
 e = a["environment"]
 assert e["AUGE_PORT"] == "8790" and e["AUGE_RUNDE_S"] == "2" and e["KI_BILD_TIMEOUT_S"] == "60"
 assert e["SALES_DB_SCHEMA"] == "sales"
+assert e["AUGE_HEIKEL_ABSTAND"] == "", e.get("AUGE_HEIKEL_ABSTAND")
+assert c["sales-termine"]["environment"]["BETREIBER_NAME"] == ""
 # R8: genau diese Schluessel, nichts aus dem Anker, keine Geheimnisse.
 erlaubt = {"SALES_DB_URL", "SALES_DB_SCHEMA", "TZ", "OLLAMA_URL", "OLLAMA_MODELL",
-           "AUGE_PORT", "AUGE_RUNDE_S", "KI_BILD_TIMEOUT_S", "JITSI_BASIS", "JITSI_HOSTS"}
+           "AUGE_PORT", "AUGE_RUNDE_S", "KI_BILD_TIMEOUT_S", "AUGE_HEIKEL_ABSTAND",
+           "JITSI_BASIS", "JITSI_HOSTS"}
 assert set(e) == erlaubt, sorted(set(e) ^ erlaubt)
 for k in e:
     for muster in ("PASSWORT", "PASSWORD", "TOKEN", "SECRET", "API_KEY", "SMTP_", "SCHLUESSEL"):

@@ -654,15 +654,16 @@ def _jitsi(uid="j1", status="laeuft", **spalten):
                  link="https://meet.ffmuc.net/x1", **spalten)
 
 
-def _bild(uid="j1", minuten=0, name=None, beschr=None):
+def _bild(uid="j1", minuten=0, name=None, beschr="Folie", status="fertig"):
+    """Bild ablegen; Vorgabe: schon geprueft (fertig). beschr=None laesst es offen (R11)."""
     import bildschirm
     bid = bildschirm.bild_ablegen(uid, _jpeg((minuten * 20 % 255, 0, 0)),
                                   datetime(2099, 1, 9, 12, 1, tzinfo=timezone.utc)
                                   + timedelta(minutes=minuten), name)
     assert bid
     if beschr is not None:
-        server._q("update termin_bilder set beschreibung = %s, beschreibung_status = 'fertig' "
-                  "where id = %s returning id", (beschr, bid))
+        server._q("update termin_bilder set beschreibung = %s, beschreibung_status = %s "
+                  "where id = %s returning id", (beschr, status, bid))
     return bid
 
 
@@ -753,14 +754,13 @@ def test_reiter_bildschirm_nur_mit_schalter_oder_bildern():
 def test_reiter_bildschirm_zeigt_bilder():
     _jitsi(bildschirm_auswerten=True)
     b1 = _bild(minuten=0, name="Karla <i>K</i>", beschr="Folie <script>x()</script> Budget")
-    b2 = _bild(minuten=1)
+    b2 = _bild(minuten=1, beschr="Zweite Folie")
     a = _get(_pfad("j1") + "?reiter=bildschirm")
     assert a.status_code == 200
     t = a.text
     assert f"/termine/j1/bild/{b1}.jpg" in t and f"/termine/j1/bild/{b2}.jpg" in t
     assert "Folie &lt;script&gt;x()&lt;/script&gt; Budget" in t and "<script>x()" not in t
     assert "Karla &lt;i&gt;K&lt;/i&gt;" in t and "<i>K</i>" not in t
-    assert "wird beschrieben" in t                       # b2 noch ohne Beschreibung
     assert "13:01" in t                                  # 12:01 UTC = 13:01 Berlin (Januar)
     assert "/static/termin_bilder/bilder.js" in t and 'type="search"' in t
     assert "script-src 'self'" in a.headers["content-security-policy"]
@@ -961,3 +961,84 @@ def test_akte_json_hat_schalter_und_anzahl():
     _bild()
     d = _get(_pfad("j1") + ".json").json()
     assert d["bildschirm_auswerten"] is True and d["bilder_anzahl"] == 1
+
+
+def test_reiter_bildschirm_vermerkt_uebersprungene_heikle():
+    _jitsi(bildschirm_auswerten=True)
+    assert "heikle Bildschirme" not in _get(_pfad("j1") + "?reiter=bildschirm").text
+    server._q("update termin_akten set bilder_uebersprungen = 3 where uid = 'j1' returning uid")
+    t = _get(_pfad("j1") + "?reiter=bildschirm").text
+    assert "3 heikle Bildschirme (Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert." in t
+    assert _get(_pfad("j1") + ".json").json()["bilder_uebersprungen"] == 3
+
+
+def test_ungepruefte_bilder_unsichtbar(monkeypatch):
+    """R11 fail-closed: offen/fehler sind weder in der Akte, in bilder.json, im Verlauf,
+    in der Suche noch als Einzelbild abrufbar."""
+    import urllib.request
+    _jitsi(bildschirm_auswerten=True)
+    segmente = [{"sprecher": "A", "beginn": "2099-01-09T12:00:00Z", "text": "S0"},
+                {"sprecher": "B", "beginn": "2099-01-09T12:30:00Z", "text": "S1"}]
+    _mitschrift("j1", segmente=json.dumps(segmente), auswertung_json=json.dumps(
+        {"verlauf": [{"thema": "Alles", "inhalt": "x", "von": 0, "bis": 1}]}))
+    ok = _bild(minuten=0, beschr="Preisliste")
+    offen = _bild(minuten=1, beschr=None)
+    fehler = _bild(minuten=2, beschr="kaputt", status="fehler")
+    for pfad in (_pfad("j1") + "?reiter=bildschirm", _pfad("j1") + "?reiter=mitschrift"):
+        t = _get(pfad).text
+        assert f"/bild/{ok}.jpg" in t, pfad
+        assert offen not in t and fehler not in t and "kaputt" not in t, pfad
+    d = _get(_pfad("j1") + "/bilder.json").json()
+    assert [x["id"] for x in d["bilder"]] == [ok]
+    assert _get(_pfad("j1") + ".json").json()["bilder_anzahl"] == 1
+    assert _get(f"/termine/j1/bild/{ok}.jpg").status_code == 200
+    for bid in (offen, fehler):
+        assert _get(f"/termine/j1/bild/{bid}.jpg").status_code == 404
+
+    def urlopen(req, timeout=None):
+        return _Antwort([{"id": b, "uid": "j1", "aufgenommen_am": "x", "beschreibung": "y",
+                          "score": 0.9} for b in (fehler, offen, ok)])
+
+    monkeypatch.setenv("AUGE_URL", "http://auge:8790")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    d = _get(_pfad("j1") + "/bilder.json?q=Preis").json()
+    assert [x["id"] for x in d["bilder"]] == [ok]
+
+
+def test_heikel_hinweis_einzahl_und_mehrzahl():
+    _jitsi(bildschirm_auswerten=True)
+    server._q("update termin_akten set bilder_uebersprungen = 1 where uid = 'j1' returning uid")
+    t = _get(_pfad("j1") + "?reiter=bildschirm").text
+    assert "1 heikler Bildschirm (Anmeldung, Bezahlung, Postfach) wurde nicht gespeichert." in t
+    assert "heikle Bildschirme" not in t
+    assert ui_termin.heikel_satz(1) == ("1 heikler Bildschirm (Anmeldung, Bezahlung, "
+                                         "Postfach) wurde nicht gespeichert.")
+    assert ui_termin.heikel_satz(2) == ("2 heikle Bildschirme (Anmeldung, Bezahlung, "
+                                         "Postfach) wurden nicht gespeichert.")
+    assert ui_termin.heikel_satz(0) == ""
+
+
+def test_bilder_json_liefert_uebersprungen(monkeypatch):
+    _jitsi(bildschirm_auswerten=True)
+    assert _get(_pfad("j1") + "/bilder.json").json()["bilder_uebersprungen"] == 0
+    server._q("update termin_akten set bilder_uebersprungen = 2 where uid = 'j1' returning uid")
+    assert _get(_pfad("j1") + "/bilder.json").json()["bilder_uebersprungen"] == 2
+    monkeypatch.setenv("AUGE_URL", "")
+    d = _get(_pfad("j1") + "/bilder.json?q=x").json()      # auch in Suche und Fehlerfall
+    assert d["bilder_uebersprungen"] == 2 and d["fehler"]
+    # Platz fuer den live aufgefrischten Hinweis steht auch bei 0 auf der Seite
+    _jitsi("j2", bildschirm_auswerten=True)
+    assert 'id="bild-heikel"' in _get(_pfad("j2") + "?reiter=bildschirm").text
+
+
+def test_bilder_js_entfernt_geloeschte_und_frischt_hinweis_auf():
+    """F2: ausserhalb der Suche verschwinden Karten, deren Id nicht mehr geliefert wird;
+    der Heikel-Hinweis kommt live aus bilder_uebersprungen (Einzahl/Mehrzahl)."""
+    js = (ui_termin.STATIK / "bilder.js").read_text(encoding="utf-8")
+    start = js.index("function ergaenzen(")
+    rumpf = js[start:js.index("function ersetzen(")]
+    assert "removeChild" in rumpf and "suche" in rumpf      # nur ausserhalb des Suchmodus
+    assert "bilder_uebersprungen" in js and "bild-heikel" in js
+    assert "1 heikler Bildschirm (Anmeldung, Bezahlung, Postfach) wurde nicht gespeichert." in js
+    assert "heikle Bildschirme (Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert." in js
+    assert "innerHTML" not in js

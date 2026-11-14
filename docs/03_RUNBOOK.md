@@ -4032,6 +4032,76 @@ entfernte Tracks mit `mediaType` `screenshare`, nie Kameras und nie Ton. Es ents
 siehe Abschnitt KI-Tor und `docs/06_DSGVO.md`). Die Vektoren rechnet fastembed lokal im Container; kein Bild geht
 anderswohin.
 
+**Mehrere Freigaben.** Teilen mehrere Teilnehmer gleichzeitig, erfasst der Beobachter bis zu 3 Bildschirme (nach
+Quellname sortiert). Drossel und Änderungsprüfung laufen je Quelle, die Obergrenze je Akte gilt gemeinsam. Das
+Bild-Ende (`bis`) wird je Freigeber geführt. Empfangen werden nur die erfassten Bildschirm-Quellen, nie Kamera oder Ton.
+Bekannte Grenzen: bei mehr als 3 Freigaben kann eine spätere eine laufende verdrängen; zwei Freigeber mit gleichem
+Anzeigenamen schließen ihr Bild-Ende gemeinsam.
+
+**Heikle Bildschirme (Anmeldung, Bezahlung, Postfach).** Zwei Schichten verhindern, dass sie in der Akte bleiben:
+
+- *Schicht A, lokal (`sales-mcp/heikel.py`):* ein CLIP-Zero-Shot-Vergleich im Container, bevor ein Bild gespeichert
+  wird. Schwelle `AUGE_HEIKEL_ABSTAND` (Vorgabe 0,045), am 14.11.2026 an 356 echten Standbildern kalibriert
+  (`scripts/heikel_kalibrieren.py`, nur lesend): **Trefferquote nur 14,8 %**, Fehlalarme 1,4 %. Schicht A fängt also nur
+  einen kleinen Teil; sie ist ein Vorfilter, keine Garantie. Fällt das Modell aus, wird das Bild nicht gespeichert
+  (fail-closed); ohne Prüfer startet der Dienst nicht.
+- *Schicht B, Bildmodell (`sales-mcp/bild_arbeit.py`), die eigentliche Absicherung:* beim Beschreiben antwortet das
+  Modell (über das KI-Tor) bei Anmelde-, Zahlungs- und Postfach-Bildschirmen mit HEIKEL; dann wird die **ganze Zeile**
+  in `termin_bilder` gelöscht (Bild, Beschreibung, beide Vektoren). Beschreibt das Modell das Bild, statt HEIKEL zu
+  antworten, fängt das **Stichwort-Netz** (`_HEIKEL_STICHWORT`: passwort, kennwort, anmelde, login, checkout, zahlung,
+  kreditkarte, bezahl, iban, posteingang, inbox, gmx, web.de, outlook u. a.) es ab: ebenso ganze Zeile weg.
+- *Fail-closed:* sichtbar ist nur ein **geprüftes** Bild (`beschreibung_status = 'fertig'`). Ungeprüfte (`offen`,
+  `fehler`) zeigen weder Akte noch `bilder.json` noch die Vorschaubilder im Verlauf noch die Bildsuche (Oberfläche,
+  `POST /suche`, MCP `termin_bilder_suchen`) noch die Bild-Route. Bis zur Beschreibung liegt ein heikles Bild je nach
+  Warteschlange **Minuten** (nicht nur Sekunden) in der Datenbank, ist in der Zeit aber nicht abrufbar; es **ist für
+  die Prüfung an das KI-Tor gegangen** (siehe `docs/06_DSGVO.md`). `fehler` ist kein Endzustand: es wird unbegrenzt
+  weiter versucht (nach Versuch 1 30 s, danach je 5 min). Was nach **24 h** noch ungeprüft ist, löscht der
+  Beschreib-Thread (höchstens alle 10 min, Log nur die Anzahl: „Ungepruefte Bilder geloescht: N“) – bei einem
+  KI-Ausfall über 24 h gehen diese Bilder also verloren.
+
+Beide Schichten zählen in `termin_akten.bilder_uebersprungen`; der Reiter „Bildschirm“ der Akte zeigt „N heikle
+Bildschirme (Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert.“ (bei 1: „1 heikler Bildschirm … wurde nicht
+gespeichert.“), live aufgefrischt; als heikel gelöschte Karten verschwinden aus der offenen Ansicht.
+
+Ungeprüfte Bilder zählen (nur lesen, nur Zahlen; DSN-Muster aus Abschnitt „psql-Gegenproben“, auf der VM in
+`~/sales-claw`):
+
+```bash
+export SALES_DSN=$(grep '^SALES_DB_URL=' .env | sed 's/^SALES_DB_URL=//')
+docker run --rm -e SALES_DSN -i postgres:17-alpine timeout 30 sh -c \
+  'psql "$SALES_DSN" -c "select beschreibung_status, count(*), min(aufgenommen_am) from sales.termin_bilder where beschreibung_status <> '"'"'fertig'"'"' group by 1;"'
+unset SALES_DSN
+```
+
+Kalibrieren (einmalig, Einmal-Container,
+nur lesend): `ssh offload-vm 'cd ~/sales-claw && docker compose run --rm --no-deps -T sales-auge timeout 900 python -' < scripts/heikel_kalibrieren.py`.
+
+**Mitschrift-Bereinigung.** Vor dem Ablegen (`termin_takt._mitschrift_ablegen`, Modul
+`sales-mcp/mitschrift_bereinigen.py`) werden Whisper-Halluzinationen entfernt („Untertitel im Auftrag des ZDF“,
+Amara, „Danke fürs Zuschauen“ u. ä.; „Untertitel …“ nur mit Sender bzw. Community am Ende), Sprechernamen
+vereinheitlicht (Betreiber über `BETREIBER_NAME` im Dienst `sales-termine`, leer = Vorgabe „Felix Baumann“ – **jeder
+andere Laden setzt `BETREIBER_NAME` in seiner `.env`**; nur wenn alle Wörter des Namens im Betreibernamen stecken, mehrdeutige Kurznamen bleiben), ein leerer
+Sprecher zwischen zwei gleichen Sprechern (≤ 3 s) gefüllt und Bruchstücke desselben Sprechers (≤ 6 s Abstand,
+höchstens 400 Zeichen) verbunden. In der Auswertung (`sales-mcp/auswertung.py`) werden reine Bild-Abschnitte
+eingeklappt, und „Beteiligte“ führt keine Bots („Laura (Bildschirm)“, „VibeMind Mitschrift“ …), außer sie haben
+gesprochen; Doppelte werden zusammengeführt.
+
+**Neu auswerten** (bereits abgelegte Mitschrift, nur solange kein Entwurf verschickt ist; sonst Abbruch):
+
+    ssh offload-vm 'docker exec -i sales-termine timeout 120 python - <uid>' < scripts/neu_auswerten.py
+
+`<uid>` ist die volle Akten-uid oder ein eindeutiger Präfix ab 8 Zeichen (0 oder mehrere Treffer: Abbruch). Das Skript
+bereinigt die Segmente, setzt `auswertung_status='offen'` und `auswertung_versuche=0` und leert die alte Auswertung
+(sie verwiese auf Segment-Nummern der alten Fassung); der Taktgeber wertet beim nächsten Durchlauf aus. Ausgabe nur
+Zähler: Segmente, Anteil Sprecher „?“ und Anteil Segmente mit höchstens 2 Wörtern, je vorher/nachher, und die Zahl
+gelöschter offener Vorschläge. Dabei gilt: nur wenn die Auswertung abgeschlossen ist (`fertig`, `fehler` oder `leer`;
+sonst Abbruch „Auswertung steht noch aus“), Abbruch auch bei Entwurf `sent`, `approved` oder `failed`; ein offener
+Entwurf (`pending`) bleibt und wird als Warnzeile „Entwurf offen – stammt aus alter Auswertung“ gemeldet (in der
+Freigabe prüfen bzw. verwerfen). Offene Vorschläge der alten Auswertung werden gelöscht, bestätigte und verworfene
+bleiben. Bleibt nach der Bereinigung kein Segment, wird der Status `leer`. Ändert das Skript die Segmente, während der
+Taktgeber gerade auswertet, verwirft dieser sein Ergebnis (Log „Segmente geaendert waehrend Auswertung“) und wertet
+die neue Fassung aus. Immer mit `timeout` im Container, nie eine Suche ab `/`.
+
 **Grenzen und Aufbau.** `mem_limit` 2560m (Leerlauf mit Modellen gemessen 1,54 GiB), `cpus` 1,5 (Chromium mit einem Termin ≈ 0,5 GB), läuft als uid 10001. Der
 HTTP-Teil (`GET /gesund`, `POST /suche`, Port `AUGE_PORT`, Vorgabe 8790) ist nur im Compose-Netz erreichbar. Die
 Umgebung ist bewusst schmal (DB, KI-Tor, Jitsi-Hosts), ohne den Anker `x-sales-mcp-umgebung`: keine Kanal-Schlüssel,
@@ -4077,8 +4147,9 @@ Einzelne Bilder löscht der Betreiber in der Akte (Knopf „Löschen“, Aktion 
 
 - Kein Beobachter im Termin: Schalter in der Akte an? Termin auf Jitsi, nicht abgesagt, Bot nicht ausgeschaltet?
   Link-Host in `JITSI_HOSTS`? `docker ps --filter name=auge`, `docker logs --since 10m sales-auge`.
-- Bilder ohne Beschreibung: KI-Tor `sales-ki` läuft? (`smoke.sh` Abschnitt 24), `OLLAMA_URL` gesetzt?
-  Zeitüberschreitung: `KI_BILD_TIMEOUT_S` anheben.
+- Bilder erscheinen nicht (bleiben ungeprüft, siehe Zählabfrage oben): KI-Tor `sales-ki` läuft? (`smoke.sh`
+  Abschnitt 24), `OLLAMA_URL` gesetzt? Zeitüberschreitung: `KI_BILD_TIMEOUT_S` anheben. Nach 24 h ohne Prüfung
+  werden sie gelöscht.
 - Container startet immer neu: Speicher (`docker stats --no-stream sales-auge`), Datenbank erreichbar, Log lesen.
 - Suche liefert nichts: `docker exec sales-auge python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8790/gesund',timeout=5).status)"`.
 - Tonmitschrift leidet: `docker stop sales-auge` (Not-Aus) und Log von `sales-termine` prüfen.

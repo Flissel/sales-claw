@@ -73,12 +73,27 @@ def _verkleinern(jpeg: bytes) -> tuple[bytes, int, int]:
         return out.getvalue(), bild.width, bild.height
 
 
+def name_norm(geteilt_von: str | None) -> str | None:
+    """Anzeigename so, wie er in `termin_bilder.geteilt_von` steht."""
+    return (geteilt_von or "").strip()[:_NAME_MAX] or None
+
+
+# Offene Bilder DESSELBEN Teilenden (null-sicher): bei mehreren gleichzeitigen
+# Freigaben endet ein Bild erst mit dem naechsten Bild derselben Quelle (R9b).
+_OFFEN_VON = "uid = %s and bis is null and geteilt_von is not distinct from %s::text"
+
+
 def bild_ablegen(uid: str, jpeg: bytes, zeitpunkt: datetime,
-                 geteilt_von: str | None) -> str | None:
-    """Legt ein Bild ab und schliesst das vorige offene; None, wenn nicht (mehr) soll."""
+                 geteilt_von: str | None,
+                 vektor_bild: list[float] | None = None) -> str | None:
+    """Legt ein Bild ab und schliesst das vorige offene DESSELBEN Teilenden; None, wenn
+    nicht (mehr) soll. `vektor_bild`: schon berechneter CLIP-Vektor (Heikel-Pruefung),
+    spart die zweite Berechnung im Beschreib-Thread."""
+    literal = ("[" + ",".join(repr(float(v)) for v in vektor_bild) + "]"
+               if vektor_bild is not None else None)
     daten, breite, hoehe = _verkleinern(jpeg)
     hash_ = dhash(daten)
-    name = (geteilt_von or "").strip()[:_NAME_MAX] or None
+    name = name_norm(geteilt_von)
     with server.pool.connection() as conn:
         if not conn.execute("select 1 from termin_akten where uid = %s for update",
                             (uid,)).fetchall():
@@ -86,12 +101,13 @@ def bild_ablegen(uid: str, jpeg: bytes, zeitpunkt: datetime,
         if not conn.execute(f"select 1 from termin_akten where uid = %s and {_SOLL}",
                             (uid,)).fetchall():
             return None
-        conn.execute("update termin_bilder set bis = %s where uid = %s and bis is null",
-                     (zeitpunkt, uid))
+        conn.execute(f"update termin_bilder set bis = %s where {_OFFEN_VON}",
+                     (zeitpunkt, uid, name))
         zeilen = conn.execute(
             "insert into termin_bilder (uid, aufgenommen_am, geteilt_von, bild, breite, "
-            "hoehe, dhash) values (%s, %s, %s, %s, %s, %s, %s) returning id",
-            (uid, zeitpunkt, name, daten, breite, hoehe, hash_)).fetchall()
+            "hoehe, dhash, vektor_bild) values (%s, %s, %s, %s, %s, %s, %s, "
+            "%s::public.vector) returning id",
+            (uid, zeitpunkt, name, daten, breite, hoehe, hash_, literal)).fetchall()
     return str(_erste(zeilen[0]))
 
 
@@ -99,22 +115,61 @@ def _erste(zeile):
     return zeile["id"] if isinstance(zeile, dict) else zeile[0]
 
 
+def uebersprungen_zaehlen(uid: str) -> None:
+    """Ein heikles, NICHT gespeichertes Bild auf der Akte vermerken (nur der Zaehler)."""
+    server._q("update termin_akten set bilder_uebersprungen = bilder_uebersprungen + 1 "
+              "where uid = %s returning uid", (uid,))
+
+
 def freigabe_ende(uid: str, zeitpunkt: datetime) -> None:
+    """Keine Freigabe mehr: alle offenen Bilder der Akte enden."""
     server._q("update termin_bilder set bis = %s where uid = %s and bis is null "
               "returning id", (zeitpunkt, uid))
 
 
-def bilder(uid: str) -> list[dict]:
+def quelle_ende(uid: str, geteilt_von: str | None, zeitpunkt: datetime) -> None:
+    """Eine Freigabe endet, andere laufen weiter: nur das offene Bild dieses Teilenden."""
+    server._q(f"update termin_bilder set bis = %s where {_OFFEN_VON} returning id",
+              (zeitpunkt, uid, name_norm(geteilt_von)))
+
+
+# Schicht B fail-closed (Ruling R11): sichtbar ist nur ein geprueftes (fertig
+# beschriebenes) Bild; offen/fehler koennten noch heikel sein.
+_GEPRUEFT = "beschreibung_status = 'fertig'"
+
+
+def bilder(uid: str, auch_ungeprueft: bool = False) -> list[dict]:
+    """Bilder einer Akte ohne Bytes. Vorgabe: nur gepruefte (fuer jede Anzeige);
+    `auch_ungeprueft=True` nur fuer interne Zwecke, nie fuer eine Ausgabe."""
+    filter_ = "" if auch_ungeprueft else f" and {_GEPRUEFT}"
     return server._q(
         "select id, uid, aufgenommen_am, bis, geteilt_von, breite, hoehe, dhash, "
         "beschreibung, beschreibung_status, beschreibung_versuche, erstellt_am "
-        "from termin_bilder where uid = %s order by aufgenommen_am, erstellt_am", (uid,))
+        f"from termin_bilder where uid = %s{filter_} order by aufgenommen_am, erstellt_am",
+        (uid,))
 
 
 def bild_daten(uid: str, bild_id: str) -> bytes | None:
-    z = server._q("select bild from termin_bilder where uid = %s and id = %s",
+    """Bildbytes eines GEPRUEFTEN Bildes; ungepruefte gibt es nicht (R11)."""
+    z = server._q(f"select bild from termin_bilder where uid = %s and id = %s and {_GEPRUEFT}",
                   (uid, bild_id))
     return bytes(z[0]["bild"]) if z else None
+
+
+def gepruefte_ids(ids: list[str]) -> set[str]:
+    """Teilmenge der Ids, die als gepruefte Bilder existieren (Nicht-UUIDs fallen weg)."""
+    import uuid
+    gueltig = []
+    for i in ids:
+        try:
+            gueltig.append(str(uuid.UUID(str(i))))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not gueltig:
+        return set()
+    z = server._q(f"select id from termin_bilder where id = any(%s::uuid[]) and {_GEPRUEFT}",
+                  (gueltig,))
+    return {str(r["id"]) for r in z}
 
 
 def bild_loeschen(uid: str, bild_id: str) -> bool:
