@@ -112,4 +112,73 @@ LF "$WURZEL/deploy/sicherung.sh" | grep -qF 'laeden-daten/sales/mitschriften' \
 LF "$WURZEL/deploy/wiederherstellen.sh" | grep -qF 'mitschriften.tar.gz' \
   || fehler "wiederherstellen.sh: mitschriften.tar.gz wird nicht behandelt"
 
+# --- Verhalten: wiederherstellen.sh (Mitschriften-Teil) und sicherung.sh -------
+# Wegwerf-Baum mit Kopien der Skripte (WURZEL = Elternordner des Skripts) und
+# einer docker-Attrappe, die nichts tut und Erfolg meldet. Die Volume-Archive
+# sind leere Dateien (die Attrappe entpackt nichts).
+mkdir -p "$T/bin"
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/docker"; chmod +x "$T/bin/docker"
+neuer_baum() { # name
+  B="$T/$1"; rm -rf "$B"; mkdir -p "$B/deploy/laeden" "$B/q/ivan"
+  cp "$WURZEL/deploy/wiederherstellen.sh" "$WURZEL/deploy/sicherung.sh" "$B/deploy/"
+  sed -i 's/\r$//' "$B/deploy/wiederherstellen.sh" "$B/deploy/sicherung.sh"
+  for v in ivan-openwa-data ivan-claw-state ivan-claw-keys ivan-sprachnachrichten; do : > "$B/q/ivan/$v.tar.gz"; done
+  : > "$B/q/ivan/schema.sql.gz"
+}
+archiv() { # baum quellordner  -> q/ivan/mitschriften.tar.gz + Manifest
+  mkdir -p "$T/inhalt"; rm -rf "$T/inhalt"/*; echo neu > "$T/inhalt/neu.html"
+  tar czf "$1/q/ivan/mitschriften.tar.gz" -C "$T/inhalt" .
+}
+manifest() { ( cd "$1/q" && find . -name '*.gz' | sort | xargs sha256sum > MANIFEST.sha256 ); }
+wiederherstellen() { # baum
+  PATH="$T/bin:$PATH" bash "$1/deploy/wiederherstellen.sh" "$1/q" ivan 2>&1 </dev/null || true
+}
+fremd() { mkdir -p "$1"; echo alt > "$1/alt.html"; }
+
+# 1. Laden ohne Zeile in seiner .env: Ordner des Basis-Ladens bleibt unberuehrt.
+neuer_baum r1; archiv "$B"; manifest "$B"
+echo "LADEN_PRAEFIX=ivan" > "$B/deploy/laeden/ivan.env"
+fremd "$B/laeden-daten/sales/mitschriften"
+aus="$(wiederherstellen "$B")"
+echo "$aus" | grep -q '^FEHLER: kein MITSCHRIFTEN_ORDNER' || fehler "wiederherstellen: Laden ohne Zeile nicht gemeldet ($aus)"
+[ -f "$B/laeden-daten/sales/mitschriften/alt.html" ] && [ ! -e "$B/laeden-daten/sales/mitschriften/neu.html" ] \
+  || fehler "wiederherstellen: Ordner des Basis-Ladens wurde angefasst"
+
+# 2. Pfad ./ bzw . : nichts ausserhalb wird geloescht.
+for pfad in ./ . / ../; do
+  neuer_baum r2; archiv "$B"; manifest "$B"
+  printf 'LADEN_PRAEFIX=ivan\nMITSCHRIFTEN_ORDNER=%s\n' "$pfad" > "$B/deploy/laeden/ivan.env"
+  echo wichtig > "$B/deploy/wichtig.txt"
+  aus="$(wiederherstellen "$B")"
+  echo "$aus" | grep -q "^FEHLER: MITSCHRIFTEN_ORDNER ergibt" || fehler "wiederherstellen: Pfad '$pfad' nicht abgewiesen ($aus)"
+  [ -f "$B/deploy/wichtig.txt" ] && [ -f "$B/deploy/wiederherstellen.sh" ] || fehler "wiederherstellen: Pfad '$pfad' loeschte Dateien"
+done
+
+# 3. Kaputtes Archiv: Ordnerinhalt bleibt.
+neuer_baum r3; echo "kein tar" > "$B/q/ivan/mitschriften.tar.gz"; manifest "$B"
+printf 'LADEN_PRAEFIX=ivan\nMITSCHRIFTEN_ORDNER=./laeden-daten/ivan/mitschriften\n' > "$B/deploy/laeden/ivan.env"
+fremd "$B/laeden-daten/ivan/mitschriften"
+aus="$(wiederherstellen "$B")"
+echo "$aus" | grep -q 'ist nicht lesbar' || fehler "wiederherstellen: kaputtes Archiv nicht gemeldet ($aus)"
+[ -f "$B/laeden-daten/ivan/mitschriften/alt.html" ] || fehler "wiederherstellen: kaputtes Archiv leerte den Ordner"
+
+# 4. Gutfall: Inhalt wird ersetzt, Meldung kommt, Basis-Ordner unberuehrt.
+neuer_baum r4; archiv "$B"; manifest "$B"
+printf 'LADEN_PRAEFIX=ivan\nMITSCHRIFTEN_ORDNER=./laeden-daten/ivan/mitschriften\n' > "$B/deploy/laeden/ivan.env"
+fremd "$B/laeden-daten/ivan/mitschriften"; fremd "$B/laeden-daten/sales/mitschriften"
+aus="$(wiederherstellen "$B")"
+echo "$aus" | grep -q '^Mitschriften-Ordner .* wiederhergestellt' || fehler "wiederherstellen: Gutfall ohne Meldung ($aus)"
+[ -f "$B/laeden-daten/ivan/mitschriften/neu.html" ] && [ ! -e "$B/laeden-daten/ivan/mitschriften/alt.html" ] \
+  || fehler "wiederherstellen: Gutfall ersetzte den Inhalt nicht"
+[ -f "$B/laeden-daten/sales/mitschriften/alt.html" ] || fehler "wiederherstellen: Gutfall beruehrte den Basis-Laden"
+
+# 5. sicherung.sh: Laden ohne Zeile sichert NICHT den Ordner des Basis-Ladens.
+neuer_baum s1
+echo "LADEN_PRAEFIX=ivan" > "$B/deploy/laeden/ivan.env"
+fremd "$B/laeden-daten/sales/mitschriften"
+aus="$(PATH="$T/bin:$PATH" bash "$B/deploy/sicherung.sh" "$B/z" 2>&1 </dev/null || true)"
+echo "$aus" | grep -q '^FEHLER: ivan hat kein MITSCHRIFTEN_ORDNER' || fehler "sicherung: Laden ohne Zeile nicht gemeldet ($aus)"
+ls "$B"/z/*/sales/mitschriften.tar.gz >/dev/null 2>&1 || fehler "sicherung: Basis-Laden ohne mitschriften.tar.gz"
+ls "$B"/z/*/ivan/mitschriften.tar.gz >/dev/null 2>&1 && fehler "sicherung: Laden ohne Zeile sicherte den Ordner des Basis-Ladens"
+
 echo "OK: mitschriften-ordner"

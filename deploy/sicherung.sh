@@ -87,6 +87,13 @@ for P in $PRAEFIXE; do
     if [ "$P" != sales ] && [ -r "$WURZEL/deploy/laeden/$P.env" ]; then
       dir="$(sed -n "s/^$v=//p" "$WURZEL/deploy/laeden/$P.env" | tr -d '[:space:]')"
     fi
+    # Nur der Basis-Laden bekommt die Vorgabe; ein anderer Laden ohne Zeile wuerde
+    # sonst den Ordner des Basis-Ladens unter seinem Namen sichern - ueberspringen.
+    if [ "$v" = MITSCHRIFTEN_ORDNER ] && [ "$P" != sales ] && [ -z "$dir" ]; then
+      echo "FEHLER: $P hat kein MITSCHRIFTEN_ORDNER (deploy/laeden/$P.env) - die Terminberichte dieses Ladens fehlen in dieser Sicherung." >&2
+      FEHLER=$((FEHLER + 1))
+      continue
+    fi
     dir="${dir:-$standard}"
     case "$dir" in /*) ;; *) dir="$WURZEL/${dir#./}" ;; esac
     if [ -d "$dir" ]; then
