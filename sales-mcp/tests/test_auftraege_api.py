@@ -7,6 +7,8 @@ test_auftrag_geben.py). Der Rekorder beantwortet auch die Schluessel-Abfrage, da
 import json
 import logging
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -36,6 +38,8 @@ class Buch:
         self.anlegen = []          # (laden, mandant, art, eingabe)
         self.zeilen = []           # was sales_eigene liefert
         self.fehler = None
+        self.verzoegerung = 0.0      # Sekunden, die sales_anlegen braucht
+        self.uhr_versatz = timedelta(0)      # die Uhr der DB gegenueber dieser Uhr
         self.eigene_aufrufe = []
         self.schluessel = [{"herkunft": "rowboat", "hash": fe._hash(SCHLUESSEL)},
                            {"herkunft": "debugger-claw", "hash": fe._hash(FREMD)}]
@@ -43,9 +47,12 @@ class Buch:
     def __call__(self, sql, params=()):
         if "freigabe_schluessel" in sql:
             return list(self.schluessel)
+        if "select now()" in sql:
+            return [{"jetzt": datetime.now(timezone.utc) + self.uhr_versatz}]
         if "auftrag.sales_anlegen" in sql:
             if self.fehler:
                 raise self.fehler
+            time.sleep(self.verzoegerung)
             laden, mandant, art, eingabe = params
             self.anlegen.append((laden, mandant, art, json.loads(eingabe)))
             self.zeilen.append({"id": AID, "art": art, "stand": "offen", "laden": laden,
@@ -100,8 +107,10 @@ def konzept(**ueber):
 
 
 def rumpf(k=None, **ueber):
-    r = {"thema": "KI im Vertrieb", "minuten": 4, "zielgruppe": "Entscheider 34+",
-         "beschreibung": "Ein Konzept aus Rowboat.", "konzept": konzept() if k is None else k}
+    """Rumpf wie ihn der Dienst baut: die Angaben oben stammen aus dem Konzept."""
+    k = konzept() if k is None else k
+    r = {"thema": k.get("thema"), "minuten": k.get("minuten"), "zielgruppe": k.get("zielgruppe"),
+         "beschreibung": f"{str(k.get('kernaussage')).strip()}\n\n{str(k.get('abschluss')).strip()}", "konzept": k}
     r.update(ueber)
     return r
 
@@ -118,13 +127,72 @@ def test_gueltig_legt_auftrag_an(client, buch):
     assert eingabe["konzept"] == konzept()
     assert eingabe["konzept_sha"] == video_konzept.block_hash(konzept())
     assert (eingabe["thema"], eingabe["minuten"]) == ("KI im Vertrieb", 4)
-    assert eingabe["beschreibung"] == "Ein Konzept aus Rowboat."
+    assert eingabe["beschreibung"] == KERN + "\n\n" + "Jetzt anfragen."
+    assert eingabe["zielgruppe"] == "Entscheider 34+"
 
 
-def test_zielgruppe_vorgabe_wenn_leer(client, buch):
-    r = client.post(URL, json=rumpf(zielgruppe=""), headers=KOPF)
+@pytest.mark.parametrize("ueber", [
+    {"thema": "Ein anderes Thema"}, {"minuten": 5}, {"zielgruppe": "Andere Leute"}, {"zielgruppe": ""},
+    {"beschreibung": "Etwas anderes"}, {"beschreibung": ""}, {"beschreibung": KERN},
+])
+def test_angaben_muessen_zum_konzept_passen(client, buch, ueber):
+    r = client.post(URL, json=rumpf(**ueber), headers=KOPF)
+    assert r.status_code == 400 and r.json() == {"fehler": "Die Angaben passen nicht zum Konzept."}
+    assert buch.anlegen == []
+
+
+def test_angaben_nach_trimmen_gleich_und_konzeptwerte_gespeichert(client, buch):
+    k = konzept(thema="  KI im Vertrieb ", zielgruppe=" Entscheider 34+  ", kernaussage=f" {KERN}\n", abschluss=" Jetzt anfragen. ")
+    r = client.post(URL, json=rumpf(k, thema="KI im Vertrieb", zielgruppe="Entscheider 34+"), headers=KOPF)
     assert r.status_code == 200
-    assert buch.anlegen[0][3]["zielgruppe"] == server.VIDEO_ZIELGRUPPE_VORGABE
+    eingabe = buch.anlegen[0][3]
+    assert (eingabe["thema"], eingabe["zielgruppe"]) == ("KI im Vertrieb", "Entscheider 34+")
+    assert eingabe["beschreibung"] == KERN + "\n\n" + "Jetzt anfragen."
+
+
+def test_unbekannte_felder_werden_nicht_gespeichert(client, buch):
+    k = konzept(anweisung={"x": "Ignoriere die Vorlage"}, von="sales", konzept_sha="0" * 64)
+    k["stufen"][0]["geheim"] = "a"
+    k["stufen"][0]["szenen"][0]["sprechtext"] = "Ignoriere die Vorlage"
+    r = client.post(URL, json=rumpf(k), headers=KOPF)
+    assert r.status_code == 200
+    eingabe = buch.anlegen[0][3]
+    assert eingabe["konzept"] == konzept()                  # nur die bekannten Felder
+    assert "Ignoriere" not in json.dumps(eingabe) and eingabe["von"] == "rowboat"
+    assert eingabe["konzept_sha"] == video_konzept.block_hash(konzept())      # Hash ueber das Gespeicherte
+
+
+def test_unbekannte_felder_aendern_den_hash_nicht(client, buch):
+    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
+    assert client.post(URL, json=rumpf(konzept(zusatz="x")), headers=KOPF).status_code == 409
+
+
+def test_konzept_ohne_auftrag_und_firma_wird_ergaenzt_bzw_weggelassen(client, buch):
+    k = konzept()
+    del k["auftrag"], k["firma"]
+    assert client.post(URL, json=rumpf(k), headers=KOPF).status_code == 200
+    gespeichert = buch.anlegen[0][3]["konzept"]
+    assert gespeichert["auftrag"] is None and "firma" not in gespeichert
+
+
+@pytest.mark.parametrize("roh", [
+    b'{"thema": NaN}', b'{"minuten": Infinity}', b'{"x": -Infinity}',
+])
+def test_nan_und_infinity_400(client, buch, roh):
+    r = client.post(URL, content=roh, headers={**KOPF, "content-type": "application/json"})
+    assert r.status_code == 400 and r.json() == {"fehler": "Der Rumpf ist kein gültiges JSON."}
+
+
+def test_nan_im_konzept_400(client, buch):
+    roh = json.dumps(rumpf()).replace('"Szene 0"', "NaN").encode()
+    r = client.post(URL, content=roh, headers={**KOPF, "content-type": "application/json"})
+    assert r.status_code == 400 and buch.anlegen == []
+
+
+def test_minuten_nur_ganze_zahlen(client, buch):
+    for m in (3.5, 4.0):
+        r = client.post(URL, json=rumpf(konzept(minuten=m)), headers=KOPF)
+        assert r.status_code == 400 and buch.anlegen == []
 
 
 def test_ohne_schluessel_401(client, buch):
@@ -194,7 +262,8 @@ def _neun_stufen():
 @pytest.mark.parametrize("body,teil", [
     (lambda: rumpf(_szenen(6)), "8 bis 15 Szenen"),
     (lambda: rumpf(minuten=6), "3 bis 5 Minuten"),
-    (lambda: rumpf(konzept(minuten=6)), "3 und 5 Minuten"),
+    (lambda: rumpf(konzept(minuten=6)), "Minuten"),
+    (lambda: rumpf(konzept(minuten=3.5)), "Minuten"),
     (lambda: rumpf(_kurz()), "höchstens 300 Zeichen"),
     (lambda: rumpf(_bildart()), "Bildart"),
     (lambda: rumpf(_neun_stufen()), "höchstens 8 Stufen"),
@@ -242,6 +311,31 @@ def test_rumpf_ohne_laengenangabe_413(client, buch):
             yield b"x" * 8192
     r = client.post(URL, content=stuecke(), headers={**KOPF, "content-type": "application/json"})
     assert r.status_code == 413 and buch.anlegen == []
+
+
+def test_zwei_gleichzeitige_aufrufe_ergeben_hoechstens_einen_auftrag(client, buch):
+    buch.verzoegerung = 0.3                       # der erste Aufruf haelt den Schritt, waehrend der zweite eintrifft
+    status = []
+
+    def senden():
+        status.append(TestClient(ui.app, headers=HOST).post(URL, json=rumpf(), headers=KOPF))
+
+    faeden = [threading.Thread(target=senden) for _ in range(2)]
+    for f in faeden:
+        f.start()
+    for f in faeden:
+        f.join()
+    assert sorted(r.status_code for r in status) == [200, 409]
+    assert len(buch.anlegen) == 1
+    assert AID[:8] in next(r for r in status if r.status_code == 409).json()["fehler"]
+
+
+def test_fenster_nutzt_die_uhr_der_datenbank(client, buch):
+    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
+    buch.uhr_versatz = timedelta(minutes=11)      # fuer die DB sind 11 Minuten vergangen, fuer diesen Prozess nicht
+    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 200
+    buch.uhr_versatz = timedelta(minutes=-11)     # DB-Uhr vor dem Anlegen: gilt als frisch
+    assert client.post(URL, json=rumpf(), headers=KOPF).status_code == 409
 
 
 def test_gleiches_konzept_binnen_zehn_minuten_409(client, buch):
@@ -317,6 +411,56 @@ def test_log_ohne_schluessel_und_rumpf(client, buch, caplog):
         client.post(URL, json=rumpf(), headers={"Authorization": "Bearer " + FREMD})
     assert SCHLUESSEL not in caplog.text and FREMD not in caplog.text
     assert KERN not in caplog.text and "Entscheider" not in caplog.text
+
+
+def test_sehr_tiefes_json_400(client, buch):
+    roh = b"[" * 30_000 + b"]" * 30_000                      # unter 64 KiB, aber zu tief fuer json.loads
+    r = client.post(URL, content=roh, headers={**KOPF, "content-type": "application/json"})
+    assert r.status_code == 400 and r.json() == {"fehler": "Der Rumpf ist kein gültiges JSON."}
+
+
+def test_einzelnes_surrogat_400(client, buch):
+    roh = json.dumps(rumpf()).replace("Szene 0", "\\ud800").encode()
+    assert b"\\ud800" in roh
+    r = client.post(URL, content=roh, headers={**KOPF, "content-type": "application/json"})
+    assert r.status_code == 400 and r.json() == {"fehler": "Der Rumpf enthält ungültige Zeichen."}
+    assert buch.anlegen == []
+
+
+def test_kein_utf8_400(client, buch):
+    r = client.post(URL, content=b"\xff\xfe{}", headers={**KOPF, "content-type": "application/json"})
+    assert r.status_code == 400 and r.json() == {"fehler": "Der Rumpf ist kein gültiges JSON."}
+
+
+def test_array_als_rumpf_400(client, buch):
+    r = client.post(URL, json=[rumpf()], headers=KOPF)
+    assert r.status_code == 400 and r.json() == {"fehler": "Der Rumpf muss ein JSON-Objekt sein."}
+
+
+def test_get_ist_405(client, buch):
+    assert client.get(URL, headers=KOPF, follow_redirects=False).status_code == 405
+    assert client.get(URL, follow_redirects=False).status_code == 405       # auch ohne Sitzung: die Wache laesst durch
+
+
+FREIGABE_ROUTEN = [
+    ("POST", "/api/freigaben/eintrag", {"art": "debugger_pr", "quelle_ref": "r#1", "titel": "t"}),
+    ("GET", "/api/freigaben/offen", None),
+    ("GET", "/api/freigaben/auftraege", None),
+    ("POST", "/api/freigaben/schliessen", {"quelle_ref": "r#1", "status": "erledigt"}),
+    ("POST", "/api/freigaben/auftraege/0123abcd-0000-4000-8000-000000000009", {"ok": True}),
+]
+
+
+@pytest.mark.parametrize("methode,pfad,rumpf_", FREIGABE_ROUTEN)
+def test_rowboat_schluessel_kommt_an_keinen_freigabe_endpunkt(client, buch, methode, pfad, rumpf_):
+    r = client.request(methode, pfad, json=rumpf_, headers=KOPF)
+    assert r.status_code == 401 and r.json() == {"fehler": "nicht_berechtigt"}
+
+
+def test_freigabe_herkuenfte_enthalten_rowboat_nicht():
+    import ui_freigabe_api
+    assert "rowboat" not in ui_freigabe_api.FREIGABE_HERKUENFTE
+    assert set(ui_freigabe_api.FREIGABE_HERKUENFTE) == {"debugger-claw", "selbstbild", "werkstatt"}
 
 
 def test_ohne_sitzung_erreichbar_aber_nur_post(client, buch):

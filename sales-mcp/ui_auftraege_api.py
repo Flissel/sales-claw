@@ -45,6 +45,10 @@ def _fehler(status: int, satz: str) -> JSONResponse:
     return JSONResponse({"fehler": satz}, status_code=status)
 
 
+def _keine_konstante(name: str):
+    raise ValueError(f"{name} ist kein JSON")          # NaN, Infinity, -Infinity
+
+
 async def _rumpf(request: Request):
     """-> (dict | None, Fehlerantwort | None); liest hoechstens MAX_RUMPF Byte."""
     zu_gross = _fehler(413, "Der Rumpf ist größer als 64 KiB.")
@@ -57,11 +61,15 @@ async def _rumpf(request: Request):
         if len(puffer) > MAX_RUMPF:
             return None, zu_gross
     try:
-        daten = json.loads(bytes(puffer).decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+        daten = json.loads(bytes(puffer).decode("utf-8"), parse_constant=_keine_konstante)
+    except (ValueError, UnicodeDecodeError, RecursionError):      # RecursionError: sehr tief verschachtelt
         return None, _fehler(400, "Der Rumpf ist kein gültiges JSON.")
     if not isinstance(daten, dict):
         return None, _fehler(400, "Der Rumpf muss ein JSON-Objekt sein.")
+    try:
+        json.dumps(daten, ensure_ascii=False).encode("utf-8")      # einzelne Surrogate lassen sich nicht kodieren
+    except (UnicodeEncodeError, RecursionError):
+        return None, _fehler(400, "Der Rumpf enthält ungültige Zeichen.")
     return daten, None
 
 
@@ -73,10 +81,20 @@ def _zeit(wert) -> datetime | None:
     return z if z.tzinfo else z.replace(tzinfo=timezone.utc)
 
 
+def _jetzt(server) -> datetime:
+    """Die Uhr der Datenbank (dieselbe, die `angelegt` gesetzt hat). Ist sie nicht lesbar, gilt die Uhr dieses
+    Prozesses (dann kann eine Uhrenabweichung das Fenster verschieben)."""
+    try:
+        z = server._q("select now() as jetzt")[0]["jetzt"]
+    except Exception:  # noqa: BLE001 - nur die Uhr; die Pruefung selbst bleibt in Kraft
+        z = None
+    return z if isinstance(z, datetime) and z.tzinfo else datetime.now(timezone.utc)
+
+
 def _vorhandener(server, laden: str, sha: str) -> str | None:
     """Auftragsnummer (8 Hex) eines lebenden Video-Auftrags dieses Ladens mit demselben Konzept-Hash, angelegt
     vor hoechstens 10 Minuten; sonst None. Liest nur ueber auftrag_buch.eigene (sales_eigene)."""
-    jetzt = datetime.now(timezone.utc)
+    jetzt = _jetzt(server)
     for z in auftrag_buch.eigene(server._q, laden, LEBENDE_STAENDE):
         eingabe = z.get("eingabe") if isinstance(z, dict) else None
         if not isinstance(z, dict) or z.get("art") != "video" or not isinstance(eingabe, dict):
@@ -85,7 +103,7 @@ def _vorhandener(server, laden: str, sha: str) -> str | None:
             continue
         angelegt = _zeit(z.get("angelegt"))
         if angelegt is None or jetzt - angelegt <= DOPPELT_FENSTER:   # unlesbare Zeit: lieber ablehnen
-            return str(z.get("id", ""))[:8]
+            return str(z.get("id", ""))[:8] or "unbekannt"
     return None
 
 
@@ -123,6 +141,11 @@ def routen(ui) -> list[Route]:
             or video_konzept.pruefen(konzept)
         if satz:
             return _fehler(400, satz)
+        # Die Angaben oben muessen genau die des Konzepts sein, das Felix bestaetigt hat.
+        if (thema.strip() != konzept["thema"].strip() or daten["minuten"] != konzept["minuten"]
+                or (zielgruppe or "").strip() != konzept["zielgruppe"].strip()
+                or (beschreibung or "") != video_konzept.beschreibung_aus(konzept)):
+            return _fehler(400, "Die Angaben passen nicht zum Konzept.")
         mandant = os.environ.get("MARKETING_MANDANT", "").strip()
         if not mandant:
             return _fehler(400, "Für diesen Laden ist keine Marketing-Firma eingetragen.")
@@ -130,9 +153,10 @@ def routen(ui) -> list[Route]:
         if isinstance(firma, str) and firma.strip() and firma.strip() != mandant:
             return _fehler(400, "Das Konzept gehört zu einer anderen Firma als dieser Laden.")
         laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
+        konzept = video_konzept.bereinigen(konzept)           # nur bekannte Felder werden gespeichert
         sha = video_konzept.block_hash(konzept)
-        eingabe = {"thema": thema.strip(), "beschreibung": beschreibung or "", "minuten": daten["minuten"],
-                   "zielgruppe": (zielgruppe or "").strip() or server.VIDEO_ZIELGRUPPE_VORGABE,
+        eingabe = {"thema": konzept["thema"].strip(), "beschreibung": video_konzept.beschreibung_aus(konzept),
+                   "minuten": konzept["minuten"], "zielgruppe": konzept["zielgruppe"].strip(),
                    "von": HERKUNFT, "konzept": konzept, "konzept_sha": sha}
         aid, fehler = await run_in_threadpool(_uebergeben, server, laden, mandant, eingabe, sha)
         if fehler:

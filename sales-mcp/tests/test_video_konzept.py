@@ -52,9 +52,9 @@ def test_szenen_zaehlen_ueber_alle_stufen():
     assert "8 bis 15 Szenen" in vk.pruefen(k)
 
 
-@pytest.mark.parametrize("minuten", [2, 6, True, "4", None])
+@pytest.mark.parametrize("minuten", [2, 6, True, "4", None, 3.5, 4.0])
 def test_minuten_ausserhalb(minuten):
-    assert "3 und 5 Minuten" in vk.pruefen(konzept(minuten=minuten))
+    assert "ganze Zahl von 3 bis 5 Minuten" in vk.pruefen(konzept(minuten=minuten))
 
 
 def test_minuten_grenzen_gueltig():
@@ -164,3 +164,22 @@ def test_auftrag_leer_oder_acht_hex(auftrag):
 @pytest.mark.parametrize("auftrag", ["", "abcd123", "ABCD1234", "abcd12345", "nicht-hex", 12345678])
 def test_auftrag_sonst_ungueltig(auftrag):
     assert "Auftragsnummer" in vk.pruefen(konzept(auftrag=auftrag))
+
+
+def test_bereinigen_laesst_nur_bekannte_felder_uebrig():
+    k = konzept(extra={"a": 1})
+    k["stufen"][0]["x"] = 1
+    k["stufen"][0]["szenen"][0]["sprechtext"] = "s"
+    assert vk.pruefen(k) is None
+    assert vk.bereinigen(k) == konzept()
+    assert vk.bereinigen(konzept(firma=None)).get("firma") is None and "firma" not in vk.bereinigen(konzept(firma=None))
+
+
+def test_blockgroesse_zaehlt_nur_bekannte_felder():
+    k = vk.bereinigen(_auf_laenge(vk.BLOCK_MAX))
+    k["unbekannt"] = "u" * 5000
+    assert vk.pruefen(k) is None
+
+
+def test_beschreibung_aus_kernaussage_und_abschluss():
+    assert vk.beschreibung_aus(konzept(kernaussage=" A ", abschluss=" B\n")) == "A\n\nB"

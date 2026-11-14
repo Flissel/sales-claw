@@ -39,6 +39,31 @@ def block_hash(konzept: dict) -> str:
     return hashlib.sha256(_kanonisch(konzept).encode("utf-8")).hexdigest()
 
 
+def bereinigen(konzept: dict) -> dict:
+    """Das Konzept NUR aus den bekannten Feldern neu aufgebaut (unbekannte Felder fallen still weg; die
+    Rowboat-Seite toleriert sie, gespeichert werden sie nie). Nur fuer ein Konzept, das `pruefen` bestanden hat."""
+    sauber = {"thema": konzept["thema"], "zielgruppe": konzept["zielgruppe"], "minuten": konzept["minuten"],
+              "hook": konzept["hook"], "kernaussage": konzept["kernaussage"], "stufen": [],
+              "abschluss": konzept["abschluss"], "auftrag": konzept.get("auftrag")}
+    for s in konzept["stufen"]:
+        szenen = []
+        for sz in s["szenen"]:
+            neu = {"kurz": sz["kurz"], "bildart": sz["bildart"]}
+            if "notiz" in sz:
+                neu["notiz"] = sz["notiz"]
+            szenen.append(neu)
+        sauber["stufen"].append({"name": s["name"], "szenen": szenen})
+    for feld in ("firma", "pfad", "name"):
+        if konzept.get(feld) is not None:
+            sauber[feld] = konzept[feld]
+    return sauber
+
+
+def beschreibung_aus(konzept: dict) -> str:
+    """Die Beschreibung des Auftrags: Kernaussage, Leerzeile, Abschluss (je getrimmt)."""
+    return konzept["kernaussage"].strip() + "\n\n" + konzept["abschluss"].strip()
+
+
 def pruefen(konzept) -> str | None:
     """Der erste Fehlersatz, oder None, wenn das Konzept gueltig ist."""
     if not isinstance(konzept, dict):
@@ -48,8 +73,9 @@ def pruefen(konzept) -> str | None:
     if not _text(konzept.get("zielgruppe"), 1, float("inf")):
         return "Die Zielgruppe des Konzepts fehlt."
     minuten = konzept.get("minuten")
-    if isinstance(minuten, bool) or not isinstance(minuten, (int, float)) or not 3 <= minuten <= 5:
-        return "Die Länge des Konzepts muss zwischen 3 und 5 Minuten liegen."
+    if isinstance(minuten, bool) or not isinstance(minuten, int) or not 3 <= minuten <= 5:
+        # Sales-Regel (strenger als der Fork): ganze Minuten, wie beim Salesman-Werkzeug.
+        return "Die Länge des Konzepts muss eine ganze Zahl von 3 bis 5 Minuten sein."
     for feld, satz in (("hook", "Der Hook des Konzepts fehlt."),
                        ("kernaussage", "Die Kernaussage des Konzepts fehlt."),
                        ("abschluss", "Der Abschluss des Konzepts fehlt.")):
@@ -84,6 +110,6 @@ def pruefen(konzept) -> str | None:
     if not SZENEN_MIN <= szenen_gesamt <= SZENEN_MAX:
         return (f"Das Konzept braucht insgesamt {SZENEN_MIN} bis {SZENEN_MAX} Szenen, "
                 f"gefunden wurden {szenen_gesamt}.")
-    if len(_kanonisch(konzept)) > BLOCK_MAX:
+    if len(_kanonisch(bereinigen(konzept))) > BLOCK_MAX:
         return f"Das Konzept ist größer als {BLOCK_MAX} Zeichen."
     return None
