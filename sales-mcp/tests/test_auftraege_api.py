@@ -169,6 +169,17 @@ def test_konzept_ohne_auftrag_und_firma_wird_ergaenzt_bzw_weggelassen(client, bu
     assert gespeichert["auftrag"] is None and "firma" not in gespeichert
 
 
+def test_firma_null_auf_dem_draht_wird_weggelassen(client, buch):
+    assert client.post(URL, json=rumpf(konzept(firma=None)), headers=KOPF).status_code == 200
+    assert "firma" not in buch.anlegen[0][0]
+
+
+def test_auftrag_vorhanden_aber_ungueltig_bleibt_400(client, buch):
+    for a in ("ABCD1234", "abc", 5, ""):
+        assert client.post(URL, json=rumpf(konzept(auftrag=a)), headers=KOPF).status_code == 400
+    assert buch.anlegen == []
+
+
 @pytest.mark.parametrize("roh", [
     b'{"thema": NaN}', b'{"minuten": Infinity}', b'{"x": -Infinity}',
 ])

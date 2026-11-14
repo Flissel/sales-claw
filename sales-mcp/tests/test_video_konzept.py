@@ -183,10 +183,11 @@ def test_auftrag_sonst_ungueltig(auftrag):
     assert vk.pruefen(konzept(auftrag=auftrag)).startswith("Der Auftrag muss leer (null)")
 
 
-def test_auftrag_fehlt_ist_ungueltig_wie_im_gemeinsamen_pruefer():
+def test_auftrag_fehlt_gilt_wie_null():
     k = konzept()
     del k["auftrag"]
-    assert vk.pruefen(k).startswith("Der Auftrag muss leer (null)")
+    assert vk.pruefen(k) is None and vk.bereinigen(k)["auftrag"] is None
+    assert vk.block_hash(vk.bereinigen(k)) == vk.block_hash(konzept())
 
 
 def test_bereinigen_laesst_nur_bekannte_felder_uebrig():
@@ -248,5 +249,9 @@ def test_pfad_und_name_nur_text_oder_leer(feld):
     assert vk.pruefen(konzept(**{feld: 5})) is not None
 
 
-def test_firma_null_gilt_nicht_wie_im_gemeinsamen_pruefer():
-    assert vk.pruefen(konzept(firma=None)) == "Die Firma muss ein Text sein."
+def test_firma_null_oder_fehlend_gilt_wie_keine_firma():
+    assert vk.pruefen(konzept(firma=None)) is None
+    k = konzept()
+    del k["firma"]
+    assert vk.pruefen(k) is None and "firma" not in vk.bereinigen(k) and "firma" not in vk.bereinigen(konzept(firma=None))
+    assert vk.pruefen(konzept(firma=5)) == "Die Firma muss ein Text sein."

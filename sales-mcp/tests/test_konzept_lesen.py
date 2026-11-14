@@ -20,6 +20,9 @@ VEKTOREN = HIER / "konzept_vektoren.json"
 # Herkunft: vibemind-os 7ff9cc48 -- nie hier aendern.
 SHA_PRUEFER = "b6d2343e05dd73c3a621f6a736f550eece5b92d502b722a708c4658f394ee210"
 SHA_VEKTOREN = "bcc2557e31d83f0a0365e12cfecbe26620ea9c4f42c73c9022ab72bdf07311a2"
+# Sales nimmt am Draht ein Konzept ohne `auftrag` und mit `firma: null` weiter wie bisher an (angleichen), der
+# gemeinsame Pruefer lehnt beides ab: genau diese beiden Vektoren weichen bewusst ab.
+NACHSICHT = ("ungueltig_firma_null", "ungueltig_auftrag_fehlt")
 FAELLE = json.loads(VEKTOREN.read_text(encoding="utf-8"))["faelle"]
 
 
@@ -79,6 +82,10 @@ def test_vektor_sales_einstieg_pruefen(fall):
     if daten is None or "video" not in daten:
         pytest.skip("kein geparstes video in diesem Fall")
     satz = video_konzept.pruefen(daten["video"])
+    if fall["name"] in NACHSICHT:         # bewusste Abweichung auf dem Sales-Draht (Entscheid des Controllers)
+        assert kl.video_pruefen(daten) is not None and satz is None
+        assert video_konzept.pruefen(video_konzept.bereinigen(daten["video"])) is None
+        return
     assert satz == kl.video_pruefen(daten) or (satz is not None and kl.video_pruefen(daten) is None), satz
     if "video" in fall:
         assert (satz is None) is fall["gueltig"], satz

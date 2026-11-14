@@ -69,8 +69,21 @@ def beschreibung_aus(konzept: dict) -> str:
     return js_trim(konzept["kernaussage"]) + "\n\n" + js_trim(konzept["abschluss"])
 
 
+def angleichen(konzept):
+    """Die nachsichtige Drahtform von Sales, VOR dem gemeinsamen Pruefer: fehlt `auftrag`, gilt `null`; `firma: null`
+    gilt wie keine Firma (faellt weg). Ein vorhandener, ungueltiger `auftrag` bleibt unveraendert (der Pruefer lehnt ihn ab)."""
+    if not isinstance(konzept, dict):
+        return konzept
+    neu = dict(konzept)
+    neu.setdefault("auftrag", None)
+    if neu.get("firma", 0) is None:
+        del neu["firma"]
+    return neu
+
+
 def pruefen(konzept) -> str | None:
     """Der erste Fehlersatz, oder None, wenn das Konzept gueltig ist."""
+    konzept = angleichen(konzept)
     satz = video_pruefen_objekt(konzept)                     # alle Regeln des Konzepts: der gemeinsame Pruefer
     if satz:
         return satz
