@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from datetime import datetime, timezone
 import stat
 import time
 import urllib.parse
@@ -73,15 +74,12 @@ HINWEISE = {"ueberholt": ("hinweis", "Diese Fassung ist überholt."),
             "versucht": ("meta", "Die Szene wird noch einmal versucht."),
             "geoeffnet": ("meta", "Die Szene ist wieder offen."),
             "neu": ("meta", "Danke – das wird mit deinem Wunsch neu geschrieben."),
-            "neu_bauen": ("meta", "Das Video wird neu zusammengefügt."),
-            "uebergabe_nein": ("meta", "Die Übergabe ist verworfen. Es wurde kein Auftrag angelegt."),
-            "uebergabe_abgelehnt": ("warnung", "Der Auftrag wurde nicht angelegt. Der Grund steht an der Übergabe."),
-            "uebergabe_entschieden": ("hinweis", video_uebergabe.SATZ_ENTSCHIEDEN),
-            "uebergabe_abgelaufen": ("hinweis", video_uebergabe.SATZ_ABGELAUFEN),
-            "uebergabe_fehlt": ("hinweis", video_uebergabe.SATZ_FEHLT)}
+            "neu_bauen": ("meta", "Das Video wird neu zusammengefügt.")}
 
 UEBERGABE_HINWEIS = "Was im Konzept steht, geht an das Videomodell und kann im Video landen."
-_HEX8 = re.compile(r"^[0-9a-f]{8}$")
+UEBERGABE_NUR_MIT_ANMELDUNG = "Bestätigen geht nur mit Anmeldung."
+UEBERGABE_DOPPELT = "Es gibt eine weitere offene Übergabe für diese Datei – bitte vergleichen."
+KUERZEN_BEI = 300                  # Hook, Kernaussage, Abschluss: sichtbar bis hierher, der Rest unter "Alles lesen"
 
 
 def alter_text(sekunden) -> str:
@@ -267,28 +265,100 @@ def routen(ui) -> list:
         rolle = ui._AKTIVE_ROLLE.get()
         return darf_schreiben() and not (rolle and not ui._pfad_erlaubt(rolle, BASIS))
 
-    def uebergabe_meldung(request) -> str:
-        """Ergebniszeile nach "Ja" (Auftragsnummer + Link) oder nach einer anderen Entscheidung."""
-        if request.query_params.get("hinweis") == "uebergeben":
-            nr, aid = request.query_params.get("nr", ""), request.query_params.get("a", "")
-            if _HEX8.fullmatch(nr) and _AID.fullmatch(aid) and aid.startswith(nr):
-                return (f'<p class="hinweis">Übergeben: Auftrag {e(nr)} ist angelegt. '
-                        f'<a href="{e(BASIS)}/{e(aid)}">Zum Auftrag</a></p>')
-            return ""
-        return hinweis_html(request)
+    def anmeldung_aktiv(request) -> bool:
+        """Bestaetigen verlangt eine ECHTE Anmeldung: ein gesetztes Sitzungsgeheimnis UND eine angemeldete Sitzung.
+        Ohne Geheimnis laeuft die Oberflaeche ohne Login; dann waere jeder, der sie erreicht, "der Betreiber"."""
+        return bool(ui.UI_SESSION_SECRET) and bool(request.scope.get("benutzer_name"))
 
-    def uebergabe_karte(z: dict, darf: bool) -> str:
+    def gleiche_herkunft(request) -> bool:
+        """Die Anfrage stammt von dieser Seite: `Sec-Fetch-Site` (wenn gesendet) muss same-origin sein, `Origin`
+        (wenn gesendet) muss diese Oberflaeche sein. Fehlen beide Koepfe, gilt die Anfrage wie bei den uebrigen
+        Aktionen der Seite (die pruefen keinen Herkunftskopf); Browser senden bei einem POST immer Origin."""
+        kopf = request.headers
+        site = kopf.get("sec-fetch-site")
+        if site is not None and site != "same-origin":
+            return False
+        origin = kopf.get("origin")
+        if origin is not None:
+            host = kopf.get("host", "")
+            teile = urllib.parse.urlsplit(origin)
+            ok = teile.scheme in ("http", "https") and teile.netloc != "" and (
+                teile.netloc == host or teile.netloc in getattr(ui, "ERLAUBTE_HOSTS", ()))
+            if not ok:
+                return False
+        return True
+
+    def zeit_text(zeit) -> str:
+        if not isinstance(zeit, datetime):
+            return ""
+        zone = getattr(ui, "ZEITZONE", None) or timezone.utc
+        return zeit.astimezone(zone).strftime("%d.%m.%Y %H:%M") + " Uhr"
+
+    async def uebergabe_meldung(request) -> str:
+        """Ergebniszeile nach Ja/Nein, aus der DB-Zeile der Uebergabe (`u` im Link) abgeleitet: ein gebastelter Link
+        kann nur zeigen, was in der Zeile steht."""
+        if request.query_params.get("hinweis") != "uebergabe":
+            return hinweis_html(request)
+        kennung = request.query_params.get("u", "")
+        if not _AID.fullmatch(kennung):
+            return ""
+        try:
+            z = await run_in_threadpool(video_uebergabe.zustand, kennung)
+        except Exception:                                   # noqa: BLE001 - die Zeile ist nur Beiwerk
+            return ""
+        if z is None:
+            return f'<p class="hinweis">{e(video_uebergabe.SATZ_FEHLT)}</p>'
+        status = z.get("status")
+        schon = (f"{video_uebergabe.SATZ_ENTSCHIEDEN} "
+                 if request.query_params.get("e") == "1" and status != "offen" else "")
+        if status == "bestaetigt" and z.get("auftrag_id"):
+            aid = str(z["auftrag_id"])
+            return (f'<p class="hinweis">{e(schon)}Übergeben: Auftrag {e(aid[:8])} ist angelegt. '
+                    f'<a href="{e(BASIS)}/{e(aid)}">Zum Auftrag</a></p>')
+        if status == "verworfen":
+            return f'<p class="meta">{e(schon)}Die Übergabe ist verworfen. Es wurde kein Auftrag angelegt.</p>'
+        if status == "abgelaufen":
+            return f'<p class="hinweis">{e(video_uebergabe.SATZ_ABGELAUFEN)}</p>'
+        if status == "offen" and z.get("fehler"):
+            return ('<p class="warnung">Der Auftrag wurde nicht angelegt. '
+                    'Der Grund steht an der Übergabe.</p>')
+        return ""
+
+    def gekuerzt(text) -> tuple[str, bool]:
+        text = str(text or "")
+        return (text[:KUERZEN_BEI], True) if len(text) > KUERZEN_BEI else (text, False)
+
+    def uebergabe_karte(z: dict, darf: bool, doppelt: bool) -> str:
         k = z["konzept"] if isinstance(z.get("konzept"), dict) else {}
         stufen = [s for s in liste(k.get("stufen")) if isinstance(s, dict)]
         szenen = sum(len([sz for sz in liste(s.get("szenen")) if isinstance(sz, dict)]) for s in stufen)
         kennung = str(z["id"])
-        teile = [f'<div class="karte" id="u-{e(kennung[:8])}">',
+        vorgang = kennung[:8]
+        datei = " · ".join(f"{titel}: {e(wert)}" for titel, wert in
+                           (("Konzept", k.get("name")), ("Datei", k.get("pfad"))) if wert) or "Konzept: ohne Namen"
+        firma = f' · Firma: {e(k["firma"])}' if k.get("firma") else ""
+        teile = [f'<div class="karte" id="u-{e(vorgang)}">',
+                 f'<div><b>Vorgang {e(vorgang)}</b> · eingegangen {e(zeit_text(z.get("erstellt_am")))} '
+                 f'({e(alter_text(z.get("alter_s")))})</div>',
                  f'<div><b>{e(k.get("thema", ""))}</b> · {e(k.get("minuten", ""))} Minuten · '
                  f'{len(stufen)} Stufen · {szenen} Szenen</div>',
-                 f'<div class="meta">Laden: {e(laden())} · Konzept: {e(k.get("name") or k.get("pfad") or "ohne Namen")}'
-                 f' · {e(alter_text(z.get("alter_s")))}</div>',
-                 f'<p class="hinweis">{e(UEBERGABE_HINWEIS)}</p>']
-        zeilen = []
+                 f'<div class="meta">Laden: {e(laden())}{firma} · {datei}</div>']
+        if doppelt:
+            teile.append(f'<p class="warnung">{e(UEBERGABE_DOPPELT)}</p>')
+        if z.get("frueher_auftrag"):
+            teile.append('<p class="hinweis">Dieses Konzept wurde schon einmal übergeben (Auftrag '
+                         f'{e(str(z["frueher_auftrag"])[:8])}).</p>')
+        teile.append(f'<p class="hinweis">{e(UEBERGABE_HINWEIS)}</p>')
+        # Alles, was an das Videomodell geht, steht auf der Karte: Zielgruppe, Hook, Kernaussage, Abschluss
+        # (sichtbar, ab 300 Zeichen gekuerzt - der volle Text steht unter "Alles lesen"), Stufen und Szenen darunter.
+        voll = []
+        teile.append(f'<p class="wb-text"><b>Zielgruppe:</b> {e(k.get("zielgruppe", ""))}</p>')
+        for titel, feld in (("Hook", "hook"), ("Kernaussage", "kernaussage"), ("Abschluss", "abschluss")):
+            sichtbar, abgeschnitten = gekuerzt(k.get(feld))
+            rest = ' <span class="meta">… gekürzt, vollständig unter „Alles lesen“</span>' if abgeschnitten else ""
+            teile.append(f'<p class="wb-text"><b>{titel}:</b> {e(sichtbar)}{rest}</p>')
+            if abgeschnitten:
+                voll.append(f'<p class="wb-text"><b>{titel} (vollständig):</b> {e(k.get(feld))}</p>')
         for s in stufen:
             punkte = []
             for sz in liste(s.get("szenen")):
@@ -297,8 +367,8 @@ def routen(ui) -> list:
                 notiz = f' <span class="meta">Notiz: {e(sz["notiz"])}</span>' if sz.get("notiz") else ""
                 punkte.append(f'<li>{e(sz.get("kurz", ""))} <span class="meta">({e(sz.get("bildart", ""))})</span>'
                               f'{notiz}</li>')
-            zeilen.append(f'<h4>{e(s.get("name", ""))}</h4><ul>{"".join(punkte)}</ul>')
-        teile.append(f'<details><summary>Stufen und Szenen ansehen</summary>{"".join(zeilen)}</details>')
+            voll.append(f'<h4>{e(s.get("name", ""))}</h4><ul>{"".join(punkte)}</ul>')
+        teile.append(f'<details><summary>Alles lesen: Stufen und Szenen</summary>{"".join(voll)}</details>')
         if z.get("fehler"):
             teile.append(f'<p class="warnung">{e(z["fehler"])}</p>')
         if darf:
@@ -311,19 +381,33 @@ def routen(ui) -> list:
         teile.append("</div>")
         return "".join(teile)
 
-    async def uebergaben_html() -> str:
-        """Abschnitt "Übergaben aus Rowboat"; "" ohne offene Uebergabe (oder solange die Tabelle fehlt)."""
+    def fehlerabschnitt(satz: str) -> str:
+        return (f'<section class="block" id="uebergaben"><h2>Übergaben aus Rowboat</h2>'
+                f'<p class="warnung">{e(satz)}</p></section>')
+
+    async def uebergaben_html(request) -> str:
+        """Abschnitt "Übergaben aus Rowboat"; "" nur, wenn nichts offen ist. Eine fehlende Tabelle oder ein Lesefehler
+        steht als sichtbare Zeile im Abschnitt, nie als stilles Fehlen."""
         try:
             offene = await run_in_threadpool(video_uebergabe.offene)
         except Exception as f:                              # noqa: BLE001 - nur der Typname, nie der Text
-            logging.getLogger("sales-ui").warning("Uebergaben nicht lesbar: %s", type(f).__name__)
-            return ""
+            logging.getLogger("sales-ui").error("Uebergaben nicht lesbar: %s", type(f).__name__)
+            return fehlerabschnitt(video_uebergabe.SATZ_NICHT_EINGERICHTET
+                                   if isinstance(f, video_uebergabe.NICHT_EINGERICHTET)
+                                   else video_uebergabe.SATZ_NICHT_LESBAR)
         if not offene:
             return ""
-        darf = darf_entscheiden()
+        anmeldung = anmeldung_aktiv(request)
+        darf = darf_entscheiden() and anmeldung
+        pfade = [str((z["konzept"] or {}).get("pfad") or "") for z in offene if isinstance(z.get("konzept"), dict)]
+        note = ("" if ui.UI_SESSION_SECRET else
+                f'<p class="hinweis">{e(UEBERGABE_NUR_MIT_ANMELDUNG)}</p>')
+        karten = "".join(
+            uebergabe_karte(z, darf, bool(p) and pfade.count(p) > 1)
+            for z in offene
+            for p in [str((z["konzept"] or {}).get("pfad") or "") if isinstance(z.get("konzept"), dict) else ""])
         return (f'<section class="block" id="uebergaben"><h2>Übergaben aus Rowboat '
-                f'<span class="zaehler offen">{len(offene)}</span></h2>'
-                + "".join(uebergabe_karte(z, darf) for z in offene) + "</section>")
+                f'<span class="zaehler offen">{len(offene)}</span></h2>{note}{karten}</section>')
 
     # --- Liste der Video-Auftraege ---------------------------------------------------------
 
@@ -353,8 +437,8 @@ def routen(ui) -> list:
         inhalt = (f'<div class="wb-szenen">{"".join(karten)}</div>' if karten else
                   '<p class="meta">Noch kein langes Video bestellt. Schreib dem Salesman: „Video zu …“ und '
                   'nenn das Thema.</p>')
-        meldung = uebergabe_meldung(request)
-        uebergaben = await uebergaben_html()
+        meldung = await uebergabe_meldung(request)
+        uebergaben = await uebergaben_html(request)
         return ui._seite("Lange Videos", _STIL + f'<div class="wb"><p><a href="/marketing/reels">Alle Reels</a></p>'
                          f'{meldung}{uebergaben}{inhalt}</div>')
 
@@ -710,8 +794,13 @@ def routen(ui) -> list:
         return RedirectResponse(seite_url(aid, nr or None, erfolg, None if nr else kennung or None), status_code=303)
 
     async def uebergabe_kopf(request):
-        """Gemeinsamer Kopf von Ja und Nein: -> (id, None) oder (None, Fehlerseite). Login (Sitzung der Wache),
-        CSRF-Marke und Schreibrecht wie bei den anderen Aktionen der Seite."""
+        """Gemeinsamer Kopf von Ja und Nein: -> (id, None) oder (None, Fehlerseite). Verlangt (in dieser Reihenfolge)
+        eine echte Anmeldung (Sitzungsgeheimnis + Sitzung), eine Anfrage von dieser Seite, die CSRF-Marke und das
+        Schreibrecht wie bei den anderen Aktionen der Seite."""
+        if not anmeldung_aktiv(request):
+            return None, ui._fehlerseite(403, "Nicht angemeldet", UEBERGABE_NUR_MIT_ANMELDUNG + " Nichts wurde getan.")
+        if not gleiche_herkunft(request):
+            return None, ui._fehlerseite(403, "Abgewiesen", "Die Anfrage kommt nicht von dieser Seite.")
         form = await request.form()
         if not ui._csrf_ok(form):
             return None, ui._fehlerseite(403, "Abgewiesen", "Fehlende oder falsche CSRF-Marke.")
@@ -724,8 +813,15 @@ def routen(ui) -> list:
             return None, keine_firma()
         return kennung, None
 
-    def zurueck(**abfrage) -> RedirectResponse:
+    def zurueck(kennung: str, entschieden: bool = False) -> RedirectResponse:
+        abfrage = {"hinweis": "uebergabe", "u": kennung, **({"e": "1"} if entschieden else {})}
         return RedirectResponse(f"{BASIS}?{urllib.parse.urlencode(abfrage)}#uebergaben", status_code=303)
+
+    def ausfall(f: Exception):
+        logging.getLogger("sales-ui").error("Uebergabe-Aktion fehlgeschlagen: %s", type(f).__name__)
+        if isinstance(f, video_uebergabe.NICHT_EINGERICHTET):
+            return ui._fehlerseite(503, "Nicht möglich", video_uebergabe.SATZ_NICHT_EINGERICHTET)
+        return ui._fehlerseite(503, "Nicht möglich", video_uebergabe.SATZ_UNKLAR)
 
     @ui._gesichert_seite
     async def uebergabe_ja(request):
@@ -733,25 +829,23 @@ def routen(ui) -> list:
         if abgelehnt is not None:
             return abgelehnt
         try:
-            art, wert = await run_in_threadpool(video_uebergabe.bestaetigen, kennung, ui._ui_akteur(request))
-        except Exception:                                   # noqa: BLE001 - nichts wurde angelegt (Transaktion zurueck)
-            return ui._fehlerseite(503, "Nicht möglich", "Das Auftragsbuch ist gerade nicht erreichbar. "
-                                                         "Nichts wurde angelegt. Bitte gleich noch einmal versuchen.")
-        if art == "ok":
-            return zurueck(hinweis="uebergeben", nr=wert["auftrag"], a=wert["id"])
-        return zurueck(hinweis={"abgelehnt": "uebergabe_abgelehnt", "abgelaufen": "uebergabe_abgelaufen",
-                                "entschieden": "uebergabe_entschieden"}.get(art, "uebergabe_fehlt"))
+            art, _wert = await run_in_threadpool(video_uebergabe.bestaetigen, kennung, ui._ui_akteur(request))
+        except Exception as f:                              # noqa: BLE001 - kein Satz "nichts angelegt": Ausgang unklar
+            return ausfall(f)
+        return zurueck(kennung, art == "entschieden")
 
     @ui._gesichert_seite
     async def uebergabe_nein(request):
         kennung, abgelehnt = await uebergabe_kopf(request)
         if abgelehnt is not None:
             return abgelehnt
-        if await run_in_threadpool(video_uebergabe.verwerfen, kennung, ui._ui_akteur(request)):
-            return zurueck(hinweis="uebergabe_nein")
-        art, _ = await run_in_threadpool(video_uebergabe.warum_nicht, kennung)
-        return zurueck(hinweis={"abgelaufen": "uebergabe_abgelaufen",
-                                "entschieden": "uebergabe_entschieden"}.get(art, "uebergabe_fehlt"))
+        try:
+            if await run_in_threadpool(video_uebergabe.verwerfen, kennung, ui._ui_akteur(request)):
+                return zurueck(kennung)
+            art, _ = await run_in_threadpool(video_uebergabe.warum_nicht, kennung)
+        except Exception as f:                              # noqa: BLE001
+            return ausfall(f)
+        return zurueck(kennung, art == "entschieden")
 
     @ui._gesichert_seite
     async def wunsch_speichern(request):

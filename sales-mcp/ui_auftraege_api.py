@@ -7,7 +7,7 @@ unter seinem Login; erst dann entsteht der Auftrag (mit Tagesgrenze). Der Rowboa
 Aktionen nicht ausloesen: sie haengen an der Sitzung und an der CSRF-Marke der Seite.
 
 Antworten: 200 {status: "vorbereitet", vorgang: <8 Hex>, link}; Fehler {fehler: "<Satz>"} mit 400 (Pruefung),
-401 (Schluessel), 409 (schon vorbereitet), 413 (Rumpf), 429 (5 Uebergaben offen). Weder Schluessel noch Rumpf
+401 (Schluessel), 409 (schon vorbereitet), 413 (Rumpf), 429 (5 Uebergaben offen), 503 (Tabelle fehlt). Weder Schluessel noch Rumpf
 gelangen ins Log.
 """
 from __future__ import annotations
@@ -97,7 +97,11 @@ def routen(ui) -> list[Route]:
             return _fehler(400, video_uebergabe.SATZ_FIRMA)
         konzept = video_konzept.bereinigen(konzept)           # nur bekannte Felder werden gespeichert
         sha = video_konzept.block_hash(konzept)
-        vorgang, satz = await run_in_threadpool(video_uebergabe.anlegen, konzept, sha)
+        try:
+            vorgang, satz = await run_in_threadpool(video_uebergabe.anlegen, konzept, sha)
+        except video_uebergabe.NICHT_EINGERICHTET as f:      # Tabelle oder Recht fehlt: Ausfall, keine Ablehnung
+            LOG.error("Uebergabe nicht eingerichtet: %s", type(f).__name__)
+            return _fehler(503, video_uebergabe.SATZ_NICHT_EINGERICHTET)
         if satz:
             return _fehler(409 if satz == video_uebergabe.SATZ_DOPPELT else 429, satz)
         basis = ui.UI_BASIS_URL.rstrip("/")

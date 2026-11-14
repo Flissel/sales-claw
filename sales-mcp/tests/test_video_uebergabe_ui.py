@@ -8,6 +8,7 @@ import os
 import re
 import urllib.parse
 
+import psycopg
 import pytest
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
@@ -319,10 +320,173 @@ def test_ohne_marketing_firma_kein_ja(klient, buch, monkeypatch):
     assert ja(klient).status_code == 422 and zeile()["status"] == "offen"
 
 
-def test_ergebniszeile_nimmt_keine_fremden_werte(klient):
-    muster = {"hinweis": "uebergeben", "nr": '"><script>', "a": AID}
-    text = seite(klient, f"{LISTE}?{urllib.parse.urlencode(muster)}")
-    assert "<script>" not in text and "Übergeben: Auftrag" not in text
-    passt_nicht = {"hinweis": "uebergeben", "nr": "deadbeef", "a": AID}
-    assert "Übergeben: Auftrag" not in seite(klient, f"{LISTE}?{urllib.parse.urlencode(passt_nicht)}")
-    assert re.search(r"Übergeben: Auftrag 0123abcd", seite(klient, f"{LISTE}?hinweis=uebergeben&nr=0123abcd&a={AID}"))
+def test_ergebniszeile_kommt_aus_der_db_zeile_nicht_aus_dem_link(klient, buch):
+    vorbereiten()                                                         # offen, ohne Ablehnung
+    k = kennung()
+    # gebastelter Link im alten Stil: nichts wird angezeigt
+    alt = {"hinweis": "uebergeben", "nr": "deadbeef", "a": "deadbeef-0000-4000-8000-000000000000"}
+    assert "Übergeben: Auftrag" not in seite(klient, f"{LISTE}?{urllib.parse.urlencode(alt)}")
+    # neuer Stil mit unbekannter oder noch offener Uebergabe: kein Erfolg
+    unbekannt = "deadbeef-0000-4000-8000-000000000000"
+    text = seite(klient, f"{LISTE}?hinweis=uebergabe&u={unbekannt}")
+    assert "Diese Übergabe gibt es nicht." in text and "Übergeben: Auftrag" not in text
+    assert "Übergeben: Auftrag" not in seite(klient, f"{LISTE}?hinweis=uebergabe&u={k}&e=1")
+    assert "schon entschieden" not in seite(klient, f"{LISTE}?hinweis=uebergabe&u={k}&e=1")
+    assert "<script>" not in seite(klient, f"{LISTE}?hinweis=uebergabe&u=%22%3E%3Cscript%3E")
+    # nach dem echten Ja zeigt derselbe Link die Nummer, die in der Zeile steht
+    assert ja(klient, k).status_code == 303
+    text = seite(klient, f"{LISTE}?hinweis=uebergabe&u={k}")
+    assert f"Übergeben: Auftrag {AID[:8]} ist angelegt." in text
+
+
+# --- Karte zeigt alles, was bestellt wird ----------------------------------------------------------------
+
+MARKER = {"thema": "T-MARK", "zielgruppe": "Z-MARK", "hook": "H-MARK", "kernaussage": "K-MARK",
+          "abschluss": "A-MARK", "firma": "F-MARK", "name": "NAME-MARK.html",
+          "pfad": "knowledge/Konzepte/P-MARK.html"}
+
+
+def markiert(**ueber):
+    k = konzept(**{**MARKER, **ueber})
+    k["stufen"] = [{"name": "S-MARK", "szenen": [{"kurz": f"KU-MARK-{i}", "bildart": "slide",
+                                                  "notiz": f"N-MARK-{i}"} for i in range(8)]}]
+    return k
+
+
+def test_jedes_textfeld_steht_auf_der_karte(klient):
+    k = markiert()
+    vu.anlegen(k, video_konzept.block_hash(k))
+    s = abschnitt(klient)
+    for marke in ("T-MARK", "Z-MARK", "H-MARK", "K-MARK", "A-MARK", "F-MARK", "NAME-MARK.html",
+                  "knowledge/Konzepte/P-MARK.html", "S-MARK", "KU-MARK-0", "KU-MARK-7", "N-MARK-0", "N-MARK-7"):
+        assert marke in s, marke
+    offen = s[:s.index("<details>")]
+    for marke in ("T-MARK", "Z-MARK", "H-MARK", "K-MARK", "A-MARK"):      # ohne etwas aufzuklappen sichtbar
+        assert marke in offen, marke
+
+
+def test_lange_texte_sind_sichtbar_gekuerzt_und_unter_alles_lesen_vollstaendig(klient):
+    k = markiert(kernaussage="x" * 400 + "ENDE-MARK", hook="h" * 301 + "HOOK-ENDE", abschluss="a" * 350 + "ABSCHLUSS-ENDE")
+    vu.anlegen(k, video_konzept.block_hash(k))
+    s = abschnitt(klient)
+    offen, aufklappbar = s[:s.index("<details>")], s[s.index("<details>"):]
+    assert "x" * 300 in offen and "x" * 301 not in offen and "ENDE-MARK" not in offen
+    assert "gekürzt" in offen and "Alles lesen" in s
+    for ende in ("ENDE-MARK", "HOOK-ENDE", "ABSCHLUSS-ENDE"):
+        assert ende not in offen and ende in aufklappbar
+
+
+def test_vorgang_zeit_und_datei_stehen_auf_der_karte(klient):
+    vorgang = vorbereiten()
+    s = abschnitt(klient)
+    assert f"Vorgang {vorgang}" in s and f'id="u-{vorgang}"' in s
+    assert re.search(r"eingegangen \d\d\.\d\d\.\d{4} \d\d:\d\d Uhr", s)
+    assert "Konzept: ki.html" in s and "Datei: knowledge/Konzepte/ki.html" in s
+
+
+def test_zwei_offene_uebergaben_derselben_datei_werden_markiert(klient):
+    vorbereiten(hook="Hook A")
+    vorbereiten(hook="Hook B")
+    s = abschnitt(klient)
+    assert s.count(vu_text("UEBERGABE_DOPPELT")) == 2
+    vorbereiten(hook="Hook C", pfad="knowledge/Konzepte/andere.html", name="andere.html")
+    assert abschnitt(klient).count(vu_text("UEBERGABE_DOPPELT")) == 2            # die dritte ist eine andere Datei
+
+
+def vu_text(name):
+    return getattr(ui_werkbank, name)
+
+
+def test_schon_einmal_uebergeben_wird_gesagt(klient, buch):
+    vorbereiten()
+    assert ja(klient).status_code == 303
+    vorbereiten()                                                                 # gleicher Inhalt, erneut
+    s = abschnitt(klient)
+    assert f"Dieses Konzept wurde schon einmal übergeben (Auftrag {AID[:8]})." in s
+
+
+# --- Bestaetigen nur mit Anmeldung (fail closed) ---------------------------------------------------------
+
+@pytest.fixture
+def ohne_sitzungsgeheimnis(buch, secret):
+    ui.UI_SESSION_SECRET = ""
+    return TestClient(ui.app)
+
+
+def test_ohne_sitzungsgeheimnis_nur_lesen_und_aktionen_403(ohne_sitzungsgeheimnis, buch):
+    vorbereiten()
+    r = ohne_sitzungsgeheimnis.get(LISTE, headers=HOST, follow_redirects=False)
+    assert r.status_code == 200
+    s = r.text[r.text.index('id="uebergaben"'):]
+    assert "Bestätigen geht nur mit Anmeldung." in s and "KI im Vertrieb" in s
+    assert "Ja, übergeben" not in r.text and "werkbank-uebergabe" not in r.text
+    for aktion in ("werkbank-uebergabe-ja", "werkbank-uebergabe-nein"):
+        r = ohne_sitzungsgeheimnis.post(f"/aktion/{aktion}", data={"id": kennung(), "csrf": ui.CSRF_TOKEN},
+                                        headers=HOST, follow_redirects=False)
+        assert r.status_code == 403
+    assert zeile()["status"] == "offen" and buch.aufrufe == []
+
+
+def test_mit_anmeldung_steht_der_satz_nicht_da(klient):
+    vorbereiten()
+    assert "Bestätigen geht nur mit Anmeldung." not in seite(klient)
+
+
+# --- Anfrage von dieser Seite --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kopf", [
+    {"Origin": "http://evil.example"}, {"Origin": "null"}, {"Origin": "http://127.0.0.1:9999"},
+    {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"}, {"Sec-Fetch-Site": "none"},
+    {"Origin": "http://127.0.0.1:8791", "Sec-Fetch-Site": "cross-site"},
+])
+def test_fremde_herkunft_wird_abgewiesen(klient, buch, kopf):
+    vorbereiten()
+    for aktion in ("werkbank-uebergabe-ja", "werkbank-uebergabe-nein"):
+        r = post(klient, aktion, {"id": kennung()}, headers=kopf)
+        assert r.status_code == 403, kopf
+    assert zeile()["status"] == "offen" and buch.aufrufe == []
+
+
+@pytest.mark.parametrize("kopf", [
+    {}, {"Origin": "http://127.0.0.1:8791"}, {"Sec-Fetch-Site": "same-origin"},
+    {"Origin": "http://127.0.0.1:8791", "Sec-Fetch-Site": "same-origin"},
+])
+def test_gleiche_herkunft_oder_ohne_koepfe_geht(klient, buch, kopf):
+    vorbereiten()
+    assert post(klient, "werkbank-uebergabe-nein", {"id": kennung()}, headers=kopf).status_code == 303
+
+
+# --- Ausfall statt Ablehnung ---------------------------------------------------------------------------
+
+def test_fehlende_tabelle_ist_ein_sichtbarer_ausfall(klient, monkeypatch):
+    def fehlt():
+        raise psycopg.errors.UndefinedTable("relation video_uebergabe does not exist")
+    monkeypatch.setattr(vu, "offene", fehlt)
+    s = abschnitt(klient)
+    assert "Die Übergabe ist auf diesem Laden noch nicht eingerichtet." in s and "Ja, übergeben" not in s
+
+
+def test_anderer_lesefehler_ist_sichtbar(klient, monkeypatch):
+    def kaputt():
+        raise RuntimeError("geheim")
+    monkeypatch.setattr(vu, "offene", kaputt)
+    s = abschnitt(klient)
+    assert "Die Übergaben sind gerade nicht lesbar." in s and "geheim" not in s
+
+
+def test_ja_bei_ausfall_sagt_nie_nichts_wurde_angelegt(klient, buch, monkeypatch):
+    vorbereiten()
+
+    def unklar(kennung_, von):
+        raise RuntimeError("Verbindung weg")
+    monkeypatch.setattr(vu, "bestaetigen", unklar)
+    r = ja(klient)
+    assert r.status_code == 503
+    assert "Ob der Auftrag angelegt wurde, ist unklar. Bitte die Werkbank-Liste prüfen." in r.text
+    assert "Nichts wurde angelegt" not in r.text and "Verbindung weg" not in r.text
+
+    def nicht_eingerichtet(kennung_, von):
+        raise psycopg.errors.InsufficientPrivilege("permission denied")
+    monkeypatch.setattr(vu, "bestaetigen", nicht_eingerichtet)
+    r = ja(klient)
+    assert r.status_code == 503 and "Die Übergabe ist auf diesem Laden noch nicht eingerichtet." in r.text

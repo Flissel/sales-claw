@@ -187,6 +187,25 @@ def test_offene_zeigt_nur_nicht_abgelaufene_mit_alter(buch):
     assert 0 <= offene[0]["alter_s"] < 60
 
 
+def test_offene_nennt_fruehere_bestaetigung_desselben_konzepts(buch):
+    vorbereiten()
+    assert vu.offene()[0]["frueher_auftrag"] is None
+    assert vu.bestaetigen(eine_id(), "mira")[0] == "ok"
+    vorbereiten()                                                  # gleicher Inhalt noch einmal
+    (z,) = vu.offene()
+    assert str(z["frueher_auftrag"]) == AID
+
+
+def test_zustand_liefert_nur_status_auftrag_und_fehler(buch):
+    vorbereiten()
+    kennung = eine_id()
+    assert vu.zustand(kennung) == {"status": "offen", "auftrag_id": None, "fehler": None}
+    assert vu.zustand("kaputt") is None and vu.zustand("0123abcd-0000-4000-8000-00000000ffff") is None
+    vu.bestaetigen(kennung, "mira")
+    z = vu.zustand(kennung)
+    assert z["status"] == "bestaetigt" and str(z["auftrag_id"]) == AID and "konzept" not in z
+
+
 # --- Ja --------------------------------------------------------------------------------------------------
 
 def test_ja_legt_auftrag_an_und_setzt_bestaetigt(buch):

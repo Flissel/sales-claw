@@ -39,6 +39,13 @@ SATZ_ENTSCHIEDEN = "Diese Übergabe ist schon entschieden."
 SATZ_FEHLT = "Diese Übergabe gibt es nicht."
 SATZ_KEINE_FIRMA = "Für diesen Laden ist keine Marketing-Firma eingetragen."
 SATZ_FIRMA = "Das Konzept gehört zu einer anderen Firma als dieser Laden."
+SATZ_NICHT_EINGERICHTET = "Die Übergabe ist auf diesem Laden noch nicht eingerichtet."
+SATZ_NICHT_LESBAR = "Die Übergaben sind gerade nicht lesbar."
+SATZ_UNKLAR = "Ob der Auftrag angelegt wurde, ist unklar. Bitte die Werkbank-Liste prüfen."
+# Fehlt die Tabelle (oder die Funktion/das Recht im Auftragsbuch), ist die Uebergabe auf diesem Laden nicht
+# eingerichtet: das ist ein Ausfall, keine Ablehnung.
+NICHT_EINGERICHTET = (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedFunction,
+                      psycopg.errors.InsufficientPrivilege, psycopg.errors.InvalidSchemaName)
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -72,10 +79,22 @@ def anlegen(konzept: dict, sha: str) -> tuple[str, str | None]:
 
 def offene() -> list[dict]:
     """Offene, nicht abgelaufene Uebergaben, aelteste zuerst. `alter_s`: Alter in Sekunden nach der DB-Uhr."""
-    return server._q("select id, konzept, konzept_sha, fehler, erstellt_am, "
-                     "extract(epoch from (now() - erstellt_am))::int as alter_s "
-                     "from video_uebergabe where status = 'offen' "
-                     f"and erstellt_am > now() - {VERFALL} order by erstellt_am")
+    return server._q("select u.id, u.konzept, u.konzept_sha, u.fehler, u.erstellt_am, "
+                     "extract(epoch from (now() - u.erstellt_am))::int as alter_s, "
+                     # schon einmal bestaetigt? (Auftragsnummer der juengsten Bestaetigung mit demselben Hash)
+                     "(select b.auftrag_id from video_uebergabe b where b.konzept_sha = u.konzept_sha "
+                     "and b.status = 'bestaetigt' order by b.entschieden_am desc limit 1) as frueher_auftrag "
+                     "from video_uebergabe u where u.status = 'offen' "
+                     f"and u.erstellt_am > now() - {VERFALL} order by u.erstellt_am")
+
+
+def zustand(kennung) -> dict | None:
+    """Status, Auftrag und letzter Ablehnungssatz EINER Uebergabe (ohne das Konzept) - die Ergebniszeile der Seite
+    leitet sich daraus ab, nicht aus Werten im Link. None: unbekannt."""
+    if not _gueltig(kennung):
+        return None
+    z = server._q("select status, auftrag_id, fehler from video_uebergabe where id = %s", (kennung,))
+    return z[0] if z else None
 
 
 def _gueltig(kennung) -> bool:
@@ -141,8 +160,16 @@ def bestaetigen(kennung, von: str) -> tuple[str, dict | str]:
     if not _gueltig(kennung):
         return "fehlt", SATZ_FEHLT
     with server.pool.connection() as conn:
+        stoerung: list[Exception] = []
+
         def q(sql, params=()):
-            cur = conn.execute(sql, params)
+            try:
+                cur = conn.execute(sql, params)
+            except psycopg.errors.RaiseException:
+                raise                                    # Ablehnung des Auftragsbuchs (RAISE EXCEPTION, P0001)
+            except Exception as f:                       # noqa: BLE001 - Stoerung: Rechte, fehlende Funktion, Netz
+                stoerung.append(f)
+                raise
             return cur.fetchall() if cur.description else []
 
         # 1. Anspruch: nur eine offene, nicht abgelaufene Uebergabe; die Zeilensperre haelt bis zum Ende.
@@ -161,6 +188,10 @@ def bestaetigen(kennung, von: str) -> tuple[str, dict | str]:
                 with conn.transaction():
                     aid = auftrag_buch.anlegen(q, *bestellung[:2], "video", bestellung[2])
             except auftrag_buch.AuftragAbgelehnt as e:
+                if stoerung:
+                    # `auftrag_buch.anlegen` macht aus JEDEM Fehler einen Ablehnungssatz. Eine Stoerung (fehlende
+                    # Rechte, fehlende Funktion, Verbindung) ist aber keine Ablehnung: alles zurueck, 503 an die Seite.
+                    raise stoerung[0] from None
                 satz = e.grund
         if satz is not None:
             conn.execute("update video_uebergabe set status = 'offen', fehler = %s, entschieden_am = null, "

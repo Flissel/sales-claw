@@ -10,6 +10,7 @@ import json
 import logging
 import os
 
+import psycopg
 import pytest
 
 os.environ["SALES_DB_SCHEMA"] = "sales_test"
@@ -316,6 +317,21 @@ def test_fuenf_offene_429(client, buch):
     buch.satz = "Es sind schon 5 Übergaben offen. Bitte erst in Sales entscheiden."
     r = client.post(URL, json=rumpf(), headers=KOPF)
     assert r.status_code == 429 and r.json() == {"fehler": buch.satz}
+
+
+def test_ohne_sitzungsgeheimnis_bereitet_die_annahme_weiter_vor(client, buch, monkeypatch):
+    monkeypatch.setattr(ui, "UI_SESSION_SECRET", "")                # Oberflaeche ohne Anmeldung: Annahme nur vorbereitend
+    r = client.post(URL, json=rumpf(), headers=KOPF)
+    assert r.status_code == 200 and r.json()["status"] == "vorbereitet" and buch.buch_aufrufe == []
+
+
+def test_fehlende_tabelle_ist_503_keine_ablehnung(client, buch, monkeypatch):
+    def fehlt(konzept_, sha):
+        raise psycopg.errors.UndefinedTable("relation video_uebergabe does not exist")
+    monkeypatch.setattr(video_uebergabe, "anlegen", fehlt)
+    r = client.post(URL, json=rumpf(), headers=KOPF)
+    assert r.status_code == 503
+    assert r.json() == {"fehler": "Die Übergabe ist auf diesem Laden noch nicht eingerichtet."}
 
 
 def test_tagesgrenze_wird_hier_nicht_geprueft(client, buch):
