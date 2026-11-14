@@ -83,14 +83,14 @@ def test_gibt_die_naehe_mit_aus_und_entscheidet_nicht_selbst():
 
 def test_kein_treffer_ist_eine_belastbare_aussage():
     """Darauf stuetzt sich „es gibt keinen zweiten Ivan"."""
-    _lead("Ivan", "+4917688014635")
+    _lead("Ivan", "+4917604069018")
     assert len(_suche("Ivan")["kontakte"]) == 1
     assert _suche("Gustav von Zitzewitz")["kontakte"] == []
 
 
 def test_zusaetze_zum_namen_werden_gefunden():
     """Gemessen 17.09.2026: similarity('Ivan','Ivan G.') = 0.714."""
-    _lead("Ivan", "+4917688014635")
+    _lead("Ivan", "+4917604069018")
     _lead("Ivan G.", "+4915112345678")
     assert len(_suche("Ivan", schwelle=0.3)["kontakte"]) == 2
 
@@ -107,7 +107,7 @@ def test_ein_vertauschter_buchstabe_wird_NICHT_gefunden():
     Dieser Test steht hier, weil genau dieser Fehlschluss am 17.09.2026 in
     einem Entwurfsdokument stand, bevor er nachgemessen wurde.
     """
-    _lead("Ivan", "+4917688014635")
+    _lead("Ivan", "+4917604069018")
     _lead("Iwan", "+4915112345678")
     treffer = _suche("Ivan", schwelle=0.3)["kontakte"]
     assert [k["name"] for k in treffer] == ["Ivan"]

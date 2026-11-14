@@ -44,16 +44,16 @@ davon nichts erneut herausfinden:
 ```
 GET /api/sessions/{OPENWA_SESSION_ID}/contacts/{kennung}/phone
 Header: X-Api-Key: {OPENWA_API_KEY}
-Antwort 200: {"contactId": "183096603361451@lid", "phone": "491729186846"}
+Antwort 200: {"contactId": "183096603361451@lid", "phone": "4917604069015"}
              phone ist null, wenn die Engine nicht aufloesen kann.
 ```
 
 * **Das `@lid`-Suffix ist Pflicht und muss URL-kodiert werden** (`%40lid`).
-  Gemessen: `183096603361451@lid` → `491729186846`, dieselbe Kennung **ohne**
+  Gemessen: `183096603361451@lid` → `4917604069015`, dieselbe Kennung **ohne**
   Suffix → `phone: null`. Eine Implementierung, die nur die Ziffern schickt,
   bekommt stillschweigend Nullen zurück und haelt das faelschlich fuer
   „nicht aufloesbar".
-* **`phone` kommt als blanke MSISDN-Ziffern ohne `+`** (`491729186846`) —
+* **`phone` kommt als blanke MSISDN-Ziffern ohne `+`** (`4917604069015`) —
   vor dem Vergleich mit `leads.phone` durch `nummern.py` normalisieren, wie
   ueberall sonst.
 * **Rate-Limit: HTTP 429 nach etwa 10 Abfragen in Folge.** In der
@@ -68,7 +68,7 @@ Antwort 200: {"contactId": "183096603361451@lid", "phone": "491729186846"}
   400er als Negativtreffer zu deuten.
 * **Der Endpunkt loest auch Kennungen auf, die noch nicht in OpenWAs
   `lid_mappings` stehen** (gemessen an `187853296390180@lid` →
-  `4917670794980`, vorher nicht in der Tabelle). Er fragt die Engine aktiv.
+  `4917604069017`, vorher nicht in der Tabelle). Er fragt die Engine aktiv.
 
 **Gemessene Deckung am 20.08.: 10 von 16 CRM-Absendern** (Rest: 429, nicht
 geprueft). Darunter Sophie (139 Nachrichten), Christine, Moritz Baumann und

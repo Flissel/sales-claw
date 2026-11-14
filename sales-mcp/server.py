@@ -6304,7 +6304,7 @@ def lid_telefon(kennung) -> str:
 def kennung_schreibweise(kennung) -> str:
     """Kennung -> ihre kanonische SCHREIBWEISE. Ohne jede Aufloesung.
 
-    Vereinheitlicht nur die Form: `+49 172 918 6846` -> `491729186846@c.us`,
+    Vereinheitlicht nur die Form: `+49 176 040690 15` -> `4917604069015@c.us`,
     `183096603361451` -> `183096603361451@lid`, `…:12@s.whatsapp.net` ->
     `…@c.us`. Die Identitaet wird dabei NICHT durch die Nummer ersetzt, auf die
     sie zeigt — das tut `lid_kanonisch`.
@@ -6364,9 +6364,9 @@ def lead_zu_kennung(kennung):
     Betreiber gemeldet hat — „manchmal kommt Ivan zum Einordnen, obwohl er
     schon einen Kontakt hat":
 
-        Kennung             491791714185@c.us
-        direkt           -> Ivan, +491791714185          (sein Kontakt)
-        ueber lid_kanonisch -> 4917688014635@c.us -> None (niemand mehr)
+        Kennung             4917604069019@c.us
+        direkt           -> Ivan, +4917604069019          (sein Kontakt)
+        ueber lid_kanonisch -> 4917604069018@c.us -> None (niemand mehr)
 
     Am 01.09.2026 zeigte die Zuordnung von seiner NEUEN Nummer auf seine ALTE,
     denn damals stand die alte am Kontakt. Am 22.09.2026 wurde die neue Nummer
@@ -8426,7 +8426,7 @@ def kennungen_bericht() -> str:
     """Welche Absender-Kennungen sind aufgetaucht — und was bleibt stabil?
 
     Hintergrund: WhatsApp stellt auf LIDs um. Dieselbe Person erscheint mal
-    unter ihrer Rufnummer (`4915772882471@c.us`), mal unter einer LID
+    unter ihrer Rufnummer (`4917604069014@c.us`), mal unter einer LID
     (`143151310344360`), die keinen Bezug zur Nummer hat. Welche Merkmale
     dabei stabil bleiben, laesst sich nicht herleiten — dieser Bericht macht
     es beobachtbar, damit die Zuordnung auf Bewiesenem steht statt auf

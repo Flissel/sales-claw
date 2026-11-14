@@ -90,8 +90,8 @@ def _aktivitaeten(typ):
 # Gemessene Werte aus test_einordnung.py, damit beide Suiten ueber dieselbe
 # Person reden: Sophies Privacy-Kennung und ihre echte Rufnummer.
 SOPHIE_LID = "183096603361451@lid"
-SOPHIE_NUMMER = "491729186846@c.us"
-SOPHIE_PHONE = "+49 172 9186846"
+SOPHIE_NUMMER = "4917604069015@c.us"
+SOPHIE_PHONE = "+49 176 040690 15"
 
 
 @pytest.fixture
@@ -1082,7 +1082,7 @@ def test_einordnung_legt_einen_bekannten_kontakt_gar_nicht_erst_vor(
     sammel = _sammel()
     lead = _lead(name="Sophie Beispiel", phone=SOPHIE_PHONE)
     _kundenantwort(sammel, text="Ich habe unterschrieben",
-                   absender="491729186846@s.whatsapp.net")
+                   absender="4917604069015@s.whatsapp.net")
     seite = _get("/einordnung").text
     assert "Wartet auf Entscheidung (0)" in seite
     assert "Bereits entschieden (1)" in seite
@@ -1090,7 +1090,7 @@ def test_einordnung_legt_einen_bekannten_kontakt_gar_nicht_erst_vor(
     assert f'/kontakte/{lead}' in seite
 
     verweigert = json.loads(server.eingang_einordnen(
-        absender="491729186846@s.whatsapp.net", entscheidung="ignorieren"))
+        absender="4917604069015@s.whatsapp.net", entscheidung="ignorieren"))
     assert verweigert.get("ignoriert") is None
     assert verweigert["gehoert_zu"]["kontakt"] == "Sophie Beispiel"
 
@@ -1270,7 +1270,7 @@ def test_anlegen_erzeugt_den_kontakt_mit_der_rufnummer_der_kennung(
     neu = server._q("select id, phone, source from leads where name = %s",
                     ("Sophie Neu",))
     assert len(neu) == 1
-    assert neu[0]["phone"] == "+491729186846"
+    assert neu[0]["phone"] == "+4917604069015"
     assert neu[0]["source"] == "whatsapp"
     assert r.headers["location"] == f"/kontakte/{neu[0]['id']}"
     # Der Absender ist damit eingeordnet, ohne dass ein zweites Werkzeug lief.
@@ -1292,7 +1292,7 @@ def test_anlegen_einer_bereits_aufgeloesten_lid_nimmt_die_gespeicherte_nummer(
                "name": "Sophie Neu"})
     assert r.status_code == 303
     neu = server._q("select phone from leads where name = %s", ("Sophie Neu",))
-    assert neu[0]["phone"] == "+491729186846"
+    assert neu[0]["phone"] == "+4917604069015"
 
 
 def test_anlegen_einer_unaufgeloesten_lid_wird_verweigert(
@@ -1320,7 +1320,7 @@ def test_anlegen_ohne_namen_wirkt_nicht(sammelkontakt_zurueck):
                "name": "   "})
     assert r.status_code == 400
     assert server._q("select id from leads where phone = %s",
-                     ("+491729186846",)) == []
+                     ("+4917604069015",)) == []
 
 
 def test_anlegen_legt_keinen_zweiten_kontakt_zur_selben_nummer_an(
@@ -1533,7 +1533,7 @@ def test_bearbeiten_aendert_genau_die_erlaubten_felder_und_protokolliert():
     lead = _lead()
     r = _post("/kontakte/bearbeiten",
               {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
-               "name": "Maxi Testperson", "phone": "+491729186846",
+               "name": "Maxi Testperson", "phone": "+4917604069015",
                "email": "maxi@example.de",
                # Mitgeschickt, aber nicht erlaubt: darf spurlos verpuffen.
                "status": "won", "consent_status": "opt_in",
@@ -1541,7 +1541,7 @@ def test_bearbeiten_aendert_genau_die_erlaubten_felder_und_protokolliert():
     assert r.status_code == 303
     zeile = _stamm(lead)
     assert zeile["name"] == "Maxi Testperson"
-    assert zeile["phone"] == "+491729186846"
+    assert zeile["phone"] == "+4917604069015"
     assert zeile["email"] == "maxi@example.de"
     # Genau das, was das Werkzeug nicht erlaubt, ist unveraendert geblieben.
     assert zeile["status"] == "new"
@@ -1626,7 +1626,7 @@ def test_bearbeiten_nennt_die_folgen_einer_neuen_telefonnummer():
     lead = _lead()
     r = _post("/kontakte/bearbeiten",
               {"lead_id": lead, "csrf": ui.CSRF_TOKEN,
-               "name": "Max Testperson", "phone": "+491729186846",
+               "name": "Max Testperson", "phone": "+4917604069015",
                "email": ""})
     assert r.status_code == 303
     assert r.headers["location"] == f"/kontakte/{lead}?reiter=einstellungen&gespeichert=telefon"

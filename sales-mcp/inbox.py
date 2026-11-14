@@ -296,7 +296,7 @@ def _ziffern(jid) -> str:
 
     Nur zum VERGLEICHEN zweier JIDs (Selbst-Chat-Erkennung), nie zum
     Speichern: was gespeichert wird, geht durch `nummern.py`. Diese Funktion
-    FILTERT — `49a17b29186846` wird hier klaglos zu `491729186846`. Genau
+    FILTERT — `49a17b604069015` wird hier klaglos zu `4917604069015`. Genau
     deshalb darf ihr Ergebnis nie zur gespeicherten Nummer werden
     (Review-Befund M7); dafuer gibt es `_rohteil` und `normalisiere_msisdn`.
     """
@@ -344,7 +344,7 @@ def _kennung(roh, senderphone=None):
     # Der ROHWERT geht durch nummern.py, nicht `"+" + _ziffern(...)`
     # (Review-Befund M7): `_ziffern` filtert jedes Nicht-Ziffernzeichen weg und
     # das vorangestellte `+` erklaerte den Rest zur internationalen
-    # Schreibweise. Aus `49a17b29186846` wurde so `491729186846@c.us` — die
+    # Schreibweise. Aus `49a17b604069015` wurde so `4917604069015@c.us` — die
     # Nummer eines echten Kunden, in dessen Historie die fremde Nachricht dann
     # gebucht wurde. `normalisiere_msisdn` ergaenzt das `+` nur, wenn der Wert
     # weder `+` noch `00` noch eine fuehrende `0` mitbringt.
@@ -502,8 +502,8 @@ def lead_zu_nummer(chat_id: str):
     Zusage, die `eingang_einordnen` dem Betreiber woertlich gibt („Kuenftige
     Nachrichten von dieser Kennung laufen zum Kontakt mit dieser Nummer"), fuer
     jede Kennung unwahr, die selbst schon eine Nummer war. GEMESSEN am echten
-    Bestand: am 01.09.2026 ordnete der Betreiber `491791714185` dem Kontakt
-    hinter `4917688014635@c.us` zu; bis zum 22.09.2026 landeten trotzdem 217
+    Bestand: am 01.09.2026 ordnete der Betreiber `4917604069019` dem Kontakt
+    hinter `4917604069018@c.us` zu; bis zum 22.09.2026 landeten trotzdem 217
     Nachrichten desselben Menschen am Sammelkontakt, und er kam immer wieder
     zum Einordnen. Ein Mensch mit zwei Nummern hatte in diesem System keinen
     Platz — `leads.phone` ist EINE Spalte.
@@ -674,7 +674,7 @@ def _identitaetsfelder(daten: dict) -> dict:
     """Woran sich ein Absender wiedererkennen laesst — ohne Inhalt.
 
     WOZU. WhatsApp stellt auf LIDs um: dieselbe Person erscheint mal unter
-    ihrer Rufnummer (`4915772882471@c.us`), mal unter einer LID
+    ihrer Rufnummer (`4917604069014@c.us`), mal unter einer LID
     (`143151310344360`), die keinerlei Bezug zur Nummer hat. Welche Felder
     dabei STABIL bleiben, laesst sich nicht herleiten — man muss es
     beobachten. Bisher haben wir je Nachricht nur `absender` und

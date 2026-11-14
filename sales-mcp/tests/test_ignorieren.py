@@ -106,12 +106,12 @@ def _beachtet_anzahl():
 
 
 def test_freigabe_hebt_ignorieren_auf():
-    lead = _lead_mit_nummer("+4915752415952")
-    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4915752415952@c.us", lead)
-    assert server.absender_ist_ignoriert("4915752415952@c.us")
+    lead = _lead_mit_nummer("+4917604069013")
+    server._absender_ereignis(server.ABSENDER_IGNORIERT, "4917604069013@c.us", lead)
+    assert server.absender_ist_ignoriert("4917604069013@c.us")
     a = json.loads(server.kontakt_freigeben(lead))
     assert "stand auf Ignorieren – aufgehoben" in a["ignorieren_aufgehoben"]
-    assert not server.absender_ist_ignoriert("4915752415952@c.us")
+    assert not server.absender_ist_ignoriert("4917604069013@c.us")
 
 
 def test_entwurf_freigabe_hebt_auf():

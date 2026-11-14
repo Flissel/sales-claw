@@ -1151,9 +1151,9 @@ Gemessen an den mitgelieferten OpenWA-Quellen und der laufenden Datenbank:
   `whatsapp-web-js.adapter.ts:568 resolveContactPhone(contactId)`.
 * **Deckung am 19.08.2026: 3 von 16 CRM-Absendern** (`lid_mappings` hatte
   4 aufgelöste Zeilen, davon 3 mit Treffer im CRM: Sophie
-  `183096603361451`→`491729186846`, Moritz Baumann
-  `207446954004697`→`4915228528926`, Christine
-  `44199592386700`→`4915208874679`). Die Tabelle füllt sich nur bei Bedarf,
+  `183096603361451`→`4917604069015`, Moritz Baumann
+  `207446954004697`→`4917604069011`, Christine
+  `44199592386700`→`4917604069010`). Die Tabelle füllt sich nur bei Bedarf,
   solange das Flag aus ist — die übrigen 13 Absender der Messung waren
   Mock-/Testdaten.
 

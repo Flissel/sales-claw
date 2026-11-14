@@ -539,8 +539,8 @@ def _zuordnung(kennung, telefon):
 def test_eine_zugeordnete_ZWEITNUMMER_landet_beim_richtigen_kontakt():
     """Der gemessene Fall — 217 Nachrichten am falschen Platz.
 
-    Am 01.09.2026 hat der Betreiber `491791714185` dem Kontakt hinter
-    `4917688014635@c.us` zugeordnet; das Werkzeug versprach ihm dabei woertlich
+    Am 01.09.2026 hat der Betreiber `4917604069019` dem Kontakt hinter
+    `4917604069018@c.us` zugeordnet; das Werkzeug versprach ihm dabei woertlich
     „Kuenftige Nachrichten von dieser Kennung laufen zum Kontakt mit dieser
     Nummer". Eingehalten wurde das nie: `_kennung` befragt die gespeicherte
     Zuordnung NUR im `@lid`-Zweig, eine Rufnummer laeuft daran vorbei. Bis zum
@@ -548,11 +548,11 @@ def test_eine_zugeordnete_ZWEITNUMMER_landet_beim_richtigen_kontakt():
     Sammelkontakt — drei Wochen, nachdem die Frage „wer ist das?" beantwortet
     war. Deshalb kam er immer wieder zum Einordnen.
     """
-    lead = _lead("Ivan", "+4917688014635")
+    lead = _lead("Ivan", "+4917604069018")
     sammel = _sammel_lead()
-    _zuordnung("491791714185", "4917688014635@c.us")
-    status, _ = _post(_ereignis(**{"from": "491791714185@c.us",
-                                   "chatId": "491791714185@c.us"}))
+    _zuordnung("4917604069019", "4917604069018@c.us")
+    status, _ = _post(_ereignis(**{"from": "4917604069019@c.us",
+                                   "chatId": "4917604069019@c.us"}))
     assert status == 200
     zeilen = _aktivitaeten()
     assert len(zeilen) == 1
@@ -562,11 +562,11 @@ def test_eine_zugeordnete_ZWEITNUMMER_landet_beim_richtigen_kontakt():
 def test_auch_die_AUSGEHENDE_richtung_folgt_der_zuordnung():
     """Sonst stuende die Antwort des Betreibers weiter am Sammelkontakt — und
     die Beantwortet-Pruefung saehe eine Frage ohne Antwort."""
-    lead = _lead("Ivan", "+4917688014635")
+    lead = _lead("Ivan", "+4917604069018")
     sammel = _sammel_lead()
-    _zuordnung("491791714185", "4917688014635@c.us")
-    status, _ = _post(_echo(**{"to": "491791714185@c.us",
-                               "chatId": "491791714185@c.us"}))
+    _zuordnung("4917604069019", "4917604069018@c.us")
+    status, _ = _post(_echo(**{"to": "4917604069019@c.us",
+                               "chatId": "4917604069019@c.us"}))
     assert status == 200
     zeilen = _aktivitaeten("nachricht_ausgehend")
     assert len(zeilen) == 1
@@ -577,17 +577,17 @@ def test_der_DIREKTE_treffer_schlaegt_eine_veraltete_zuordnung():
     """Die Reihenfolge ist der Kern, nicht ein Detail.
 
     Genau dieser Zustand steht heute in der Produktion: die Zuordnung zeigt
-    von der neuen Nummer auf die ALTE (`491791714185` -> `4917688014635@c.us`),
+    von der neuen Nummer auf die ALTE (`4917604069019` -> `4917604069018@c.us`),
     inzwischen traegt der Kontakt aber die NEUE. Wer die Zuordnung vor der
     direkten Suche anwendet, loest auf eine Nummer auf, die kein Kontakt mehr
     hat — und schickt den Menschen zurueck an den Sammelkontakt, den er
     gerade verlassen hat. Die Zuordnung ist ein RUECKFALL, kein Vorlauf.
     """
-    lead = _lead("Ivan", "+491791714185")          # neue Nummer, wie heute
+    lead = _lead("Ivan", "+4917604069019")          # neue Nummer, wie heute
     sammel = _sammel_lead()
-    _zuordnung("491791714185", "4917688014635@c.us")   # zeigt ins Leere
-    status, _ = _post(_ereignis(**{"from": "491791714185@c.us",
-                                   "chatId": "491791714185@c.us"}))
+    _zuordnung("4917604069019", "4917604069018@c.us")   # zeigt ins Leere
+    status, _ = _post(_ereignis(**{"from": "4917604069019@c.us",
+                                   "chatId": "4917604069019@c.us"}))
     assert status == 200
     assert str(_aktivitaeten()[0]["lead_id"]) == lead != sammel
 
