@@ -623,10 +623,21 @@ def test_pruefer_fehler_legt_nichts_ab(monkeypatch):
         def heikel(self, jpeg):
             raise RuntimeError("Modell weg")
 
-    monkeypatch.setattr(auge, "pruefer", Kaputt())
-    sitzungen = _sitzung("a1", [_teilt("links")])
+    k = Kaputt()
+    k.aufrufe = 0
+    orig = k.heikel
+
+    def zaehlend(jpeg):
+        k.aufrufe += 1
+        return orig(jpeg)
+
+    k.heikel = zaehlend
+    monkeypatch.setattr(auge, "pruefer", k)
+    sitzungen = _sitzung("a1", [_teilt("links"), _teilt("diagonal")])
     auge.runde(sitzungen, T0)
+    auge.runde(sitzungen, T0 + timedelta(seconds=2))   # < MIN_ABSTAND: gedrosselt
     assert bildschirm.bilder("a1") == []
+    assert k.aufrufe == 1
 
 
 def test_beschreiben_rechnet_vektor_bild_nur_wenn_null(monkeypatch):

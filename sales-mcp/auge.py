@@ -243,7 +243,7 @@ def _neu_beginnen(s: Sitzung) -> None:
         s.letzter_hash = None
 
 
-def _heikel_pruefen(s: Sitzung, jpeg: bytes) -> tuple[bool | None, list[float] | None]:
+def _heikel_pruefen(s: Sitzung, jpeg: bytes, jetzt: datetime) -> tuple[bool | None, list[float] | None]:
     """Schicht A: (heikel?, Bildvektor). None als Urteil, wenn die Pruefung scheitert
     (dann wird nichts abgelegt). Ohne Pruefer: (False, None)."""
     if pruefer is None:
@@ -252,6 +252,7 @@ def _heikel_pruefen(s: Sitzung, jpeg: bytes) -> tuple[bool | None, list[float] |
         ist, vektor = pruefer.heikel(jpeg)
     except Exception as e:  # noqa: BLE001 - Modellfehler: Bild nicht ablegen
         LOG.warning("Heikel-Pruefung uid=%s fehlgeschlagen (%s)", _h(s.uid), _typ(e))
+        s.letzte_zeit = jetzt        # Drossel: kaputtes Modell nicht jede Runde neu versuchen
         return None, None
     return bool(ist), vektor
 
@@ -286,7 +287,7 @@ def _eine(s: Sitzung, jetzt: datetime) -> None:
         return
     if not bildschirm.soll_aufnehmen(s.letzter_hash, neu, s.letzte_zeit, jetzt, s.anzahl):
         return
-    heikel, vektor = _heikel_pruefen(s, jpeg)
+    heikel, vektor = _heikel_pruefen(s, jpeg, jetzt)
     if heikel is None:
         return                       # Pruefung gescheitert: im Zweifel nichts ablegen
     if heikel:
@@ -565,6 +566,9 @@ def main() -> int:
     global pruefer
     import heikel                       # Pruefer teilt die gesperrte Modellinstanz
     pruefer = heikel.Pruefer(einbetter)
+    if pruefer is None:             # nie ohne Heikel-Pruefung laufen (kein Fail-open)
+        LOG.error("Kein Heikel-Pruefer - Dienst startet nicht")
+        return 1
     LOG.info("Modelle geladen (Heikel-Abstand %.3f)", heikel.ABSTAND)
 
     sitzungen: dict[str, Sitzung] = {}
