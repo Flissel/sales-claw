@@ -560,3 +560,88 @@ def test_gesund_meldet_toten_browser_mit_503():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# ---------- Heikle Bildschirme (Schicht A) ----------
+
+class PrueferAttrappe:
+    """Meldet jedes Bild als heikel (oder nicht) und zaehlt die Aufrufe."""
+
+    def __init__(self, heikel=True):
+        self._heikel = heikel
+        self.aufrufe = 0
+
+    def heikel(self, jpeg):
+        self.aufrufe += 1
+        v = [0.0] * 512
+        v[2] = 1.0
+        return self._heikel, v
+
+
+def test_heikles_bild_wird_nicht_abgelegt_und_gezaehlt(monkeypatch, caplog):
+    _akte("a1")
+    monkeypatch.setattr(auge, "pruefer", PrueferAttrappe(True))
+    sitzungen = _sitzung("a1", [_teilt("links")])
+    with caplog.at_level("INFO", logger="sales-auge"):
+        auge.runde(sitzungen, T0)
+    assert bildschirm.bilder("a1") == []
+    assert server._q("select count(*) as n from termin_bilder")[0]["n"] == 0
+    assert server._q("select bilder_uebersprungen from termin_akten "
+                     "where uid = 'a1'")[0]["bilder_uebersprungen"] == 1
+    s = sitzungen["a1"]
+    assert s.anzahl == 0 and s.letzte_zeit == T0 and s.letzter_hash is not None
+    assert "Heikles Bild verworfen" in caplog.text
+    assert "Geheimer" not in caplog.text
+
+
+def test_heikles_bild_nicht_alle_runden_neu_geprueft(monkeypatch):
+    _akte("a1")
+    p = PrueferAttrappe(True)
+    monkeypatch.setattr(auge, "pruefer", p)
+    sitzungen = _sitzung("a1", [_teilt("links"), _teilt("links")])
+    auge.runde(sitzungen, T0)
+    auge.runde(sitzungen, T0 + timedelta(seconds=10))
+    assert p.aufrufe == 1                       # zweiter, gleicher Frame: kein Pruefen
+    assert server._q("select bilder_uebersprungen from termin_akten "
+                     "where uid = 'a1'")[0]["bilder_uebersprungen"] == 1
+
+
+def test_unheikles_bild_wird_abgelegt_mit_vorberechnetem_vektor(monkeypatch):
+    _akte("a1")
+    monkeypatch.setattr(auge, "pruefer", PrueferAttrappe(False))
+    sitzungen = _sitzung("a1", [_teilt("links")])
+    auge.runde(sitzungen, T0)
+    z = server._q("select vektor_bild is not null as hat from termin_bilder")
+    assert len(z) == 1 and z[0]["hat"] is True
+    assert sitzungen["a1"].anzahl == 1
+
+
+def test_pruefer_fehler_legt_nichts_ab(monkeypatch):
+    _akte("a1")
+
+    class Kaputt:
+        def heikel(self, jpeg):
+            raise RuntimeError("Modell weg")
+
+    monkeypatch.setattr(auge, "pruefer", Kaputt())
+    sitzungen = _sitzung("a1", [_teilt("links")])
+    auge.runde(sitzungen, T0)
+    assert bildschirm.bilder("a1") == []
+
+
+def test_beschreiben_rechnet_vektor_bild_nur_wenn_null(monkeypatch):
+    _akte("a1")
+    v = [0.0] * 512
+    v[5] = 1.0
+    bildschirm.bild_ablegen("a1", _jpeg("links"), T0, "Anna", vektor_bild=v)
+    gerechnet = []
+
+    class Zaehler(Attrappe):
+        def bild(self, jpeg):
+            gerechnet.append(1)
+            return super().bild(jpeg)
+
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: "Folie")
+    assert bild_arbeit.naechste_beschreiben(Zaehler()) is True
+    assert gerechnet == []
+    assert server._q("select vektor_bild is not null as h from termin_bilder")[0]["h"]

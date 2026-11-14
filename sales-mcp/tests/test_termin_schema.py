@@ -17,7 +17,7 @@ SPALTEN = {
         "vexa_plattform", "vexa_native_id", "bot_geschickt_am", "briefing_md",
         "briefing_stand", "briefing_mit_ki", "briefing_am",
         "hinweis_gesendet_am", "erstellt_am", "geaendert_am",
-        "bildschirm_auswerten"},
+        "bildschirm_auswerten", "bilder_uebersprungen"},
     "termin_teilnehmer": {"uid", "adresse", "name", "rolle", "lead_id", "grund"},
     "termin_mitschriften": {
         "id", "uid", "segmente", "geholt_am", "auswertung_status",
@@ -136,3 +136,12 @@ def test_akte_loeschen_loescht_bilder():
     _bild("u2")
     server._q("delete from termin_akten where uid='u1'")
     assert _zeilen("termin_bilder") == 1
+
+
+def test_termin_akten_bilder_uebersprungen_zaehler():
+    z = server._q(
+        "select data_type, is_nullable, column_default from information_schema.columns "
+        "where table_schema='sales_test' and table_name='termin_akten' "
+        "and column_name='bilder_uebersprungen'")[0]
+    assert (z["data_type"], z["is_nullable"]) == ("integer", "NO")
+    assert z["column_default"] == "0"

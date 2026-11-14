@@ -107,9 +107,14 @@ class Sitzung:
     von: str | None = None
     fehler: int = 0
     gestartet: datetime | None = field(default=None)
+    uebersprungen: int = 0               # heikle, nicht gespeicherte Bilder dieser Sitzung
 
 
 _gesperrt_bis: dict[str, datetime] = {}
+
+# Heikel-Pruefer (Schicht A), von main() gesetzt; auf None wird nicht geprueft
+# (nur Tests ohne Modelle).
+pruefer: Any = None
 
 
 def abgleich(soll: set[str], laufend: set[str]) -> tuple[set[str], set[str]]:
@@ -238,6 +243,19 @@ def _neu_beginnen(s: Sitzung) -> None:
         s.letzter_hash = None
 
 
+def _heikel_pruefen(s: Sitzung, jpeg: bytes) -> tuple[bool | None, list[float] | None]:
+    """Schicht A: (heikel?, Bildvektor). None als Urteil, wenn die Pruefung scheitert
+    (dann wird nichts abgelegt). Ohne Pruefer: (False, None)."""
+    if pruefer is None:
+        return False, None
+    try:
+        ist, vektor = pruefer.heikel(jpeg)
+    except Exception as e:  # noqa: BLE001 - Modellfehler: Bild nicht ablegen
+        LOG.warning("Heikel-Pruefung uid=%s fehlgeschlagen (%s)", _h(s.uid), _typ(e))
+        return None, None
+    return bool(ist), vektor
+
+
 def _eine(s: Sitzung, jetzt: datetime) -> None:
     antwort = s.seite.evaluate(AUFRUF)
     s.fehler = 0
@@ -268,7 +286,18 @@ def _eine(s: Sitzung, jetzt: datetime) -> None:
         return
     if not bildschirm.soll_aufnehmen(s.letzter_hash, neu, s.letzte_zeit, jetzt, s.anzahl):
         return
-    bild_id = bildschirm.bild_ablegen(s.uid, jpeg, jetzt, von)
+    heikel, vektor = _heikel_pruefen(s, jpeg)
+    if heikel is None:
+        return                       # Pruefung gescheitert: im Zweifel nichts ablegen
+    if heikel:
+        # Nie speichern; Hash und Zeit trotzdem merken (gleiches Bild nicht neu pruefen).
+        s.letzter_hash, s.letzte_zeit = neu, jetzt
+        s.uebersprungen += 1
+        bildschirm.uebersprungen_zaehlen(s.uid)
+        LOG.info("Heikles Bild verworfen uid=%s (Nr. übersprungen %d)",
+                 _h(s.uid), s.uebersprungen)
+        return
+    bild_id = bildschirm.bild_ablegen(s.uid, jpeg, jetzt, von, vektor_bild=vektor)
     if bild_id is None:
         LOG.info("Ablage verweigert uid=%s (nicht mehr beobachtet)", _h(s.uid))
         return
@@ -533,7 +562,10 @@ def main() -> int:
 
     from einbetter_fastembed import FastEmbedEinbetter  # lazy: nur im Auge-Abbild
     einbetter = GesperrterEinbetter(FastEmbedEinbetter())
-    LOG.info("Modelle geladen")
+    global pruefer
+    import heikel                       # Pruefer teilt die gesperrte Modellinstanz
+    pruefer = heikel.Pruefer(einbetter)
+    LOG.info("Modelle geladen (Heikel-Abstand %.3f)", heikel.ABSTAND)
 
     sitzungen: dict[str, Sitzung] = {}
     zustand = {"browser": True}

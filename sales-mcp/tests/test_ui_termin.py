@@ -961,3 +961,12 @@ def test_akte_json_hat_schalter_und_anzahl():
     _bild()
     d = _get(_pfad("j1") + ".json").json()
     assert d["bildschirm_auswerten"] is True and d["bilder_anzahl"] == 1
+
+
+def test_reiter_bildschirm_vermerkt_uebersprungene_heikle():
+    _jitsi(bildschirm_auswerten=True)
+    assert "heikle Bildschirme" not in _get(_pfad("j1") + "?reiter=bildschirm").text
+    server._q("update termin_akten set bilder_uebersprungen = 3 where uid = 'j1' returning uid")
+    t = _get(_pfad("j1") + "?reiter=bildschirm").text
+    assert "3 heikle Bildschirme (Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert." in t
+    assert _get(_pfad("j1") + ".json").json()["bilder_uebersprungen"] == 3

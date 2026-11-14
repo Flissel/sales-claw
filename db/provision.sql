@@ -399,6 +399,8 @@ begin
         vektor_bild public.vector(512) null,
         vektor_text public.vector(384) null,
         erstellt_am timestamptz not null default now())$ddl$, s, s);
+    -- Heikle Bildschirme (14.11.2026): Zaehler der verworfenen Standbilder (nur die Zahl).
+    execute format('alter table %I.termin_akten add column if not exists bilder_uebersprungen int not null default 0', s);
     execute format('create index if not exists termin_bilder_uid_idx on %I.termin_bilder (uid, aufgenommen_am)', s);
     -- Ruling R16: Zeitpunkt des letzten Beschreib-Versuchs; der naechste wartet
     -- 30 s (nach Versuch 1) bzw. 5 min (nach Versuch 2), sales-mcp/bild_arbeit.py.

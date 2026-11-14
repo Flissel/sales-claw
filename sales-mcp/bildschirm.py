@@ -74,8 +74,13 @@ def _verkleinern(jpeg: bytes) -> tuple[bytes, int, int]:
 
 
 def bild_ablegen(uid: str, jpeg: bytes, zeitpunkt: datetime,
-                 geteilt_von: str | None) -> str | None:
-    """Legt ein Bild ab und schliesst das vorige offene; None, wenn nicht (mehr) soll."""
+                 geteilt_von: str | None,
+                 vektor_bild: list[float] | None = None) -> str | None:
+    """Legt ein Bild ab und schliesst das vorige offene; None, wenn nicht (mehr) soll.
+    `vektor_bild`: schon berechneter CLIP-Vektor (Heikel-Pruefung), spart die zweite
+    Berechnung im Beschreib-Thread."""
+    literal = ("[" + ",".join(repr(float(v)) for v in vektor_bild) + "]"
+               if vektor_bild is not None else None)
     daten, breite, hoehe = _verkleinern(jpeg)
     hash_ = dhash(daten)
     name = (geteilt_von or "").strip()[:_NAME_MAX] or None
@@ -90,13 +95,20 @@ def bild_ablegen(uid: str, jpeg: bytes, zeitpunkt: datetime,
                      (zeitpunkt, uid))
         zeilen = conn.execute(
             "insert into termin_bilder (uid, aufgenommen_am, geteilt_von, bild, breite, "
-            "hoehe, dhash) values (%s, %s, %s, %s, %s, %s, %s) returning id",
-            (uid, zeitpunkt, name, daten, breite, hoehe, hash_)).fetchall()
+            "hoehe, dhash, vektor_bild) values (%s, %s, %s, %s, %s, %s, %s, "
+            "%s::public.vector) returning id",
+            (uid, zeitpunkt, name, daten, breite, hoehe, hash_, literal)).fetchall()
     return str(_erste(zeilen[0]))
 
 
 def _erste(zeile):
     return zeile["id"] if isinstance(zeile, dict) else zeile[0]
+
+
+def uebersprungen_zaehlen(uid: str) -> None:
+    """Ein heikles, NICHT gespeichertes Bild auf der Akte vermerken (nur der Zaehler)."""
+    server._q("update termin_akten set bilder_uebersprungen = bilder_uebersprungen + 1 "
+              "where uid = %s returning uid", (uid,))
 
 
 def freigabe_ende(uid: str, zeitpunkt: datetime) -> None:

@@ -378,6 +378,10 @@ def _bildschirm(akte: dict, schreiben: bool) -> str:
     if (akte["bilder_anzahl"] or 0) >= bildschirm.OBERGRENZE:
         kopf += (f'<p class="meta bild-obergrenze">Obergrenze von {bildschirm.OBERGRENZE} '
                  'Standbildern erreicht – weitere nur noch bei starker Änderung.</p>')
+    n_heikel = int(akte.get("bilder_uebersprungen") or 0)
+    if n_heikel > 0:
+        kopf += (f'<p class="meta bild-heikel">{n_heikel} heikle Bildschirme '
+                 '(Anmeldung, Bezahlung, Postfach) wurden nicht gespeichert.</p>')
     karten = "".join(_karte(uid, b, schreiben) for b in reversed(bilder))
     leer = "" if bilder else '<p class="meta bild-leer">Noch keine Bilder.</p>'
     vorlage = ""
