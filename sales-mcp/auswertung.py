@@ -511,10 +511,12 @@ def beteiligte_bereinigen(liste: list[str], sprecher: set[str]) -> list[str]:
         if schluessel in BOT_NAMEN and schluessel not in sprechende:
             continue
         worte = set(schluessel.split())
-        for vorhanden in ergebnis:
+        for i, vorhanden in enumerate(ergebnis):
             if worte <= vorhanden[2] or vorhanden[2] <= worte:
                 if len(worte) > len(vorhanden[2]):
                     vorhanden[0], vorhanden[2] = name, worte
+                    # gewachsener Name kann spaetere Eintraege einschliessen (transitiv)
+                    ergebnis[i + 1:] = [e for e in ergebnis[i + 1:] if not e[2] <= worte]
                 break
         else:
             ergebnis.append([name, rolle, worte])

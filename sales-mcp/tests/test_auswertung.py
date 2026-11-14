@@ -684,3 +684,22 @@ def test_auswerten_bereinigt_beteiligte_ueber_stuecke(stub, monkeypatch):
     stub({"beteiligte": ["Felix - Berater", "VibeMind Mitschrift - Bot", "Felix Baumann - X"]})
     a = auswertung.auswerten(_fixture())
     assert a["beteiligte"] == ["Felix Baumann - Berater"]
+
+
+def test_beteiligte_kette_dreifach():
+    assert auswertung.beteiligte_bereinigen(["Felix", "Baumann", "Felix Baumann"], set()) == [
+        "Felix Baumann"]
+
+
+def test_beteiligte_mehrere_stuecke_bereinigt(stub, monkeypatch):
+    monkeypatch.delenv("AUSWERTUNG_STUECK_ZEICHEN", raising=False)
+    seg = [{"sprecher": "Felix", "beginn": f"2026-11-12T09:{i:02d}:00Z",
+            "text": "wort " * 195, "sprache": "de"} for i in range(30)]
+    s = stub(
+        {"beteiligte": ["Felix - Berater", "Laura (Bildschirm) - Bot", "Diana - Kundin"]},
+        {"beteiligte": ["VibeMind Mitschrift - Bot", "Felix Baumann - Betreiber"]},
+        {"beteiligte": ["Diana Marx - Kundin, Horizon Hues", "vexa"]},
+        {"kurzfassung": "Gesamt"})
+    a = auswertung.auswerten(seg)
+    assert len(s.aufrufe) > 1
+    assert a["beteiligte"] == ["Felix Baumann - Berater", "Diana Marx - Kundin"]
