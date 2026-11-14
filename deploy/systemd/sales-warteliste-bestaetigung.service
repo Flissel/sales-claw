@@ -1,0 +1,8 @@
+[Unit]
+Description=sales-claw: Bestaetigungsmails fuer die Warteliste von vibemind.space verschicken
+
+[Service]
+Type=oneshot
+User=debian
+ExecStart=/usr/bin/bash /home/debian/sales-claw/deploy/warteliste-bestaetigung.sh
+TimeoutStartSec=300

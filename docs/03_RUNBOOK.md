@@ -4123,9 +4123,11 @@ Ein neuer Kontakt trägt als Anlagedatum den Tag seiner Anmeldung, damit der ers
 geändert“ nicht mit Wartelisten-Adressen füllt. Filtern: `source = 'waitinglist'` (vom Abgleich angelegt) oder
 `enrichment -> 'waitinglist' ->> 'auf_liste' = 'true'` (alle, die auf der Liste stehen, auch ältere Kontakte).
 
-**Zugang.** Der Wirt bekommt einen Abholschlüssel, der in der Website-Datenbank genau eine Funktion aufrufen
-darf (`waitlist_export`, nur lesend). Der Schlüssel entsteht auf dieser Maschine; in die Website-Datenbank
-kommt nur sein SHA-256. Der Container `sales-mcp` sieht den Schlüssel nie, nur das abgeholte Dokument.
+**Zugang.** Der Wirt bekommt einen Abholschlüssel, der in der Website-Datenbank die Warteliste lesen darf
+(`waitlist_export`) und seit den Bestätigungsmails (nächster Abschnitt) die wartenden Adressen samt Token
+abholen und zurückmelden (`waitlist_mail_queue`, `waitlist_mail_requeue`). Der Schlüssel entsteht auf
+dieser Maschine; in die Website-Datenbank kommt nur sein SHA-256. Die Container sehen den Schlüssel nie, nur
+das abgeholte Dokument.
 
 ```bash
 bash ~/sales-claw/deploy/warteliste-anbinden.sh https://<projekt>.supabase.co <oeffentlicher-schluessel>
@@ -4179,3 +4181,69 @@ erneut starten, neuen Hash bei der Website eintragen, alten dort entziehen.
 `sales-mcp/tests/test_warteliste_abgleich_plan.py` (ohne Datenbank) und `test_warteliste_abgleich.py`.
 
 **Datenschutz.** Siehe `docs/06_DSGVO.md`, Abschnitt „Wartelisten-Kontakte“.
+
+## Bestätigungsmails der Warteliste (Double-Opt-in für vibemind.space, seit 13.11.2026)
+
+Wer sich auf vibemind.space auf die Warteliste setzt, bekommt eine Mail mit einem Link und steht erst nach dem
+Klick auf der Liste. Die Website kann selbst keine Mails verschicken; das übernimmt dieser Laden mit seinem
+eigenen Postfach (`SMTP_*`, `EMAIL_ABSENDER`). Jede Minute holt `deploy/warteliste-bestaetigung.sh` auf
+dem Wirt die Adressen ab, die auf ihre Mail warten, und reicht sie an `sales-mail`
+(`warteliste_bestaetigung.py`). Ohne Sprachmodell, fester englischer Wortlaut, keine Freigabe, nur
+Basis-Laden.
+
+**Ablauf.**
+
+| Schritt | Wo | Was |
+|---|---|---|
+| 1 | Website | Das Formular merkt die Adresse als „wartet auf ihre Mail“ vor (`waitlist_signup`) |
+| 2 | Wirt | `waitlist_mail_queue` liefert die wartenden Adressen, je mit einem frischen Einmal-Token; damit gelten sie bei der Website als bedient |
+| 3 | `sales-mail` | je Adresse eine Mail mit dem Link `https://vibemind.space/waitlist/confirm#<Token>` |
+| 4 | Wirt | was der Mailserver nicht angenommen hat, geht mit `waitlist_mail_requeue` zurück und ist beim nächsten Lauf wieder dabei (höchstens drei Versuche in 24 Stunden) |
+| 5 | Website | der Klick bestätigt; der nächtliche Abgleich (oben) bringt die bestätigte Adresse als Kontakt hierher |
+
+**Was der Versand nicht tut.** Er legt keinen Kontakt an und bucht nichts: eine unbestätigte Adresse ist noch
+niemand. Er legt keine Kopie in den Gesendet-Ordner (die Mail trägt einen Einmal-Link). Wer auf der
+Verbotsliste steht, bekommt auch diese Mail nicht; lässt sich die Liste nicht lesen, geht nichts raus.
+
+**Grenzen.** Die Website gibt je Adresse höchstens eine Mail pro Stunde und drei in 24 Stunden frei, für das
+ganze Formular höchstens 20 in einer Stunde und 100 in 24 Stunden; ein Abruf liefert höchstens 20 Adressen.
+Die Zahlen stehen in der Website-Datenbank (`waitlist_signup`), nicht hier.
+
+**Einschalten.** Der Zugang ist derselbe wie beim Abgleich (`warteliste-anbinden.sh`, oben); ein neuer
+Schlüssel ist nicht nötig. Vorher muss die Website-Datenbank die Funktionen kennen (Migration
+`20261113180000` im Website-Repo).
+
+```bash
+bash ~/sales-claw/deploy/warteliste-bestaetigung.sh; echo "Exit $?"      # ohne wartende Adresse: keine Ausgabe, Exit 0
+sudo cp ~/sales-claw/deploy/systemd/sales-warteliste-bestaetigung.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sales-warteliste-bestaetigung.timer
+systemctl list-timers sales-warteliste-bestaetigung.timer
+```
+
+Soll der Link auf eine andere Seite zeigen (Probe gegen eine Vorschau), steht sie als
+`WARTELISTE_BESTAETIGUNG_SEITE=https://…` in der `.env`; ohne die Zeile gilt vibemind.space.
+
+**Ausgabe.** Wartet niemand, gibt der Lauf nichts aus. Sonst steht im Journal eine Zeile JSON mit `gesendet`,
+`gesperrt`, `fehler`, `unbrauchbar`, bei Fehlern dazu je eine Warnung mit verdeckter Adresse und die
+Zeile „zurueck in die Warteschlange: n“. Vollständige Adressen und Token stehen nie im Journal.
+
+**Wenn etwas nicht stimmt.**
+
+| Zeichen | Bedeutung | Was tun |
+|---|---|---|
+| Exit 1, „sales-mail laeuft nicht“ | der Versender ist aus; es wurde nichts abgeholt, die Adressen warten bei der Website weiter | `sales-mail` starten; nach 24 Stunden Warten verfällt eine Anmeldung |
+| Exit 22 (curl) | Abholen gescheitert (Netz, Schlüssel entzogen, Funktionen fehlen in der Website-Datenbank) | Zugang prüfen; nichts wurde verbraucht |
+| Exit 3 | mindestens eine Mail ging nicht raus; die Adressen sind zurückgemeldet | Warnung im Journal lesen (`journalctl -u sales-warteliste-bestaetigung`), `SMTP_*` prüfen |
+| Exit 2 | das Dokument der Website war unbrauchbar; nichts versendet | bei der Website nachsehen; die abgeholten Adressen können sich nach einer Stunde neu eintragen |
+| `gesperrt` > 0 | Adresse steht auf der Verbotsliste | nichts; die Anmeldung verfällt bei der Website nach sieben Tagen |
+
+**Not-Aus.** `sudo systemctl disable --now sales-warteliste-bestaetigung.timer`. Danach geht keine
+Bestätigungsmail mehr raus; das Formular der Website nimmt weiter Anmeldungen an, bis 20 warten, und meldet
+dann „später noch einmal versuchen“. Der Abgleich oben läuft unabhängig davon weiter.
+
+**Prüfung der Dateien** (ohne Docker, ohne Netz): `bash deploy/tests/test_warteliste_bestaetigung.sh`.
+Verträge der Logik: `sales-mcp/tests/test_warteliste_bestaetigung.py` (ohne Datenbank und Mailserver) und
+`test_warteliste_bestaetigung_mail.py` (fertige Mail, Verbotsliste).
+
+**Datenschutz.** Siehe `docs/06_DSGVO.md`, Abschnitt „Bestätigungsmails der Warteliste“.

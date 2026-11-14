@@ -316,8 +316,32 @@ die sich auf der Website auf die Warteliste gesetzt haben.
   (`enrichment.waitinglist.auf_liste = false`). Eine Löschfrist für
   Wartelisten-Kontakte, die nie Kunde wurden, ist noch nicht festgelegt —
   Entscheidung des Betreibers.
-- **Zugang:** der Abholschlüssel darf bei der Website nur die Warteliste
-  lesen. Er liegt in der `.env` des Wirts, nicht im Container.
+- **Zugang:** der Abholschlüssel darf bei der Website die Warteliste lesen
+  und die Adressen abholen, die auf ihre Bestätigungsmail warten (nächster
+  Abschnitt). Er liegt in der `.env` des Wirts, nicht im Container.
+
+## Bestätigungsmails der Warteliste (vibemind.space, seit 13.11.2026)
+
+Der Laden verschickt für die Website die Bestätigungsmail des Double-Opt-in
+(`docs/03_RUNBOOK.md`).
+
+- **Was verarbeitet wird:** die E-Mail-Adresse, die jemand ins Formular der
+  Website eingetragen hat, und ein Einmal-Token. Beides nur für den Versand
+  dieser einen Mail, im Arbeitsspeicher; gespeichert wird hier nichts, weder
+  als Kontakt noch als Aktivität noch als Kopie im Gesendet-Ordner.
+- **Zweck und Grundlage:** die Mail prüft, ob die Adresse dem gehört, der sie
+  eingetragen hat. Sie enthält keinen Werbetext; eine Bestätigungsmail darf
+  keinen enthalten.
+- **Fremde Adressen:** das Formular ist offen, jemand kann eine Adresse
+  eintragen, die ihm nicht gehört. Deren Inhaber bekommt dann höchstens eine
+  Mail pro Stunde und drei in 24 Stunden; ohne Klick verfällt die Anmeldung
+  bei der Website nach sieben Tagen und kommt nie als Kontakt hier an.
+- **Verbotsliste:** wer sich abgemeldet, widerrufen oder Löschung verlangt
+  hat, bekommt auch die Bestätigungsmail nicht.
+- **Protokoll:** im Journal stehen Zahlen und verdeckte Adressen, nie eine
+  vollständige Adresse und nie ein Token.
+- **Empfänger der Daten:** der Mailanbieter des Ladens (`SMTP_HOST`), wie bei
+  jeder anderen ausgehenden Mail.
 
 ## Grenze
 
