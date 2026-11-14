@@ -224,6 +224,7 @@ import ui_empfehlungen
 import ui_newsletter_einwilligung
 import ui_kalender
 import ui_termin
+import ui_mitschriften
 import ui_marketing
 import ui_muster
 import ui_plan
@@ -2135,6 +2136,8 @@ _GRUPPEN = (
                  # Admin). Sichtbar bleibt er nur fuer freigeben im
                  # Basis-Laden - _pfad_erlaubt filtert (_ADMIN_BASIS_PFADE).
                  ("/team/struktur", "Struktur"))),
+    # Mitschriften-Ablage (14.11.2026): Berichte der Kundentermine nach Rubrik.
+    ("Mitschriften", (("/mitschriften", "Mitschriften"),)),
     ("Daten", (("/medien", "Medien"),)),
     # Rundgang 27.10.2026: Verlauf (aus Freigaben) und Kanaele (aus Admin).
     ("Monitoring", (("/whatsapp", "WhatsApp"), ("/monitoring/verlauf", "Verlauf"),
@@ -10329,6 +10332,8 @@ app = Starlette(routes=[
     *ui_kalender.routen(sys.modules[__name__]),
     # Termin-Seite /termine/{uid} und /termine/{uid}.json (Meeting-Mittelpunkt).
     *ui_termin.routen(sys.modules[__name__]),
+    # Hauptpunkt Mitschriften (Berichte nach Rubrik, Mitschriften-Ablage).
+    *ui_mitschriften.routen(sys.modules[__name__]),
     # Empfehlungslisten (C4, 17.10.2026).
     *ui_empfehlungen.routen(sys.modules[__name__]),
     *ui_newsletter_einwilligung.routen(sys.modules[__name__]),

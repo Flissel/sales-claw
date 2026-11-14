@@ -263,6 +263,26 @@ def ablegen(uid: str) -> str | None:
     return rel
 
 
+def verschieben(uid: str, rubrik: str) -> str | None:
+    """Von Hand in eine Rubrik legen (auch eine neue). Speichert den normalisierten,
+    an vorhandene angeglichenen Namen (der Taktgeber vergleicht den Ordnernamen mit
+    der gespeicherten Rubrik), setzt rubrik_manuell und legt die Datei neu ab.
+    None bei ungueltigem Namen oder fehlender Mitschrift. Ein Fehler beim Ablegen
+    wird weitergereicht; die Rubrik bleibt dann gespeichert (der Takt baut neu)."""
+    name = rubrik_normalisieren(rubrik)
+    if name is None:
+        return None
+    vorhandene = [z["rubrik"] for z in server._q(
+        "select distinct rubrik from termin_mitschriften where rubrik is not null "
+        "order by rubrik")]
+    name = rubrik_angleichen(name, [UNSORTIERT] + vorhandene)
+    if not server._q("update termin_mitschriften set rubrik = %s, rubrik_manuell = true "
+                     "where uid = %s returning id", (name, uid)):
+        return None
+    ablegen(uid)
+    return name
+
+
 # ---------- Abgleich Datei <-> Buchung (Taktgeber, hoechstens stuendlich) ----------
 
 BERICHT_MUSTER = re.compile(r"^.+_[0-9a-f]{8}\.html$")
