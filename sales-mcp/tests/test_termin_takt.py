@@ -1299,3 +1299,36 @@ def test_auswerten_eine_reicht_bilder_durch(fake, monkeypatch):
     termin_takt.runde(JETZT)
     assert erhalten == [[(JETZT, "Folie fuer u1")]]
     assert _mit("u1")["auswertung_status"] == "fertig"
+
+
+def test_auswertung_verworfen_wenn_segmente_geaendert(fake, monkeypatch, caplog):
+    """F5: aendert die Neu-Auswertung die Segmente, waehrend der Taktgeber rechnet,
+    wird das Ergebnis verworfen: nichts geschrieben, keine Vorschlaege, kein Entwurf."""
+    caplog.set_level(logging.INFO)
+    lead = _lead()
+    _akte("u1", status="fertig", will_zusammenfassung=True)
+    _teilnehmer("u1", lead)
+    _mitschrift("u1")
+    neu = [{**SEGMENTE[0], "text": "bereinigt"}]
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+
+    def auswerten(segmente, bilder=None):
+        server._q("update termin_mitschriften set segmente = %s::jsonb, "
+                  "auswertung_status = 'offen' where uid = 'u1' returning id",
+                  (json.dumps(neu),))
+        return _ergebnis(zusagen_felix=[{"text": "Angebot schicken", "datum": None}])
+
+    monkeypatch.setattr(auswertung, "auswerten", auswerten)
+    termin_takt.runde(JETZT)
+    m = _mit()
+    assert m["auswertung_status"] == "offen" and m["auswertung_json"] is None
+    assert m["segmente"] == neu
+    assert server._q("select count(*) as n from termin_vorschlaege")[0]["n"] == 0
+    assert server._q("select count(*) as n from drafts")[0]["n"] == 0
+    eigene = [r.getMessage() for r in caplog.records if r.name == "sales-termine"]
+    assert any("Segmente geaendert" in x for x in eigene)
+    assert "u1" not in "\n".join(x.replace(termin_takt._h("u1"), "") for x in eigene)
+    # naechste Runde wertet die neue Fassung aus
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis())
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert _mit()["auswertung_status"] == "fertig"

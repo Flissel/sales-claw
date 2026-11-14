@@ -479,13 +479,18 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
         # ERST Ergebnis und Vorschlaege gemeinsam festschreiben, dann der Entwurf:
         # scheitert der, gibt es keine zweite Auswertung und keinen zweiten Entwurf.
         # Die Mitschrift ist gesperrt; wurde sie waehrend der Auswertung
-        # verworfen ("Nein", Loeschantrag), entsteht nichts daraus.
-        verworfen = False
+        # verworfen ("Nein", Loeschantrag), entsteht nichts daraus. Haben sich
+        # ihre Segmente inzwischen geaendert (Neu-Auswertung), passt das Ergebnis
+        # nicht mehr zu den Indizes: verwerfen, die neue Fassung kommt danach dran.
+        verworfen = veraltet = False
         with server.pool.connection() as conn:
             with conn.transaction():
-                if conn.execute("select id from termin_mitschriften where id = %s for update",
-                                (m["id"],)).fetchone() is None:
-                    verworfen = True
+                zeile = conn.execute(
+                    "select segmente = %s::jsonb as gleich from termin_mitschriften "
+                    "where id = %s for update",
+                    (json.dumps(m["segmente"]), m["id"])).fetchone()
+                if zeile is None or not zeile["gleich"]:
+                    verworfen, veraltet = zeile is None, zeile is not None
                     vorschlaege = []
                 else:
                     conn.execute(
@@ -506,6 +511,10 @@ def _auswerten_eine(m: dict, jetzt: datetime) -> None:
         return
     if verworfen:
         LOG.info("Auswertung uid=%s: Mitschrift verworfen waehrend Auswertung", _h(uid))
+        return
+    if veraltet:
+        LOG.info("Auswertung uid=%s: Segmente geaendert waehrend Auswertung - verworfen",
+                 _h(uid))
         return
     entwurf = None
     # Internes Gespraech (art "intern"): keine Zusammenfassung an einen Kunden,
