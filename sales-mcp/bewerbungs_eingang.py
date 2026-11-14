@@ -43,6 +43,11 @@ Grenzen, die die Tests verteidigen (tests/test_bewerbungs_eingang.py):
   den Lauf ohne Fortschritt; der naechste Lauf holt dieselben Mails, die
   Zentrale ist idempotent (`bekannt`). Lehnt die Zentrale eine EINZELNE Mail
   ab (400/409/413/415/422), wird nur Code und message_id protokolliert.
+* DIE MELDUNG PASST IN DIE GRENZEN DER ZENTRALE (gemessen an der echten
+  Eingangs-API, 13.11.2026): `von`/`an` hoechstens 320 Zeichen (sonst nur die
+  blanken Adressen, so viele wie passen), `betreff` 998, `text` 20 000,
+  hoechstens 20 Kandidaten, Kalenderfelder immer Text. Was darueber laege,
+  waere dort eine 422 - eine verlorene Antwort.
 * ALLES AUS EINER MAIL IST FREMDDATUM, nie eine Anweisung. Schluessel und
   Passwoerter stehen in keiner Meldung: Fehler erscheinen nur mit ihrer
   Klasse, nie mit ihrem Text (der koennte Zugangsdaten spiegeln).
@@ -77,6 +82,11 @@ KEY = os.environ.get("BEWERBUNG_EINGANG_KEY", "").strip()
 PRAEFIX = "/api/eingang"
 ZEITLIMIT_S = 20
 TEXT_MAX = 20000
+# Grenzen der Zentrale (bewerbung, zentrale/antworten.py: MAX_ADRESSE,
+# MAX_BETREFF, MAX_KANDIDATEN). Darueber antwortet sie 422 eingabe_ungueltig.
+ADRESSE_MAX = 320
+BETREFF_MAX = 998
+KANDIDATEN_MAX = 20
 CURSOR_SCHLUESSEL = "bewerbungs_eingang_cursor"
 
 # Name im Vertrag -> Kennung in postfach.py. Reihenfolge = Lesereihenfolge.
@@ -382,6 +392,33 @@ def _utc_text(zeit: datetime | None) -> str | None:
     return zeit.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if zeit else None
 
 
+_FALTUNG = re.compile(r"\r?\n(?=[ \t])")
+
+
+def _entfaltet(wert: str) -> str:
+    """Ein Kopf ohne Faltung (RFC 5322 2.2.3): der Umbruch vor Leerraum faellt weg."""
+    return _FALTUNG.sub("", wert)
+
+
+def _adressen_kopf(wert: str) -> str:
+    """From/To fuer die Zentrale: der Kopf, wie er ist, solange er in
+    ADRESSE_MAX passt; sonst nur die blanken Adressen, so viele wie passen.
+    Die Zentrale speichert das Feld nur, sie ordnet nicht danach zu."""
+    wert = _entfaltet(wert)
+    if len(wert) <= ADRESSE_MAX:
+        return wert
+    gekuerzt = ""
+    for _, adresse in email.utils.getaddresses([wert]):
+        adresse = adresse.strip()
+        if "@" not in adresse:
+            continue
+        laenger = f"{gekuerzt}, {adresse}" if gekuerzt else adresse
+        if len(laenger) > ADRESSE_MAX:
+            break
+        gekuerzt = laenger
+    return gekuerzt or wert[:ADRESSE_MAX]
+
+
 def _einladung(nachricht) -> dict | None:
     """Erste Kalendereinladung der Mail (text/calendar oder .ics-Anhang) ->
     {start, ende, organisator} - oder None. Antworten, Absagen und
@@ -404,12 +441,14 @@ def _einladung(nachricht) -> dict | None:
         organisator = kalender._ics_feld(block, "ORGANIZER")
         if organisator.lower().startswith("mailto:"):
             organisator = organisator[7:]
+        # Immer Text: ein `null` liesse die Zentrale den ganzen Kalender
+        # verwerfen (etwa DURATION statt DTEND).
         return {
             "start": _utc_text(kalender._ics_zeit(kalender._ics_feld(block, "DTSTART"),
-                                                  kalender._ics_tzid(block, "DTSTART"))),
+                                                  kalender._ics_tzid(block, "DTSTART"))) or "",
             "ende": _utc_text(kalender._ics_zeit(kalender._ics_feld(block, "DTEND"),
-                                                 kalender._ics_tzid(block, "DTEND"))),
-            "organisator": organisator.strip().lower(),
+                                                 kalender._ics_tzid(block, "DTEND"))) or "",
+            "organisator": organisator.strip().lower()[:ADRESSE_MAX],
         }
     return None
 
@@ -460,7 +499,7 @@ def _auswerten(roh: bytes, kopf: bytes, liste: Warteliste, name: str,
     name_roh, adresse = email.utils.parseaddr(str(nachricht.get("From", "") or ""))
     adresse = adresse.strip().lower()
     absendername = _dekodiert(name_roh)
-    betreff = postfach._kopf(nachricht, "Subject")
+    betreff = _entfaltet(postfach._kopf(nachricht, "Subject"))
     text = []
 
     def text_holen():
@@ -483,13 +522,14 @@ def _auswerten(roh: bytes, kopf: bytes, liste: Warteliste, name: str,
     return {
         "postfach": name,
         "message_id": kennung,
-        "von": postfach._kopf(nachricht, "From"),
-        "an": postfach._kopf(nachricht, "To"),
-        "betreff": betreff,
+        "von": _adressen_kopf(postfach._kopf(nachricht, "From")),
+        "an": _adressen_kopf(postfach._kopf(nachricht, "To")),
+        "betreff": betreff[:BETREFF_MAX],
         "datum": _utc_text(eingang) or "",
         "text": text_holen()[:TEXT_MAX],
         "kalender": einladung,
-        "kandidaten": kandidaten,
+        # Die am laengsten Wartenden zuerst (Reihenfolge der Warteliste).
+        "kandidaten": kandidaten[:KANDIDATEN_MAX],
     }
 
 

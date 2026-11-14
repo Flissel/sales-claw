@@ -24,6 +24,7 @@ import json
 import logging
 import re
 import threading
+from datetime import datetime
 from email.message import EmailMessage
 
 import pytest
@@ -142,15 +143,71 @@ class AttrappeImap:
         raise AssertionError(f"verbotener IMAP-Befehl {name}")
 
 
+_FELDER = {"postfach", "message_id", "von", "an", "betreff", "datum", "text",
+           "kalender", "kandidaten"}
+
+
+def _text_ok(wert, hoechstens, mindestens=0):
+    if not isinstance(wert, str) or not mindestens <= len(wert) <= hoechstens:
+        return False
+    try:
+        wert.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _regeln_der_zentrale(daten) -> list:
+    """Was die echte Zentrale (bewerbung, zentrale/eingang_api.py und
+    antworten.mail_melden, Stand 13.11.2026) an einer Meldung prueft. Jeder
+    Verstoss dort ist eine 422 - die Mail waere verloren. Ein Kalender, der
+    nicht passt, lehnt die Mail nicht ab, wird aber verworfen: auch das zaehlt
+    hier als Verstoss."""
+    if not isinstance(daten, dict):
+        return ["kein Objekt"]
+    v = []
+    if set(daten) - _FELDER:
+        v.append(f"Zusatzfelder {sorted(set(daten) - _FELDER)}")
+    if _FELDER - {"kalender"} - set(daten):
+        v.append(f"fehlende Felder {sorted(_FELDER - {'kalender'} - set(daten))}")
+    if daten.get("postfach") not in ("gmail", "gmx", "vibemind"):
+        v.append("postfach")
+    for feld, hoechstens, mindestens in (("message_id", 998, 1), ("von", 320, 0),
+                                         ("an", 320, 0), ("betreff", 998, 0),
+                                         ("text", 20000, 0), ("datum", 64, 1)):
+        if not _text_ok(daten.get(feld), hoechstens, mindestens):
+            v.append(feld)
+    if "datum" not in v:
+        try:
+            zone = datetime.fromisoformat(daten["datum"]).utcoffset()
+        except ValueError:
+            zone = None
+        if zone is None:
+            v.append("datum ohne Zone")
+    kandidaten = daten.get("kandidaten")
+    if (not isinstance(kandidaten, list) or not 1 <= len(kandidaten) <= 20
+            or not all(isinstance(k, str) for k in kandidaten)):
+        v.append("kandidaten")
+    kal = daten.get("kalender")
+    if kal is not None and (
+            not isinstance(kal, dict) or set(kal) != {"start", "ende", "organisator"}
+            or not all(_text_ok(kal[f], 320) for f in kal)):
+        v.append("kalender verworfen")
+    return v
+
+
 class AttrappeZentrale:
-    """Vertrag v1. `reaktionen` (Liste) bestimmt die Antworten auf POST in
-    Reihenfolge: (status, koerper) oder eine Ausnahme zum Werfen."""
+    """Vertrag v1 mit den Pruefungen der echten Zentrale. `reaktionen` (Liste)
+    bestimmt die Antworten auf POST in Reihenfolge: (status, koerper) oder eine
+    Ausnahme zum Werfen. Ein Rumpf, den die echte Zentrale abwiese, landet in
+    `verstoesse`; das Fixture laesst den Test dann scheitern."""
 
     def __init__(self, warteliste=None):
         self.warteliste = json.loads(json.dumps(warteliste or WARTELISTE))
         self.reaktionen = []
         self.gemeldet = []
         self.anfragen = []
+        self.verstoesse = []
 
     def __call__(self, methode, url, kopf, koerper, zeitlimit):
         self.anfragen.append((methode, url, dict(kopf)))
@@ -160,6 +217,9 @@ class AttrappeZentrale:
         if methode == "POST" and url == BASIS + "/api/eingang/mails":
             daten = json.loads(koerper)
             self.gemeldet.append(daten)
+            verstoss = _regeln_der_zentrale(daten)
+            if verstoss:
+                self.verstoesse.append((daten.get("message_id"), verstoss))
             reaktion = (self.reaktionen.pop(0) if self.reaktionen
                         else (200, {"status": "angenommen"}))
             if isinstance(reaktion, BaseException):
@@ -199,7 +259,8 @@ def zentrale(monkeypatch):
     monkeypatch.setattr(be, "URL", BASIS)
     monkeypatch.setattr(be, "KEY", SCHLUESSEL)
     monkeypatch.setattr(be, "HTTP", z)
-    return z
+    yield z
+    assert z.verstoesse == [], "die echte Zentrale wiese diese Meldungen ab"
 
 
 @pytest.fixture
@@ -417,6 +478,91 @@ def test_antwort_auf_eine_einladung_ist_keine_einladung(zentrale, haupt, ablage)
     be.lauf()
     (rumpf,) = zentrale.gemeldet          # passt ueber die Firmen-Domain
     assert rumpf["kalender"] is None
+
+
+# ---------------------------------------------------------------------------
+# 2a. Grenzen der echten Zentrale (13.11.2026): was dort eine 422 waere, ist
+#     eine verlorene Antwort. Das Fixture `zentrale` prueft jede Meldung.
+# ---------------------------------------------------------------------------
+
+def test_lange_empfaengerliste_passt_in_die_grenze_der_zentrale(zentrale, haupt,
+                                                                 ablage):
+    """Eine Einladung an viele Teilnehmer: der ganze To-Kopf laege ueber 320
+    Zeichen. Gemeldet werden die blanken Adressen, so viele wie passen."""
+    teilnehmer = [f"Teilnehmerin Nummer {i} <teilnehmerin.{i}@beispiel.de>"
+                  for i in range(12)]
+    haupt.mails = {1: (EINGANG, _mail(
+        "HR <hr@beispiel.de>", an=", ".join(teilnehmer + ["felix@vibemind.space"]),
+        message_id="<viele@beispiel.de>"))}
+    be.lauf()
+    (rumpf,) = zentrale.gemeldet
+    adressen = rumpf["an"].split(", ")
+    assert adressen[0] == "teilnehmerin.0@beispiel.de"
+    assert all(re.fullmatch(r"teilnehmerin\.\d+@beispiel\.de", a) for a in adressen)
+    assert len(adressen) >= 5
+
+
+def test_kurze_empfaengerliste_bleibt_wie_sie_ist(zentrale, haupt, ablage):
+    haupt.mails = {1: (EINGANG, _mail(
+        "HR <hr@beispiel.de>", an="Felix Baumann <felix@vibemind.space>, "
+                                   "Team <team@beispiel.de>",
+        message_id="<zwei@beispiel.de>"))}
+    be.lauf()
+    (rumpf,) = zentrale.gemeldet
+    assert rumpf["an"] == "Felix Baumann <felix@vibemind.space>, Team <team@beispiel.de>"
+
+
+def test_ueberlanger_absendername_kostet_die_mail_nicht(zentrale, haupt, ablage):
+    von = "Personalabteilung " + "mit sehr langem Namen " * 20 + "<jobs@beispiel.de>"
+    haupt.mails = {1: (EINGANG, _mail(von, message_id="<lang@beispiel.de>"))}
+    be.lauf()
+    (rumpf,) = zentrale.gemeldet
+    assert rumpf["von"] == "jobs@beispiel.de"
+    assert rumpf["kandidaten"] == ["bw-1"]
+
+
+def test_ueberlanger_betreff_wird_gekuerzt(zentrale, haupt, ablage):
+    haupt.mails = {1: (EINGANG, _mail(
+        "HR <hr@beispiel.de>", betreff="Ihre Bewerbung " + "bei uns " * 200,
+        message_id="<betreff@beispiel.de>"))}
+    be.lauf()
+    (rumpf,) = zentrale.gemeldet
+    assert rumpf["betreff"].startswith("Ihre Bewerbung bei uns bei uns")
+    assert "\n" not in rumpf["betreff"]
+
+
+def test_einladung_ohne_ende_behaelt_ihren_kalender(zentrale, haupt, ablage):
+    """DURATION statt DTEND: ein Kalender mit `ende: null` wuerde in der
+    Zentrale verworfen. Leerer Text haelt Start und Organisator."""
+    ohne_ende = ICS.replace("DTEND;TZID=Europe/Berlin:20261105T110000\r\n",
+                            "DURATION:PT1H\r\n")
+    haupt.mails = {1: (EINGANG, _mail(
+        "Google Kalender <calendar-notification@google.com>",
+        betreff="Einladung: Kennenlernen", message_id="<dauer@google.com>",
+        ics=ohne_ende))}
+    be.lauf()
+    (rumpf,) = zentrale.gemeldet
+    assert rumpf["kalender"] == {"start": "2026-11-05T09:00:00Z", "ende": "",
+                                 "organisator": "hr@beispiel.de"}
+
+
+def test_hoechstens_zwanzig_kandidaten_je_meldung(zentrale, haupt, ablage):
+    """25 wartende Bewerbungen bei derselben Firma; gesendet_am so, wie die
+    Zentrale es speichert (+00:00 statt Z). Die am laengsten Wartenden zuerst."""
+    zentrale.warteliste = {
+        "stand": "2026-10-29T18:40:00+00:00",
+        "bewerbungen": [
+            {"application_id": f"bw-{i}", "firma": "Beispiel GmbH",
+             "domains": ["beispiel.de"], "gesendet_am": "2026-10-27T09:12:00+00:00",
+             "an": None}
+            for i in range(25)],
+        "portal_absender": ["personio.de"],
+    }
+    haupt.mails = {1: (EINGANG, _mail("HR <hr@beispiel.de>",
+                                      message_id="<zwanzig@beispiel.de>"))}
+    be.lauf()
+    (rumpf,) = zentrale.gemeldet
+    assert rumpf["kandidaten"] == [f"bw-{i}" for i in range(20)]
 
 
 # ---------------------------------------------------------------------------
