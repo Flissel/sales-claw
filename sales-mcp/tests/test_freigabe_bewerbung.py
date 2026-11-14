@@ -2834,8 +2834,9 @@ PORTAL = f"/freigaben/bewerbung/{BID}/portal"
 
 
 def portal(**kw):
-    """`k["portal"]` der Karte (Vertrag: pult_daten.portal_darstellung)."""
-    p = {"lauf_id": LAUF_P, "zustand": "bereit", "hindernis": None,
+    """`k["portal"]` der Karte (Vertrag: pult_daten.portal_darstellung). Ein normaler Lauf meldet
+    `hindernis: "keins"`, nicht None (bewerbung/portal/portale.py::hindernis)."""
+    p = {"lauf_id": LAUF_P, "zustand": "bereit", "hindernis": "keins",
          "feldtabelle": [{"feld": "Vorname", "wert": "Felix", "quelle": "profil", "hinweis": None},
                          {"feld": "Gehalt", "wert": "70000", "quelle": "antwort",
                           "hinweis": "aus deiner Antwort"}],
@@ -2874,12 +2875,33 @@ def test_portal_karte_bereit_zeigt_tabelle_bild_und_knoepfe(client, falsch):
     assert "@media (min-width: 900px) { .nur-handy { display: none } }" in s
 
 
-@pytest.mark.parametrize("hindernis,text", [(None, "kein Hindernis erkannt"), ("captcha", "CAPTCHA"),
+@pytest.mark.parametrize("hindernis,text", [("keins", "kein Hindernis erkannt"),
+                                            (None, "kein Hindernis erkannt"), ("captcha", "CAPTCHA"),
                                             ("anmeldung", "Anmeldung nötig"), ("bot_falle", "Bot-Falle"),
                                             ("unbekannt", "unklar"), ("irgendwas", "unklar")])
 def test_hindernis_in_worten(client, falsch, hindernis, text):
     k = _pkarte(client, falsch, hindernis=hindernis)
     assert f"Hindernis: {text}" in k and "irgendwas" not in k
+
+
+# Werte der Zentrale: bewerbung/src/bewerbung/portal/protokoll.py, `Hindernis = Literal[...]`.
+# Am 13.11.2026 zeigte ein Lauf mit `keins` in portal_laeufe "Hindernis: unklar" (Lauf XALT/arbeitnow).
+HINDERNISSE_DER_ZENTRALE = ("keins", "captcha", "anmeldung", "bot_falle", "unbekannt")
+
+
+@pytest.mark.parametrize("hindernis", HINDERNISSE_DER_ZENTRALE)
+def test_jeder_hindernis_wert_der_zentrale_hat_eigene_worte(hindernis):
+    """Nur `unbekannt` darf "unklar" heissen; jeder andere Wert der Zentrale braucht eigene Worte."""
+    worte = ui_freigabe_bewerbung.HINDERNISSE
+    assert hindernis in worte
+    assert (worte[hindernis] == "unklar") == (hindernis == "unbekannt")
+
+
+@pytest.mark.parametrize("hindernis,klasse", [("keins", "hinweis"), (None, "hinweis"), ("captcha", "warnung"),
+                                              ("unbekannt", "warnung"), ("irgendwas", "warnung")])
+def test_kein_hindernis_ist_hinweis_jedes_andere_warnung(client, falsch, hindernis, klasse):
+    k = _pkarte(client, falsch, hindernis=hindernis)
+    assert re.search(rf'<div class="{klasse}">Hindernis: ', k)
 
 
 def test_bereit_zusaetze_rest_fehler_und_keine_bild_version(client, falsch):

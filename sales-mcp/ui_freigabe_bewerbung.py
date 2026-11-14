@@ -222,8 +222,10 @@ _PORTAL_STATUS = {"fenster": "angefragt", "beenden": "beendet", "antworten": "er
 PORTAL_MAX_ANTWORTEN = 20
 PORTAL_DATEI_ZEITLIMIT_S = 8
 BRIEFDATUM_HINWEIS_AB_TAGE = 8
-HINDERNISSE = {None: "kein Hindernis erkannt", "captcha": "CAPTCHA", "anmeldung": "Anmeldung nötig",
-               "bot_falle": "Bot-Falle", "unbekannt": "unklar"}
+# Werte wie bewerbung/portal/protokoll.py `Hindernis`; ein normaler Lauf meldet "keins", None = nichts gemeldet.
+HINDERNISSE = {"keins": "kein Hindernis erkannt", None: "kein Hindernis erkannt", "captcha": "CAPTCHA",
+               "anmeldung": "Anmeldung nötig", "bot_falle": "Bot-Falle", "unbekannt": "unklar"}
+_KEIN_HINDERNIS = ("keins", None)
 PORTAL_QUELLEN = {"profil": "Profil", "standardwert": "Standardwert", "keine_angabe": "keine Angabe",
                   "antwort": "deine Antwort", "datei": "Datei", "leer": "leer"}
 PORTAL_ZUSTAENDE = {"wartet_auf_worker": "Bot bereitet vor", "frage_offen": "Fragen offen", "bereit": "bereit",
@@ -666,7 +668,7 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
             teile.append(f'<div class="warnung">{_HINWEISE["not_aus"][1]}</div>')
         hindernis = p.get("hindernis") if isinstance(p.get("hindernis"), str) else None
         text = HINDERNISSE.get(hindernis, HINDERNISSE["unbekannt"])
-        teile.append(f'<div class="{"hinweis" if hindernis is None else "warnung"}">Hindernis: {text}</div>')
+        teile.append(f'<div class="{"hinweis" if hindernis in _KEIN_HINDERNIS else "warnung"}">Hindernis: {text}</div>')
         bild = _nr(p.get("bild_version"))
         if bild:
             teile.append(f'<p><img src="{basis}/portal/bild.png?lauf={sicher}&v={bild}" class="portal-bild" '
