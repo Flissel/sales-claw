@@ -5,8 +5,8 @@ Ein headless Chromium tritt internen Jitsi-Terminen als sichtbarer Teilnehmer
 Seiten-Skript `auge_jitsi.js` liest ausschliesslich entfernte Tracks mit
 videoType 'desktop', nie Kameras) und legt sie bei spuerbarer Aenderung in
 `termin_bilder` ab. Ein eigener Thread beschreibt und bettet die Bilder ein,
-eines nach dem anderen, und loescht ungepruefte nach 24 h (R11). Ein kleiner HTTP-Dienst (nur im Compose-Netz) bietet
-`GET /gesund` und `POST /suche`.
+eines nach dem anderen, und loescht ungepruefte nach 24 h (R11). Ein kleiner
+HTTP-Dienst (nur im Compose-Netz) bietet `GET /gesund` und `POST /suche`.
 
 Jede Runde (`AUGE_RUNDE_S`, Vorgabe 2 s):
   1. Soll-Abgleich aus der DB (`bildschirm.beobachtung_soll`): neue Termine
