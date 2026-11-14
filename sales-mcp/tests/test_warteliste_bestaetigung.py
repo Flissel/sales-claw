@@ -58,15 +58,25 @@ def test_lesen_leere_warteschlange():
 
 # --- Wortlaut ------------------------------------------------------------------
 
-def test_rumpf_traegt_den_link_mit_token_hinter_der_raute():
+def test_rumpf_traegt_den_link_mit_token_als_pfadstueck():
     text = wb.rumpf(TOKEN)
-    assert f"https://vibemind.space/waitlist/confirm#{TOKEN}\n" in text
-    assert "?" not in text.split("confirm", 1)[1].split("\n", 1)[0]   # nicht als Abfrage-Parameter
+    assert f"https://vibemind.space/waitlist/confirm/{TOKEN}\n" in text
     assert "seven days" in text and "ignore this mail" in text
 
 
+def test_link_enthaelt_kein_zeichen_das_ein_mailprogramm_umkodiert():
+    """14.11.2026: GMX machte aus dem `#` vor dem Token ein `%23`, der
+    Empfaenger sah eine 404-Seite. Im Link stehen nur Zeichen, an denen eine
+    Link-Weiterleitung nichts zu aendern hat."""
+    import re
+    for seite in (wb.SEITE, "https://staging.example/w/confirm", "https://staging.example/w/confirm/"):
+        zeile = next(z for z in wb.rumpf(TOKEN, seite).splitlines() if TOKEN in z)
+        assert re.fullmatch(r"https://[a-z0-9.-]+(/[A-Za-z0-9_-]+)+", zeile), zeile
+        assert zeile.endswith(f"/confirm/{TOKEN}")
+
+
 def test_rumpf_eigene_seite_und_unbrauchbare_eingaben():
-    assert f"https://staging.example/w/confirm#{TOKEN}" in wb.rumpf(TOKEN, "https://staging.example/w/confirm")
+    assert f"https://staging.example/w/confirm/{TOKEN}" in wb.rumpf(TOKEN, "https://staging.example/w/confirm")
     for seite in ("http://vibemind.space/waitlist/confirm", "https://vibemind.space/x?y=1",
                   "https://vibemind.space/x#y", "javascript:alert(1)", ""):
         with pytest.raises(ValueError):
@@ -78,9 +88,9 @@ def test_rumpf_eigene_seite_und_unbrauchbare_eingaben():
 
 def test_link_bleibt_in_der_html_fassung_ganz():
     """Die HTML-Fassung baut mail_dispatch mit verlinken.text_html - der Token
-    hinter der Raute muss Teil des Links bleiben."""
+    muss Teil des Links bleiben."""
     html = verlinken.text_html(wb.rumpf(TOKEN))
-    assert f'<a href="https://vibemind.space/waitlist/confirm#{TOKEN}">' in html
+    assert f'<a href="https://vibemind.space/waitlist/confirm/{TOKEN}">' in html
 
 
 def test_betreff_und_rumpf_ohne_platzhalter_reste():
@@ -108,8 +118,8 @@ def test_verschicken_eine_mail_je_adresse():
     assert ergebnis == {"gesendet": 2, "gesperrt": 0, "fehler": 0, "erneut": []}
     assert [a for a, _, _ in post.gesendet] == ["a@example.org", "b@example.org"]
     assert post.gesendet[0][1] == wb.BETREFF
-    assert f"#{TOKEN}" in post.gesendet[0][2] and TOKEN2 not in post.gesendet[0][2]
-    assert f"#{TOKEN2}" in post.gesendet[1][2]
+    assert f"/{TOKEN}" in post.gesendet[0][2] and TOKEN2 not in post.gesendet[0][2]
+    assert f"/{TOKEN2}" in post.gesendet[1][2]
 
 
 def test_verschicken_gesperrte_bekommen_nichts_und_werden_nicht_wiederholt():
@@ -187,7 +197,7 @@ def test_cli_versendet_und_meldet_nur_zahlen():
                            lambda: (lambda a: False, post, 0.0))
     assert code == 0 and aus == "[]\n"
     assert json.loads(err) == {"gesendet": 1, "gesperrt": 0, "fehler": 0, "unbrauchbar": 1}
-    assert f"https://staging.example/confirm#{TOKEN}" in post.gesendet[0][2]
+    assert f"https://staging.example/confirm/{TOKEN}" in post.gesendet[0][2]
     assert "a@example.org" not in err and TOKEN not in err and TOKEN not in aus
 
 
