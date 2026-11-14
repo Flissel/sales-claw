@@ -25,6 +25,7 @@ import ui_freigabe_api
 import ui_werkbank
 import video_konzept
 import video_uebergabe
+from konzept_lesen import js_trim
 
 PFAD = "/api/auftraege/video"
 HERKUNFT = "rowboat"
@@ -59,8 +60,10 @@ async def _rumpf(request: Request):
         return None, _fehler(400, "Der Rumpf muss ein JSON-Objekt sein.")
     try:
         json.dumps(daten, ensure_ascii=False).encode("utf-8")      # einzelne Surrogate lassen sich nicht kodieren
-    except (UnicodeEncodeError, RecursionError):
+    except UnicodeEncodeError:
         return None, _fehler(400, "Der Rumpf enthält ungültige Zeichen.")
+    except RecursionError:                                         # zu tief verschachtelt, keine Zeichenfrage
+        return None, _fehler(400, "Der Rumpf ist zu tief verschachtelt.")
     return daten, None
 
 
@@ -80,13 +83,16 @@ def routen(ui) -> list[Route]:
         if (not isinstance(thema, str) or not all(w is None or isinstance(w, str)
                                                   for w in (beschreibung, zielgruppe))):
             return _fehler(400, "Thema, Beschreibung und Zielgruppe müssen Text sein.")
-        satz = server.video_auftrag_pruefen(thema, daten.get("minuten"), zielgruppe, beschreibung) \
-            or video_konzept.pruefen(konzept)
+        satz = video_konzept.pruefen(konzept)                 # alle Regeln des Konzepts: der gemeinsame Pruefer
         if satz:
             return _fehler(400, satz)
-        # Die Angaben oben muessen genau die des Konzepts sein, das der Betreiber gleich sieht.
-        if (thema.strip() != konzept["thema"].strip() or daten["minuten"] != konzept["minuten"]
-                or (zielgruppe or "").strip() != konzept["zielgruppe"].strip()
+        # Die Angaben oben muessen genau die des Konzepts sein, das der Betreiber gleich sieht (JS-Trimmung wie
+        # im gemeinsamen Pruefer; 4.0 ist dieselbe Zahl wie 4).
+        minuten = daten.get("minuten")
+        if (js_trim(thema) != js_trim(konzept["thema"])
+                or isinstance(minuten, bool) or not isinstance(minuten, (int, float))
+                or minuten != konzept["minuten"]
+                or js_trim(zielgruppe or "") != js_trim(konzept["zielgruppe"])
                 or (beschreibung or "") != video_konzept.beschreibung_aus(konzept)):
             return _fehler(400, "Die Angaben passen nicht zum Konzept.")
         mandant = os.environ.get("MARKETING_MANDANT", "").strip()

@@ -68,3 +68,20 @@ def test_vektor_pruefer(fall):
         assert daten is None and satz is None
     if "video" in fall and not fall["gueltig"]:
         assert daten is not None and streng_gleich(daten["video"], fall["video"])
+
+
+@pytest.mark.parametrize("fall", FAELLE, ids=[f["name"] for f in FAELLE])
+def test_vektor_sales_einstieg_pruefen(fall):
+    """Sales bekommt das schon gelesene Konzept als JSON (`konzept` im Rumpf): `video_konzept.pruefen` urteilt
+    ueber jedes geparste `video` wie der gemeinsame Pruefer und wie `gueltig` im Vektor."""
+    import video_konzept
+    daten, _ = kl.lesen(fall["html"])
+    if daten is None or "video" not in daten:
+        pytest.skip("kein geparstes video in diesem Fall")
+    satz = video_konzept.pruefen(daten["video"])
+    assert satz == kl.video_pruefen(daten) or (satz is not None and kl.video_pruefen(daten) is None), satz
+    if "video" in fall:
+        assert (satz is None) is fall["gueltig"], satz
+        if satz is None:
+            assert video_konzept.pruefen(video_konzept.bereinigen(daten["video"])) is None   # Neuaufbau bleibt gueltig
+            video_konzept.block_hash(video_konzept.bereinigen(daten["video"]))               # und ist hashbar

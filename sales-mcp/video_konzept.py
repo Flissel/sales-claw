@@ -1,33 +1,37 @@
 """Pruefung des Videokonzept-Blocks, den Rowboat an die Auftragsannahme schickt (reine Funktionen).
 
-Nachbau der Grenzen von `checkVideoKonzept` im Rowboat-Fork (packages/shared/src/konzept.ts): Thema
-3 bis 300 Zeichen, 3 bis 5 Minuten, hoechstens 8 Stufen, 8 bis 15 Szenen, `kurz` hoechstens 300,
-`bildart` aus vier Werten, Block hoechstens 20 000 Zeichen. Sales sieht nur den Block, nicht die
-Datei; die Pruefung hier ist die zweite Schranke hinter der des Dienstes.
+Die Regeln fuer das Konzept selbst stehen NICHT hier, sondern im gemeinsamen Pruefer `konzept_lesen.py`
+(byte-gleich aus vibemind-os vendort, per Hash gepinnt): dieselbe Datei prueft in Sales, im MCP-Dienst
+und fuer die Seite in Rowboat, damit sie nie auseinanderlaufen. Laengen zaehlen dort in UTF-16-Einheiten,
+getrimmt wird wie in JavaScript (`js_trim`). Hier bleiben nur die Regeln fuer Sales' eigene Felder
+(`firma`, `pfad`, `name`), die Groesse des gespeicherten Blocks, der Neuaufbau und der Hash.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 
-BLOCK_MAX = 20_000                     # Zeichen des kompakten JSON ohne auftrag/pfad/name
-BILDARTEN = ("slide", "avatar_slide", "avatar_gross", "clip")
-STUFEN_MAX = 8
-SZENEN_MIN, SZENEN_MAX = 8, 15
-KURZ_MAX = 300
+from konzept_lesen import BILDARTEN, js_trim, utf16_laenge, video_pruefen_objekt  # noqa: F401 (BILDARTEN: Wiederausfuhr)
+
+BLOCK_MAX = 20_000                     # UTF-16-Einheiten des kompakten JSON ohne auftrag/pfad/name
+FELD_MAX = 500                         # firma, pfad, name
 # Felder, die nicht zum Inhalt des Konzepts gehoeren: der Hash bleibt gleich, wenn sich nur sie aendern
 # (die Auftragsnummer wird nach der Uebergabe in die Datei geschrieben).
 _OHNE_HASH = ("auftrag", "pfad", "name")
-_HEX8 = re.compile("[0-9a-f]{8}")
 
 
-def _text(wert, kleinst: int, groesst: float) -> bool:
-    return isinstance(wert, str) and len(wert.strip()) >= kleinst and len(wert) <= groesst
+def _minuten(wert):
+    """4.0 ist dieselbe Zahl wie 4 (JSON kennt keinen Unterschied): ganze Zahlen werden int."""
+    if isinstance(wert, float) and wert.is_integer():
+        return int(wert)
+    return wert
 
 
 def _inhalt(konzept: dict) -> dict:
-    return {k: v for k, v in konzept.items() if k not in _OHNE_HASH}
+    inhalt = {k: v for k, v in konzept.items() if k not in _OHNE_HASH}
+    if "minuten" in inhalt:
+        inhalt["minuten"] = _minuten(inhalt["minuten"])
+    return inhalt
 
 
 def _kanonisch(konzept: dict) -> str:
@@ -35,14 +39,15 @@ def _kanonisch(konzept: dict) -> str:
 
 
 def block_hash(konzept: dict) -> str:
-    """sha256 (hex) ueber das kanonische JSON ohne `auftrag`, `pfad`, `name`."""
+    """sha256 (hex) ueber das kanonische JSON ohne `auftrag`, `pfad`, `name` (`4` und `4.0` hashen gleich)."""
     return hashlib.sha256(_kanonisch(konzept).encode("utf-8")).hexdigest()
 
 
 def bereinigen(konzept: dict) -> dict:
     """Das Konzept NUR aus den bekannten Feldern neu aufgebaut (unbekannte Felder fallen still weg; die
-    Rowboat-Seite toleriert sie, gespeichert werden sie nie). Nur fuer ein Konzept, das `pruefen` bestanden hat."""
-    sauber = {"thema": konzept["thema"], "zielgruppe": konzept["zielgruppe"], "minuten": konzept["minuten"],
+    Rowboat-Seite toleriert sie, gespeichert werden sie nie); `minuten` als ganze Zahl. Nur fuer ein Konzept,
+    das `pruefen` bestanden hat."""
+    sauber = {"thema": konzept["thema"], "zielgruppe": konzept["zielgruppe"], "minuten": _minuten(konzept["minuten"]),
               "hook": konzept["hook"], "kernaussage": konzept["kernaussage"], "stufen": [],
               "abschluss": konzept["abschluss"], "auftrag": konzept.get("auftrag")}
     for s in konzept["stufen"]:
@@ -60,56 +65,19 @@ def bereinigen(konzept: dict) -> dict:
 
 
 def beschreibung_aus(konzept: dict) -> str:
-    """Die Beschreibung des Auftrags: Kernaussage, Leerzeile, Abschluss (je getrimmt)."""
-    return konzept["kernaussage"].strip() + "\n\n" + konzept["abschluss"].strip()
+    """Die Beschreibung des Auftrags: Kernaussage, Leerzeile, Abschluss (je mit JS-Trimmung getrimmt)."""
+    return js_trim(konzept["kernaussage"]) + "\n\n" + js_trim(konzept["abschluss"])
 
 
 def pruefen(konzept) -> str | None:
     """Der erste Fehlersatz, oder None, wenn das Konzept gueltig ist."""
-    if not isinstance(konzept, dict):
-        return "Das Videokonzept fehlt oder ist kein Objekt."
-    if not _text(konzept.get("thema"), 3, 300):
-        return "Das Thema des Konzepts muss 3 bis 300 Zeichen lang sein."
-    if not _text(konzept.get("zielgruppe"), 1, float("inf")):
-        return "Die Zielgruppe des Konzepts fehlt."
-    minuten = konzept.get("minuten")
-    if isinstance(minuten, bool) or not isinstance(minuten, int) or not 3 <= minuten <= 5:
-        # Sales-Regel (strenger als der Fork): ganze Minuten, wie beim Salesman-Werkzeug.
-        return "Die Länge des Konzepts muss eine ganze Zahl von 3 bis 5 Minuten sein."
-    for feld, satz in (("hook", "Der Hook des Konzepts fehlt."),
-                       ("kernaussage", "Die Kernaussage des Konzepts fehlt."),
-                       ("abschluss", "Der Abschluss des Konzepts fehlt.")):
-        if not _text(konzept.get(feld), 1, float("inf")):
-            return satz
-    auftrag = konzept.get("auftrag")
-    if auftrag is not None and not (isinstance(auftrag, str) and _HEX8.fullmatch(auftrag)):
-        return "Die Auftragsnummer des Konzepts muss leer sein oder aus 8 Hex-Zeichen bestehen."
-    for feld in ("firma", "pfad", "name"):
+    satz = video_pruefen_objekt(konzept)                     # alle Regeln des Konzepts: der gemeinsame Pruefer
+    if satz:
+        return satz
+    for feld in ("firma", "pfad", "name"):                   # Sales' eigene Felder
         wert = konzept.get(feld)
-        if wert is not None and (not isinstance(wert, str) or len(wert) > 500):
+        if wert is not None and (not isinstance(wert, str) or utf16_laenge(wert) > FELD_MAX):
             return f"Das Feld {feld} des Konzepts muss ein kurzer Text sein."
-    stufen = konzept.get("stufen")
-    if not isinstance(stufen, list):
-        return "Die Stufen des Konzepts fehlen oder sind keine Liste."
-    if len(stufen) > STUFEN_MAX:
-        return f"Das Konzept darf höchstens {STUFEN_MAX} Stufen haben."
-    szenen_gesamt = 0
-    for s in stufen:
-        if not isinstance(s, dict) or not isinstance(s.get("name"), str) or not isinstance(s.get("szenen"), list):
-            return "Jede Stufe braucht einen Namen und eine Liste von Szenen."
-        for sz in s["szenen"]:
-            szenen_gesamt += 1
-            if not isinstance(sz, dict):
-                return "Jede Szene muss ein Objekt sein."
-            if not isinstance(sz.get("kurz"), str) or len(sz["kurz"]) > KURZ_MAX:
-                return f"Jede Szene braucht eine Kurzbeschreibung mit höchstens {KURZ_MAX} Zeichen."
-            if sz.get("bildart") not in BILDARTEN:
-                return "Die Bildart jeder Szene muss slide, avatar_slide, avatar_gross oder clip sein."
-            if "notiz" in sz and not isinstance(sz["notiz"], str):
-                return "Die Notiz einer Szene muss ein Text sein."
-    if not SZENEN_MIN <= szenen_gesamt <= SZENEN_MAX:
-        return (f"Das Konzept braucht insgesamt {SZENEN_MIN} bis {SZENEN_MAX} Szenen, "
-                f"gefunden wurden {szenen_gesamt}.")
-    if len(_kanonisch(bereinigen(konzept))) > BLOCK_MAX:
+    if utf16_laenge(_kanonisch(bereinigen(konzept))) > BLOCK_MAX:
         return f"Das Konzept ist größer als {BLOCK_MAX} Zeichen."
     return None

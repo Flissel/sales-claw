@@ -44,8 +44,10 @@ class Bestellungen:
         self.ablehnung = None        # AuftragAbgelehnt-Satz
         self.ausfall = None          # Ausnahme, wie bei einem DB-Fehler
         self.dauer = 0.0
+        self.drin = threading.Event()   # gesetzt, sobald ein Aufruf im Auftragsbuch steckt (haelt dann die Zeilensperre)
 
     def __call__(self, q, laden, mandant, art, eingabe):
+        self.drin.set()
         time.sleep(self.dauer)
         if self.ablehnung:
             raise auftrag_buch.AuftragAbgelehnt(self.ablehnung)
@@ -270,12 +272,13 @@ def test_zweites_ja_ist_schon_entschieden(buch):
 def test_doppelklick_zwei_gleichzeitige_ja_ergeben_genau_einen_auftrag(buch):
     vorbereiten()
     kennung = eine_id()
-    buch.dauer = 0.4                                              # das erste Ja haelt die Zeilensperre
+    buch.dauer = 1.0                                              # das erste Ja haelt die Zeilensperre
     ergebnisse = []
     faeden = [threading.Thread(target=lambda: ergebnisse.append(vu.bestaetigen(kennung, "mira")))
               for _ in range(2)]
-    for f in faeden:
-        f.start()
+    faeden[0].start()
+    assert buch.drin.wait(10)               # erst wenn das erste Ja im Buch steckt, kommt das zweite: Ueberlappung erzwungen
+    faeden[1].start()
     for f in faeden:
         f.join()
     assert sorted(a for a, _ in ergebnisse) == ["entschieden", "ok"]

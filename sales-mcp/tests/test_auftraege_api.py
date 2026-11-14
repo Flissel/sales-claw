@@ -21,6 +21,7 @@ from starlette.testclient import TestClient  # noqa: E402
 import freigabe_eingang as fe  # noqa: E402
 import server  # noqa: E402
 import ui  # noqa: E402
+import konzept_lesen as kl  # noqa: E402
 import video_konzept  # noqa: E402
 import video_uebergabe  # noqa: E402
 
@@ -182,10 +183,41 @@ def test_nan_im_konzept_400(client, buch):
     assert r.status_code == 400 and buch.anlegen == []
 
 
-def test_minuten_nur_ganze_zahlen(client, buch):
-    for m in (3.5, 4.0):
-        r = client.post(URL, json=rumpf(konzept(minuten=m)), headers=KOPF)
-        assert r.status_code == 400 and buch.anlegen == []
+@pytest.mark.parametrize("m", [4.5, 3.5, True, "4", None])
+def test_minuten_nur_ganze_zahlen(client, buch, m):
+    r = client.post(URL, json=rumpf(konzept(minuten=m)), headers=KOPF)
+    assert r.status_code == 400 and buch.anlegen == []
+
+
+def test_minuten_4_0_gilt_und_wird_als_4_gespeichert(client, buch):
+    roh = json.dumps(rumpf()).replace('"minuten": 4,', '"minuten": 4.0,')
+    assert roh.count('"minuten": 4.0') == 2                  # oben und im Konzept
+    r = client.post(URL, content=roh.encode(), headers={**KOPF, "content-type": "application/json"})
+    assert r.status_code == 200
+    (gespeichert, sha), = buch.anlegen
+    assert isinstance(gespeichert["minuten"], int) and gespeichert == konzept()
+    assert sha == video_konzept.block_hash(konzept())          # 4 und 4.0 hashen gleich
+
+
+def test_minuten_oben_und_im_konzept_muessen_gleich_sein(client, buch):
+    for oben in (5, 4.5, True, None, "4"):
+        r = client.post(URL, json=rumpf(minuten=oben), headers=KOPF)
+        assert r.status_code == 400 and r.json() == {"fehler": "Die Angaben passen nicht zum Konzept."}
+
+
+def test_laenge_zaehlt_in_utf16_einheiten(client, buch):
+    k = konzept()
+    k["stufen"][0]["szenen"][0]["kurz"] = "\U0001f600" * 151           # 151 Zeichen, 302 UTF-16-Einheiten
+    r = client.post(URL, json=rumpf(k), headers=KOPF)
+    assert r.status_code == 400 and "höchstens 300 Zeichen" in r.json()["fehler"] and buch.anlegen == []
+
+
+def test_angaben_oben_werden_mit_js_trimmung_verglichen(client, buch):
+    k = konzept(thema="\ufeffKI im Vertrieb\x85")            # U+FEFF fliegt raus, U+0085 bleibt (wie in JS)
+    r = client.post(URL, json=rumpf(k, thema="KI im Vertrieb\x85"), headers=KOPF)
+    assert r.status_code == 200
+    r = client.post(URL, json=rumpf(konzept(thema="KI im Vertrieb\x1c"), thema="KI im Vertrieb"), headers=KOPF)
+    assert r.status_code == 400 and r.json() == {"fehler": "Die Angaben passen nicht zum Konzept."}
 
 
 def test_ohne_schluessel_401(client, buch):
@@ -254,15 +286,15 @@ def _neun_stufen():
 
 @pytest.mark.parametrize("body,teil", [
     (lambda: rumpf(_szenen(6)), "8 bis 15 Szenen"),
-    (lambda: rumpf(minuten=6), "3 bis 5 Minuten"),
-    (lambda: rumpf(konzept(minuten=6)), "Minuten"),
-    (lambda: rumpf(konzept(minuten=3.5)), "Minuten"),
+    (lambda: rumpf(konzept(minuten=6)), "zwischen 3 und 5 Minuten"),
+    (lambda: rumpf(konzept(minuten=3.5)), "ganze Zahl von Minuten"),
     (lambda: rumpf(_kurz()), "höchstens 300 Zeichen"),
     (lambda: rumpf(_bildart()), "Bildart"),
     (lambda: rumpf(_neun_stufen()), "höchstens 8 Stufen"),
-    (lambda: rumpf(thema="ab"), "Thema"),
-    (lambda: rumpf(beschreibung="b" * 4001), "4000 Zeichen"),
-    (lambda: rumpf(zielgruppe="z" * 301), "Zielgruppe"),
+    (lambda: rumpf(konzept(thema="ab")), "Thema muss 3 bis 300"),
+    (lambda: rumpf(konzept(kernaussage="k" * 4000)), "zusammen höchstens 4000 Zeichen"),
+    (lambda: rumpf(konzept(zielgruppe="z" * 301)), "Zielgruppe darf höchstens 300"),
+    (lambda: rumpf(thema="ab"), "Die Angaben passen nicht zum Konzept."),
     (lambda: rumpf(thema=5), "müssen Text sein"),
     (lambda: {"thema": "KI im Vertrieb", "minuten": 4}, "Videokonzept fehlt"),
 ])
@@ -280,8 +312,8 @@ def test_kein_json_400(client, buch):
 def _auf_block(ziel):
     k = konzept()
     k["stufen"][0]["szenen"][0]["notiz"] = ""
-    k["stufen"][0]["szenen"][0]["notiz"] = "x" * (ziel - len(video_konzept._kanonisch(k)))
-    assert len(video_konzept._kanonisch(k)) == ziel
+    k["stufen"][0]["szenen"][0]["notiz"] = "x" * (ziel - kl.utf16_laenge(video_konzept._kanonisch(k)))
+    assert kl.utf16_laenge(video_konzept._kanonisch(k)) == ziel
     return k
 
 
@@ -360,6 +392,23 @@ def test_einzelnes_surrogat_400(client, buch):
     assert b"\\ud800" in roh
     r = client.post(URL, content=roh, headers={**KOPF, "content-type": "application/json"})
     assert r.status_code == 400 and r.json() == {"fehler": "Der Rumpf enthält ungültige Zeichen."}
+    assert buch.anlegen == []
+
+
+def test_rekursionsfehler_beim_kodieren_ist_keine_zeichenfrage(client, buch, monkeypatch):
+    echt = json.dumps
+    roh = echt(rumpf()).encode()
+    probe = []
+
+    def dumps(*a, **kw):
+        if kw.get("ensure_ascii") is False and "separators" not in kw and not probe:   # die Probe der Annahme
+            probe.append(1)
+            raise RecursionError
+        return echt(*a, **kw)
+
+    monkeypatch.setattr(json, "dumps", dumps)
+    r = client.post(URL, content=roh, headers={**KOPF, "content-type": "application/json"})
+    assert probe and r.status_code == 400 and r.json() == {"fehler": "Der Rumpf ist zu tief verschachtelt."}
     assert buch.anlegen == []
 
 

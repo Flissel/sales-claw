@@ -26,6 +26,7 @@ import psycopg
 import auftrag_buch
 import server
 import video_konzept
+from konzept_lesen import js_trim
 
 LOG = logging.getLogger("sales-ui")
 
@@ -134,12 +135,11 @@ def verwerfen(kennung, von: str) -> bool:
 def _bestellung(kennung: str, konzept: dict):
     """Die Angaben des Auftrags aus dem gespeicherten Konzept, mit denselben Pruefungen wie beim Salesman und
     bei der Annahme -> ((laden, mandant, eingabe), None) oder (None, Fehlersatz)."""
-    thema, zielgruppe = konzept["thema"].strip(), konzept["zielgruppe"].strip()
-    beschreibung = video_konzept.beschreibung_aus(konzept)
-    satz = (server.video_auftrag_pruefen(thema, konzept["minuten"], zielgruppe, beschreibung)
-            or video_konzept.pruefen(konzept))
+    satz = video_konzept.pruefen(konzept)                # der gemeinsame Pruefer, dieselben Regeln wie bei der Annahme
     if satz:
         return None, satz
+    thema, zielgruppe = js_trim(konzept["thema"]), js_trim(konzept["zielgruppe"])
+    beschreibung = video_konzept.beschreibung_aus(konzept)
     mandant = os.environ.get("MARKETING_MANDANT", "").strip()
     if not mandant:
         return None, SATZ_KEINE_FIRMA
@@ -148,7 +148,7 @@ def _bestellung(kennung: str, konzept: dict):
         return None, SATZ_FIRMA
     laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
     sha = video_konzept.block_hash(konzept)
-    eingabe = {"thema": thema, "beschreibung": beschreibung, "minuten": konzept["minuten"],
+    eingabe = {"thema": thema, "beschreibung": beschreibung, "minuten": int(konzept["minuten"]),
                "zielgruppe": zielgruppe, "von": "rowboat", "konzept": konzept, "konzept_sha": sha,
                "uebergabe": kennung}
     return (laden, mandant, eingabe), None
