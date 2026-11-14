@@ -115,12 +115,32 @@ def test_bild_ablegen_verkleinert_und_setzt_bis():
 
 
 def test_wechsel_des_teilenden_setzt_bis():
+    """R9b: ein Bild endet nur mit dem naechsten Bild DESSELBEN Teilenden (null-sicher)
+    oder per quelle_ende/freigabe_ende - nicht mit dem Bild eines anderen."""
     _akte()
     bildschirm.bild_ablegen("a1", _jpeg("links"), T0, "Anna")
     bildschirm.bild_ablegen("a1", _jpeg("links"), T0 + timedelta(seconds=20), "Ben")
     a, b = bildschirm.bilder("a1")
-    assert a["bis"] == T0 + timedelta(seconds=20)
     assert a["geteilt_von"] == "Anna" and b["geteilt_von"] == "Ben"
+    assert a["bis"] is None and b["bis"] is None          # Ben schliesst Anna nicht
+    bildschirm.quelle_ende("a1", "  Anna ", T0 + timedelta(seconds=25))
+    a, b = bildschirm.bilder("a1")
+    assert a["bis"] == T0 + timedelta(seconds=25) and b["bis"] is None
+
+
+def test_bis_je_teilendem_null_sicher():
+    _akte()
+    bildschirm.bild_ablegen("a1", _jpeg("links"), T0, None)
+    bildschirm.bild_ablegen("a1", _jpeg("oben"), T0 + timedelta(seconds=10), "Anna")
+    bildschirm.bild_ablegen("a1", _jpeg("diagonal"), T0 + timedelta(seconds=20), None)
+    erst, anna, zweit = bildschirm.bilder("a1")
+    assert erst["bis"] == T0 + timedelta(seconds=20)       # naechstes Bild ohne Namen
+    assert anna["bis"] is None and zweit["bis"] is None
+    bildschirm.quelle_ende("a1", None, T0 + timedelta(seconds=30))
+    erst, anna, zweit = bildschirm.bilder("a1")
+    assert zweit["bis"] == T0 + timedelta(seconds=30) and anna["bis"] is None
+    bildschirm.freigabe_ende("a1", T0 + timedelta(seconds=40))
+    assert bildschirm.bilder("a1")[1]["bis"] == T0 + timedelta(seconds=40)
 
 
 def test_ablegen_verweigert_wenn_nicht_mehr_soll():

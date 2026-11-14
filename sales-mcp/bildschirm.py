@@ -73,17 +73,27 @@ def _verkleinern(jpeg: bytes) -> tuple[bytes, int, int]:
         return out.getvalue(), bild.width, bild.height
 
 
+def name_norm(geteilt_von: str | None) -> str | None:
+    """Anzeigename so, wie er in `termin_bilder.geteilt_von` steht."""
+    return (geteilt_von or "").strip()[:_NAME_MAX] or None
+
+
+# Offene Bilder DESSELBEN Teilenden (null-sicher): bei mehreren gleichzeitigen
+# Freigaben endet ein Bild erst mit dem naechsten Bild derselben Quelle (R9b).
+_OFFEN_VON = "uid = %s and bis is null and geteilt_von is not distinct from %s::text"
+
+
 def bild_ablegen(uid: str, jpeg: bytes, zeitpunkt: datetime,
                  geteilt_von: str | None,
                  vektor_bild: list[float] | None = None) -> str | None:
-    """Legt ein Bild ab und schliesst das vorige offene; None, wenn nicht (mehr) soll.
-    `vektor_bild`: schon berechneter CLIP-Vektor (Heikel-Pruefung), spart die zweite
-    Berechnung im Beschreib-Thread."""
+    """Legt ein Bild ab und schliesst das vorige offene DESSELBEN Teilenden; None, wenn
+    nicht (mehr) soll. `vektor_bild`: schon berechneter CLIP-Vektor (Heikel-Pruefung),
+    spart die zweite Berechnung im Beschreib-Thread."""
     literal = ("[" + ",".join(repr(float(v)) for v in vektor_bild) + "]"
                if vektor_bild is not None else None)
     daten, breite, hoehe = _verkleinern(jpeg)
     hash_ = dhash(daten)
-    name = (geteilt_von or "").strip()[:_NAME_MAX] or None
+    name = name_norm(geteilt_von)
     with server.pool.connection() as conn:
         if not conn.execute("select 1 from termin_akten where uid = %s for update",
                             (uid,)).fetchall():
@@ -91,8 +101,8 @@ def bild_ablegen(uid: str, jpeg: bytes, zeitpunkt: datetime,
         if not conn.execute(f"select 1 from termin_akten where uid = %s and {_SOLL}",
                             (uid,)).fetchall():
             return None
-        conn.execute("update termin_bilder set bis = %s where uid = %s and bis is null",
-                     (zeitpunkt, uid))
+        conn.execute(f"update termin_bilder set bis = %s where {_OFFEN_VON}",
+                     (zeitpunkt, uid, name))
         zeilen = conn.execute(
             "insert into termin_bilder (uid, aufgenommen_am, geteilt_von, bild, breite, "
             "hoehe, dhash, vektor_bild) values (%s, %s, %s, %s, %s, %s, %s, "
@@ -112,8 +122,15 @@ def uebersprungen_zaehlen(uid: str) -> None:
 
 
 def freigabe_ende(uid: str, zeitpunkt: datetime) -> None:
+    """Keine Freigabe mehr: alle offenen Bilder der Akte enden."""
     server._q("update termin_bilder set bis = %s where uid = %s and bis is null "
               "returning id", (zeitpunkt, uid))
+
+
+def quelle_ende(uid: str, geteilt_von: str | None, zeitpunkt: datetime) -> None:
+    """Eine Freigabe endet, andere laufen weiter: nur das offene Bild dieses Teilenden."""
+    server._q(f"update termin_bilder set bis = %s where {_OFFEN_VON} returning id",
+              (zeitpunkt, uid, name_norm(geteilt_von)))
 
 
 def bilder(uid: str) -> list[dict]:

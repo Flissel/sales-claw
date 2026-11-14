@@ -15,8 +15,8 @@ Jede Runde (`AUGE_RUNDE_S`, Vorgabe 2 s):
   2. Je Sitzung `window.__lauraBild()`; je gleichzeitiger Freigabe (Quelle,
      hoechstens MAX_QUELLEN) bei spuerbarer Aenderung (dHash des ROHEN Frames
      gegen den rohen Hash des letzten abgelegten Frames DIESER Quelle, Ruling R4)
-     ablegen; Drossel je Quelle, Obergrenze je Akte. Teilt keine Quelle mehr ->
-     `freigabe_ende`.
+     ablegen; Drossel je Quelle, Obergrenze je Akte. Endet eine Quelle, waehrend
+     andere teilen -> `quelle_ende` (R9b); teilt keine Quelle mehr -> `freigabe_ende`.
 
 Ein Browser-Prozess, eine Seite (in eigenem Kontext) je Termin. Playwright und
 fastembed werden erst in `main()` importiert, damit Tests ohne sie laufen.
@@ -343,14 +343,23 @@ def _eine(s: Sitzung, jetzt: datetime) -> None:
         return
     # Verschwundene Quellen vergessen: kein Freigabe-Ende, solange eine andere teilt.
     aktuell = {quelle for quelle, _, _ in frames}
+    beendet = []                      # Teilende, deren Quelle (oder Name) endet
     for quelle in [x for x in s.quellen if x not in aktuell]:
-        del s.quellen[quelle]
+        beendet.append(s.quellen.pop(quelle).von)
     # Neue Quellen (oder neuer Teilender) VOR der Ablage anlegen: gleichzeitig neue
     # Quellen drosseln sich nicht gegenseitig.
     for quelle, von, _ in frames:
         alt = s.quellen.get(quelle)
         if alt is None or alt.von != von:
+            if alt is not None:
+                beendet.append(alt.von)
             s.quellen[quelle] = _neu_beginnen(s, von, alt)
+    # Offenes Bild einer beendeten Quelle schliessen (R9b) - nicht, wenn eine laufende
+    # Quelle denselben Namen traegt (das offene Bild koennte ihres sein).
+    laufend = {bildschirm.name_norm(q.von) for q in s.quellen.values()}
+    for von in dict.fromkeys(beendet):
+        if bildschirm.name_norm(von) not in laufend:
+            bildschirm.quelle_ende(s.uid, von, jetzt)
     s.teilt = True
     for quelle, _, roh in frames:
         _quelle_aufnehmen(s, s.quellen[quelle], roh, jetzt)

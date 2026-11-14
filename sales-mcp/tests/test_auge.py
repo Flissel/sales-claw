@@ -265,7 +265,8 @@ def test_runde_wechsel_des_teilenden_nimmt_naechstes_erlaubtes_bild():
     liste = bildschirm.bilder("a1")
     assert [x["geteilt_von"] for x in liste] == ["Anna", "Ben"]
     assert liste[1]["aufgenommen_am"] == T0 + timedelta(seconds=5)
-    assert liste[0]["bis"] == T0 + timedelta(seconds=5)
+    # R9b: Annas Quelle endet, als Ben uebernimmt (+1), nicht erst mit Bens Bild
+    assert liste[0]["bis"] == T0 + timedelta(seconds=1)
 
 
 def test_runde_drossel_gilt_auch_nach_freigabe_ende():
@@ -401,11 +402,46 @@ def test_quelle_endet_andere_laeuft_weiter(monkeypatch):
     assert enden == []                               # Ben teilt noch: kein Freigabe-Ende
     assert s.teilt and set(s.quellen) == {"Ben-v1"}
     assert s.quellen["Ben-v1"] is ben and (ben.von, ben.letzter_hash, ben.letzte_zeit) == vorher
-    assert len(bildschirm.bilder("a1")) == 2         # Bens Bild unveraendert -> nichts Neues
+    liste = {x["geteilt_von"]: x for x in bildschirm.bilder("a1")}
+    assert len(liste) == 2                           # Bens Bild unveraendert -> nichts Neues
+    # R9b: Annas offenes Bild endet mit ihrer Quelle, Bens bleibt offen
+    assert liste["Anna"]["bis"] == T0 + timedelta(seconds=10)
+    assert liste["Ben"]["bis"] is None
     auge.runde(sitzungen, T0 + timedelta(seconds=20))
     assert enden == [T0 + timedelta(seconds=20)]
     assert not s.teilt and s.quellen == {}
     assert all(x["bis"] is not None for x in bildschirm.bilder("a1"))
+
+
+def test_bis_je_quelle():
+    """R9b: zwei Quellen abwechselnd -> bis jedes Bildes = naechstes Bild DERSELBEN Quelle."""
+    _akte("a1")
+    sitzungen = _sitzung("a1", [
+        _mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben")),          # T0: A1, B1
+        _mehrere(_quelle("diagonal", "Anna"), _quelle("oben", "Ben")),       # +5: A2
+        _mehrere(_quelle("diagonal", "Anna"), _quelle("diagonal", "Ben")),   # +10: B2
+        AUS,                                                                 # +15: Ende
+    ])
+    for sek in (0, 5, 10, 15):
+        auge.runde(sitzungen, T0 + timedelta(seconds=sek))
+    t = lambda s: T0 + timedelta(seconds=s)  # noqa: E731
+    assert sorted((x["geteilt_von"], x["aufgenommen_am"], x["bis"])
+                  for x in bildschirm.bilder("a1")) == [
+        ("Anna", t(0), t(5)), ("Anna", t(5), t(15)),
+        ("Ben", t(0), t(10)), ("Ben", t(10), t(15))]
+
+
+def test_quelle_endet_gleicher_name_schliesst_nicht():
+    """Endet eine Quelle, deren Name eine andere laufende Quelle auch traegt (z. B. zwei
+    Gaeste), bleibt das offene Bild offen (es koennte der laufenden gehoeren)."""
+    _akte("a1")
+    sitzungen = _sitzung("a1", [
+        _mehrere(_quelle("links", "Gast", "g1-v1"), _quelle("oben", "Gast", "g2-v1")),
+        _mehrere(_quelle("oben", "Gast", "g2-v1")),
+    ])
+    auge.runde(sitzungen, T0)
+    auge.runde(sitzungen, T0 + timedelta(seconds=10))
+    assert any(x["bis"] is None for x in bildschirm.bilder("a1"))
 
 
 def test_obergrenze_gemeinsam():
@@ -651,6 +687,19 @@ def test_max_drei_quellen_js():
     assert "quellen:" in js
     # nur noch EIN Video-Slot gibt es nicht mehr
     assert "let video = null" not in js
+
+
+def test_empfang_nur_erfasste_quellen_js():
+    """R9c: die Empfangs-Vorgaben fordern hoechstens MAX_QUELLEN Desktop-Quellen an,
+    dieselben (gleiche Sortierung, nur ungemutete) wie die erfassten."""
+    js = (auge.SKRIPT_PFAD).read_text(encoding="utf-8")
+    teil = js.split("const desktopQuellen = ")[1].split("const vorgaben = ")[0]
+    assert "return [...namen].sort().slice(0, MAX_QUELLEN);" in teil
+    assert "desktopTracks(s).filter((t) => !t.muted)" in teil
+    assert "info.muted" in teil
+    # vorgaben bekommt nur diese Liste (lastN = deren Laenge)
+    assert "original(vorgaben(desktopQuellen(zustand(), room)))" in js
+    assert "original(vorgaben(quellen))" in js and "lastN: quellen.length" in js
 
 
 def test_kamera_bleibt_ausgeschlossen_js():

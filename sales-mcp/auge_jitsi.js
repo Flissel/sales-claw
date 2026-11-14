@@ -15,9 +15,9 @@
 //
 // Empfang begrenzen: Die Empfangs-Vorgaben der Konferenz (Receiver-
 // Constraints) werden auf die Bildschirm-Quellen umgebogen: Standard
-// maxHeight 0 (keine Kameras), nur Desktop-Quellen mit Aufloesung, lastN =
-// Anzahl der Desktop-Quellen. Auch Vorgaben, die die Jitsi-Oberflaeche selbst
-// setzt, gehen durch diesen Filter.
+// maxHeight 0 (keine Kameras), nur die (hoechstens MAX_QUELLEN) erfassten
+// Desktop-Quellen mit Aufloesung, lastN = deren Anzahl. Auch Vorgaben, die die
+// Jitsi-Oberflaeche selbst setzt, gehen durch diesen Filter.
 //
 // Keine Netzzugriffe, keine Ablage im Browser: das Bild verlaesst die Seite nur
 // als Rueckgabewert an den Beobachter. window.__lauraInfo() liefert fuer die
@@ -71,11 +71,14 @@
 
   const desktopTracks = (s) => ((s && s['features/base/tracks']) || []).filter(istDesktop);
 
-  // Namen der Desktop-Quellen: aus vorhandenen Tracks und aus der Presence der
-  // Teilnehmer (dort steht der videoType schon, bevor Medien fliessen).
+  // Namen der angeforderten Desktop-Quellen: aus ungemuteten Tracks und aus der
+  // Presence der Teilnehmer (dort steht der videoType schon, bevor Medien
+  // fliessen); gemutete (beendete) Freigaben nicht. Hoechstens MAX_QUELLEN, in
+  // derselben Sortierung wie in holen: eine weitere Freigabe wird gar nicht
+  // empfangen (R9c).
   const desktopQuellen = (s, room) => {
     const namen = new Set();
-    desktopTracks(s).forEach((t) => {
+    desktopTracks(s).filter((t) => !t.muted).forEach((t) => {
       const n = typeof t.jitsiTrack.getSourceName === 'function' && t.jitsiTrack.getSourceName();
       if (n) namen.add(String(n));
     });
@@ -85,14 +88,14 @@
         const vid = quellen && typeof quellen.get === 'function' ? quellen.get('video') : null;
         if (vid && typeof vid.forEach === 'function') {
           vid.forEach((info, name) => {
-            if (info && info.videoType === DESKTOP) namen.add(String(name));
+            if (info && info.videoType === DESKTOP && !info.muted) namen.add(String(name));
           });
         }
       });
     } catch (e) {
       // Presence nicht lesbar: dann nur die Tracks
     }
-    return [...namen].sort();
+    return [...namen].sort().slice(0, MAX_QUELLEN);
   };
 
   const vorgaben = (quellen) => {
