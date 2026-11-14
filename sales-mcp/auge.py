@@ -624,10 +624,8 @@ def main() -> int:
     einbetter = GesperrterEinbetter(FastEmbedEinbetter())
     global pruefer
     import heikel                       # Pruefer teilt die gesperrte Modellinstanz
+    # Scheitert der Konstruktor, bricht main() ab: nie ohne Heikel-Pruefung (kein Fail-open).
     pruefer = heikel.Pruefer(einbetter)
-    if pruefer is None:             # nie ohne Heikel-Pruefung laufen (kein Fail-open)
-        LOG.error("Kein Heikel-Pruefer - Dienst startet nicht")
-        return 1
     LOG.info("Modelle geladen (Heikel-Abstand %.3f)", heikel.ABSTAND)
 
     sitzungen: dict[str, Sitzung] = {}

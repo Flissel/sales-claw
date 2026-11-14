@@ -841,6 +841,64 @@ def test_pruefer_fehler_legt_nichts_ab(monkeypatch):
     assert k.aufrufe == 1
 
 
+class InhaltsPruefer:
+    """Urteilt nach Bildinhalt: das Muster 'links' ist heikel bzw. laesst die Pruefung
+    scheitern (fehler=True), alles andere ist unbedenklich."""
+
+    def __init__(self, fehler=False):
+        self.fehler = fehler
+        self.aufrufe = []
+
+    def heikel(self, jpeg):
+        ist = jpeg == _jpeg("links")
+        self.aufrufe.append("links" if ist else "anders")
+        if ist and self.fehler:
+            raise RuntimeError("Modell weg")
+        v = [0.0] * 512
+        v[2] = 1.0
+        return ist, v
+
+
+def test_heikel_je_quelle(monkeypatch):
+    """Schicht A je Quelle: A (heikel) wird verworfen, B (unbedenklich) im selben
+    Moment mit eigenem `von` abgelegt; A beeinflusst Bs Zustand nicht."""
+    _akte("a1")
+    p = InhaltsPruefer()
+    monkeypatch.setattr(auge, "pruefer", p)
+    sitzungen = _sitzung("a1", [_mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben"))])
+    auge.runde(sitzungen, T0)
+    liste = bildschirm.bilder("a1")
+    assert [x["geteilt_von"] for x in liste] == ["Ben"]
+    assert sorted(p.aufrufe) == ["anders", "links"]
+    assert server._q("select bilder_uebersprungen from termin_akten "
+                     "where uid = 'a1'")[0]["bilder_uebersprungen"] == 1
+    s = sitzungen["a1"]
+    a, b = s.quellen["Anna-v1"], s.quellen["Ben-v1"]
+    assert s.uebersprungen == 1 and s.anzahl == 1
+    assert (a.letzter_hash, a.letzte_zeit) == (bildschirm.dhash(_jpeg("links")), T0)
+    assert (b.von, b.letzter_hash, b.letzte_zeit) == ("Ben", bildschirm.dhash(_jpeg("oben")), T0)
+    # Akte-weit zaehlt nur das abgelegte Bild (Bens)
+    assert s.letzter_hash == bildschirm.dhash(_jpeg("oben"))
+
+
+def test_pruefer_fehler_zwei_quellen(monkeypatch):
+    """Pruefer scheitert nur fuer A: fuer A nichts abgelegt (nur As letzte_zeit gesetzt,
+    kein Hash), B wird abgelegt."""
+    _akte("a1")
+    p = InhaltsPruefer(fehler=True)
+    monkeypatch.setattr(auge, "pruefer", p)
+    sitzungen = _sitzung("a1", [_mehrere(_quelle("links", "Anna"), _quelle("oben", "Ben"))])
+    auge.runde(sitzungen, T0)
+    assert [x["geteilt_von"] for x in bildschirm.bilder("a1")] == ["Ben"]
+    s = sitzungen["a1"]
+    a, b = s.quellen["Anna-v1"], s.quellen["Ben-v1"]
+    assert a.letzte_zeit == T0 and a.letzter_hash is None
+    assert b.letzte_zeit == T0 and b.letzter_hash == bildschirm.dhash(_jpeg("oben"))
+    assert s.anzahl == 1 and s.uebersprungen == 0
+    assert server._q("select bilder_uebersprungen from termin_akten "
+                     "where uid = 'a1'")[0]["bilder_uebersprungen"] == 0
+
+
 def test_beschreiben_rechnet_vektor_bild_nur_wenn_null(monkeypatch):
     _akte("a1")
     v = [0.0] * 512
