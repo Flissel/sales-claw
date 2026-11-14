@@ -3141,6 +3141,35 @@ def test_selbst_bewerben_zeigt_fenster_knopf_nur_wenn_erlaubt(client, falsch):
         assert "Habe ich selbst abgeschickt" in _form(k, "ausgang", 'value="raus"')
 
 
+def test_selbst_bewerben_zeigt_den_letzten_fehlversuch(client, falsch):
+    """Nach einem gescheiterten Selbst-Fenster faellt die Karte nicht stumm zurueck (Basis-Spec §6.4)."""
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=True, fehler="browser_absturz")
+    assert '<div class="meta">Letzter Versuch: browser_absturz</div>' in k
+    assert f'action="{PORTAL}/fenster-selbst"' in k
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=True, fehler=f"x{BOESE}")
+    assert BOESE not in k and "Letzter Versuch: x&lt;script&gt;" in k
+    for fehler in (None, "", "  "):
+        k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=True, fehler=fehler)
+        assert "Letzter Versuch" not in k
+
+
+SELBST_FENSTER_ZU = [
+    ("sperre_beim_laden", "Die Seite hat den Bot gesperrt. Ein Fenster ist hier nicht möglich – bitte selbst "
+                          "bewerben."),
+    ("http_404", "Die Anzeige ist nicht mehr online. Ein Fenster ist hier nicht möglich."),
+    ("http_410", "Die Anzeige ist nicht mehr online. Ein Fenster ist hier nicht möglich."),
+]
+
+
+@pytest.mark.parametrize("code,satz", SELBST_FENSTER_ZU)
+def test_selbst_bewerben_nennt_den_grund_ohne_fenster(client, falsch, code, satz):
+    """Die drei Codes, die das Selbst-Fenster schliessen, stehen als Satz da, nicht als Code."""
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=False, fehler=code)
+    assert satz in k and code not in k and "Letzter Versuch" not in k
+    assert "fenster-selbst" not in k and "Im Fenster selbst bewerben" not in k
+    assert "Habe ich selbst abgeschickt" in _form(k, "ausgang", 'value="raus"')
+
+
 def test_selbst_abgeschickt_braucht_haken(client, falsch):
     k = _pkarte(client, falsch, zustand="selbst_bewerben")
     assert ("Der Bot schickt hier nichts ab. Nur bestätigen, wenn du dich selbst auf der Seite beworben hast."
@@ -3170,6 +3199,8 @@ FUELL_HINWEISE = [
     ("fuellen_fehlgeschlagen", "Ausfüllen hat nicht geklappt. Noch einmal versuchen oder im Fenster selbst "
                                "ausfüllen."),
     ("befehl_nicht_geschrieben", "Der Auftrag kam nicht beim Bot an. Noch einmal versuchen."),
+    ("absenden_offen", "Möglicherweise wurde schon abgeschickt – der Bot füllt nicht noch einmal aus. "
+                       "Im Fenster prüfen."),
     ("komisch_x", "Ausfüllen nicht möglich (komisch_x)."),
 ]
 

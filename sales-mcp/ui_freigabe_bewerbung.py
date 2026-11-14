@@ -233,6 +233,16 @@ _FUELL_FEHLER = {
     "fuellen_fehlgeschlagen": "Ausfüllen hat nicht geklappt. Noch einmal versuchen oder im Fenster selbst "
                               "ausfüllen.",
     "befehl_nicht_geschrieben": "Der Auftrag kam nicht beim Bot an. Noch einmal versuchen.",
+    "absenden_offen": "Möglicherweise wurde schon abgeschickt – der Bot füllt nicht noch einmal aus. "
+                      "Im Fenster prüfen.",
+}
+# `fehler` eines Laufs in `selbst_bewerben`, der das Selbst-Fenster schliesst (bewerbung portal_weg.py
+# `_SELBST_FENSTER_ZU`): ein Satz statt des Codes, sonst verschwaende der Fenster-Knopf ohne Grund.
+_SELBST_FENSTER_ZU = {
+    "sperre_beim_laden": "Die Seite hat den Bot gesperrt. Ein Fenster ist hier nicht möglich – bitte selbst "
+                         "bewerben.",
+    "http_404": "Die Anzeige ist nicht mehr online. Ein Fenster ist hier nicht möglich.",
+    "http_410": "Die Anzeige ist nicht mehr online. Ein Fenster ist hier nicht möglich.",
 }
 PORTAL_MAX_ANTWORTEN = 20
 PORTAL_DATEI_ZEITLIMIT_S = 8
@@ -676,6 +686,10 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
         # Die Zentrale nimmt `selbst` aus wartet_auf_worker, frage_offen und bereit an, `nicht-bewerben` in jedem Zustand.
         return f'<div class="aktionen">{knopf("selbst", "Selbst bewerben")}{ablehnen()}</div>'
 
+    def letzter_versuch() -> str:
+        fehler = _nur_text(p.get("fehler"))
+        return f'<div class="meta">Letzter Versuch: {e(fehler)}</div>' if fehler else ""
+
     if zustand == "wartet_auf_worker":
         return '<p class="meta">Bot bereitet vor …</p>' + ausgang()
     if zustand == "frage_offen":
@@ -700,9 +714,7 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
         tage = p.get("briefdatum_alter_tage")
         if isinstance(tage, int) and not isinstance(tage, bool) and tage >= BRIEFDATUM_HINWEIS_AB_TAGE:
             teile.append(f'<div class="warnung">Datum im Anschreiben ist {tage} Tage alt</div>')
-        fehler = _nur_text(p.get("fehler"))
-        if fehler:
-            teile.append(f'<div class="meta">Letzter Versuch: {e(fehler)}</div>')
+        teile.append(letzter_versuch())
         teile.append(formular_link())
         am_pc = p.get("am_pc") is True
         teile.append('<div class="aktionen">')
@@ -723,8 +735,10 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
         beenden = knopf("beenden", "Sitzung beenden")
         if phase == "seite":
             code = p.get("fuell_fehler") if isinstance(p.get("fuell_fehler"), str) else None
-            text = _FUELL_FEHLER.get(code) or f"Ausfüllen nicht möglich ({e(code)})." if code else ""
-            hinweis = f'<div class="warnung">{text}</div>' if code else ""
+            hinweis = ""
+            if code:
+                text = _FUELL_FEHLER.get(code) or f"Ausfüllen nicht möglich ({e(code)})."
+                hinweis = f'<div class="warnung">{text}</div>'
             return ('<div><b>Du bist dran – im Fenster oben: CAPTCHA oder Anmeldung lösen, bis das '
                     f'Bewerbungsformular zu sehen ist.</b></div>{hinweis}<div class="aktionen">'
                     + knopf("fuellen", "Jetzt ausfüllen") + beenden + "</div>")
@@ -741,7 +755,10 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
                 + "</div>")
     if zustand == "selbst_bewerben":
         pdf = _link(f"{basis}/portal/bewerbung.pdf?lauf={sicher}", "Bewerbung als PDF")
-        teile = [f'<p class="meta">{pdf}</p>{formular_link()}'
+        # Der letzte Fehlversuch wie in `bereit`; schloss er das Fenster, ein Satz statt des Codes (Spec §6.4).
+        zu = _SELBST_FENSTER_ZU.get(_nur_text(p.get("fehler")))
+        teile = [f'<div class="warnung">{zu}</div>' if zu else letzter_versuch(),
+                 f'<p class="meta">{pdf}</p>{formular_link()}'
                  f'{_feldtabelle(ui, p.get("feldtabelle"), lesbar=True)}<div class="aktionen">']
         if p.get("selbst_fenster") is True and nr:
             if not_aus:
