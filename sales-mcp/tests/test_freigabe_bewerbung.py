@@ -117,10 +117,12 @@ class Falsch:
         # Portal-Abgabe (Task 12): Bild und Unterlagen des Laufs, Antworten der Portal-Routen.
         self.bild = (b"\x89PNG\r\n\x1a\nBILD", "image/png")
         self.portal_pdf = (b"%PDF-1.7 Portal", "application/pdf")
+        self.antwort_ausgang_nicht_raus = {"status": "bereit"}   # Antwort auf ausgang nicht_raus
         self.fehler_datei = None    # nur bild.png und bewerbung.pdf
         self.portal_antwort = {"fenster": {"status": "angefragt"}, "beenden": {"status": "beendet"},
                                "antworten": {"status": "erfasst", "offen": 0},
                                "ausgang": {"status": "abgeschickt"},
+                               "fenster-selbst": {"status": "angefragt"}, "fuellen": {"status": "angefragt"},
                                "selbst": {"status": "selbst_bewerben"}, "am-pc": {"status": "gesetzt"},
                                "nicht-bewerben": {"status": "abgelehnt", "kommando": "k-3"}}
         self.antwort = {"freigeben": {"status": "freigegeben", "kommando": "k-1"},
@@ -153,7 +155,7 @@ class Falsch:
             if "/portal/" in pfad:
                 aktion = pfad.rsplit("/", 1)[1]
                 if aktion == "ausgang" and isinstance(daten, dict) and daten.get("ausgang") == "nicht_raus":
-                    return {"status": "bereit"}
+                    return dict(self.antwort_ausgang_nicht_raus)
                 return dict(self.portal_antwort[aktion])
             return self.antwort[pfad.rsplit("/", 1)[1]]
         if pfad == OFFEN:
@@ -2842,7 +2844,8 @@ def portal(**kw):
                           "hinweis": "aus deiner Antwort"}],
          "feldtabelle_sha256": SHA_P, "fragen": [], "antworten": {}, "fehler": None, "status_code": None,
          "rest_nach_freigabe": False, "bild_version": 3, "formular_url": "https://portal.example.org/job/1",
-         "am_pc": False, "briefdatum_alter_tage": 0, "fenster_belegt_von": None}
+         "am_pc": False, "briefdatum_alter_tage": 0, "fenster_belegt_von": None,
+         "modus": "formular", "fenster_phase": None, "fuell_fehler": None, "selbst_fenster": False}
     p.update(kw)
     return p
 
@@ -2941,6 +2944,8 @@ def test_am_pc_vorgemerkt_bietet_zurueck(client, falsch):
 AKTIONEN = [
     ("fenster", {"fassung": "1", "feldtabelle_sha256": SHA_P},
      {"lauf_id": LAUF_P, "von": "mira", "fassung": 1, "feldtabelle_sha256": SHA_P}, "fenster_angefragt"),
+    ("fenster-selbst", {"fassung": "1"}, {"lauf_id": LAUF_P, "von": "mira", "fassung": 1}, "fenster_angefragt"),
+    ("fuellen", {}, {"lauf_id": LAUF_P, "von": "mira"}, "fuellen_angefragt"),
     ("beenden", {}, {"lauf_id": LAUF_P, "von": "mira"}, "portal_erfasst"),
     ("antworten", {"antwort_gehalt-wunsch": "  70000 ", "antwort_eintritt-ab": "", "fassung": "1"},
      {"lauf_id": LAUF_P, "von": "mira", "antworten": [{"frage_id": "gehalt-wunsch", "antwort": "70000"}]},
@@ -2967,6 +2972,17 @@ def test_portal_aktionen_senden_richtiges_json(client, falsch, aktion, form, jso
     assert ui_freigabe_bewerbung._HINWEISE[hinweis][1] in _abschnitt(client, r.headers["location"])
 
 
+def test_portal_hinweistexte_neue_codes_wortlaut():
+    h = ui_freigabe_bewerbung._HINWEISE
+    assert h["fuellen_angefragt"] == ("hinweis", "Der Bot füllt gleich aus – im Fenster oben zusehen.")
+    assert h["schon_gefuellt"] == ("warnung", "Schon ausgefüllt – im Fenster prüfen und selbst abschicken.")
+    assert h["fuellen_laeuft"] == ("hinweis", "Der Bot füllt gerade aus.")
+    assert h["kein_selbst_fenster"] == ("warnung",
+                                        "Für diese Bewerbung gibt es kein Fenster – bitte selbst bewerben.")
+    for code in ("schon_gefuellt", "fuellen_laeuft", "kein_selbst_fenster"):
+        assert code in ui_freigabe_bewerbung._ABLEHNUNGEN
+
+
 def test_portal_hinweistexte_wortlaut():
     h = {k: v[1] for k, v in ui_freigabe_bewerbung._HINWEISE.items()}
     assert h["fenster_angefragt"] == "Das Fenster wird vorbereitet – gleich oben im Reiter."
@@ -2985,7 +3001,8 @@ def test_portal_hinweistexte_wortlaut():
     assert "fassung_veraltet" in ui_freigabe_bewerbung._ABLEHNUNGEN        # Bestehendes bleibt
 
 
-PORTAL_POSTS = [("fenster", {"fassung": "1", "feldtabelle_sha256": SHA_P}), ("beenden", {}),
+PORTAL_POSTS = [("fenster", {"fassung": "1", "feldtabelle_sha256": SHA_P}),
+                ("fenster-selbst", {"fassung": "1"}), ("fuellen", {}), ("beenden", {}),
                 ("antworten", {"antwort_gehalt-wunsch": "1"}), ("ausgang", {"ausgang": "raus"}),
                 ("selbst", {}), ("am-pc", {"am_pc": "true"}),
                 ("nicht-bewerben", {"fassung": "1", "bestaetigt": "ja"})]
@@ -2993,7 +3010,7 @@ PORTAL_POSTS = [("fenster", {"fassung": "1", "feldtabelle_sha256": SHA_P}), ("be
 
 @pytest.mark.parametrize("code", ["fenster_belegt", "feldtabelle_veraltet", "zustand_veraltet", "not_aus",
                                   "portal_aus", "fassung_veraltet", "antwort_ungueltig", "frage_unbekannt",
-                                  "nicht_offen"])
+                                  "nicht_offen", "kein_selbst_fenster", "schon_gefuellt", "fuellen_laeuft"])
 @pytest.mark.parametrize("aktion,form", PORTAL_POSTS)
 def test_portal_ablehnungen_werden_hinweise(client, falsch, aktion, form, code):
     falsch.fehler_post = PultFehler("abgelehnt", code, {"detail": code})
@@ -3018,6 +3035,25 @@ def test_fenster_befehl_nicht_geschrieben_ist_saubere_weiterleitung(client, fals
     assert r.headers["location"] == "/freigaben?bw_hinweis=befehl_nicht_geschrieben#bewerbungen"
     klasse, text = ui_freigabe_bewerbung._HINWEISE["befehl_nicht_geschrieben"]
     assert f'<div class="{klasse}">{text}</div>' in _abschnitt(client, r.headers["location"])
+
+
+@pytest.mark.parametrize("aktion,form", [("fenster-selbst", {"fassung": "1"}), ("fuellen", {})])
+def test_befehl_nicht_geschrieben_auch_fuer_neue_routen(client, falsch, aktion, form):
+    falsch.fehler_post = PultFehler("nicht_erreichbar", "503", {"detail": "befehl_nicht_geschrieben"})
+    r = _ppost(client, aktion, lauf_id=LAUF_P, **form)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/freigaben?bw_hinweis=befehl_nicht_geschrieben#bewerbungen"
+    falsch.fehler_post = PultFehler("nicht_erreichbar", "503", {"detail": "datenbank_nicht_erreichbar"})
+    assert _ppost(client, aktion, lauf_id=LAUF_P, **form).status_code == 504
+
+
+@pytest.mark.parametrize("status", ["bereit", "selbst_bewerben"])
+def test_nicht_raus_akzeptiert_selbst_bewerben(client, falsch, status):
+    falsch.antwort_ausgang_nicht_raus = {"status": status}
+    r = _ppost(client, "ausgang", lauf_id=LAUF_P, ausgang="nicht_raus")
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=portal_erfasst#bewerbungen"
+    falsch.antwort_ausgang_nicht_raus = {"status": "was-anderes"}
+    assert _ppost(client, "ausgang", lauf_id=LAUF_P, ausgang="nicht_raus").status_code == 504
 
 
 @pytest.mark.parametrize("fehler", [
@@ -3053,7 +3089,7 @@ def test_selbst_bewerben_zeigt_pdf_link_und_feldwerte(client, falsch):
             f'rel="noopener noreferrer">Bewerbung als PDF</a>') in k
     assert 'href="https://portal.example.org/job/1" target="_blank" rel="noopener noreferrer"' in k
     assert '<input type="text" readonly value="&quot;&gt;&lt;b&gt;x&lt;/b&gt;">' in k and "<b>x</b>" not in k
-    assert "Abgeschickt" in _form(k, "ausgang", 'value="raus"')
+    assert "Habe ich selbst abgeschickt" in _form(k, "ausgang", 'value="raus"')
     assert "Nicht bewerben" in _form(k, "nicht-bewerben")
 
 
@@ -3082,6 +3118,116 @@ def test_offline_und_wartet_und_unbekannt(client, falsch):
 def test_im_fenster_text_und_sitzung_beenden(client, falsch, zustand):
     k = _pkarte(client, falsch, zustand=zustand)
     assert "Du bist dran – im Fenster oben" in k and "Sitzung beenden" in _form(k, "beenden")
+
+
+def test_selbst_bewerben_zeigt_fenster_knopf_nur_wenn_erlaubt(client, falsch):
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=True)
+    pc = re.search(r'<form class="nur-pc"[^>]*action="([^"]*)".*?</form>', k, re.S)
+    assert pc and pc.group(1) == f"{PORTAL}/fenster-selbst" and "Im Fenster selbst bewerben" in pc.group(0)
+    assert 'class="primaer"' in pc.group(0) and 'name="fassung" value="1"' in pc.group(0)
+    assert ("Der Bot öffnet die Seite im Fenster. Du löst CAPTCHA oder Anmeldung, dann füllt der Bot auf "
+            "Knopfdruck aus. Abschicken tust du.") in k
+    d = re.search(r'<details class="nur-handy"><summary>Fenster trotzdem hier öffnen</summary>(.*?)</details>',
+                  k, re.S)
+    assert d and f'action="{PORTAL}/fenster-selbst"' in d.group(1)
+    assert "Not-Aus ist an" not in k
+    falsch.not_aus = {"an": True, "quelle": "pult", "von": "sales-ui:mira", "seit": NOT_AUS_SEIT, "grund": None}
+    assert "Not-Aus ist an – nichts wird abgeschickt." in _pkarte(client, falsch, zustand="selbst_bewerben",
+                                                                  selbst_fenster=True)
+    falsch.not_aus = dict(NOT_AUS_AUS)
+    for wert in (False, None):
+        k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=wert)
+        assert "fenster-selbst" not in k and "Im Fenster selbst bewerben" not in k and "Der Bot öffnet" not in k
+        assert "Habe ich selbst abgeschickt" in _form(k, "ausgang", 'value="raus"')
+
+
+def test_selbst_bewerben_zeigt_den_letzten_fehlversuch(client, falsch):
+    """Nach einem gescheiterten Selbst-Fenster faellt die Karte nicht stumm zurueck (Basis-Spec §6.4)."""
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=True, fehler="browser_absturz")
+    assert '<div class="meta">Letzter Versuch: browser_absturz</div>' in k
+    assert f'action="{PORTAL}/fenster-selbst"' in k
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=True, fehler=f"x{BOESE}")
+    assert BOESE not in k and "Letzter Versuch: x&lt;script&gt;" in k
+    for fehler in (None, "", "  "):
+        k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=True, fehler=fehler)
+        assert "Letzter Versuch" not in k
+
+
+SELBST_FENSTER_ZU = [
+    ("sperre_beim_laden", "Die Seite hat den Bot gesperrt. Ein Fenster ist hier nicht möglich – bitte selbst "
+                          "bewerben."),
+    ("http_404", "Die Anzeige ist nicht mehr online. Ein Fenster ist hier nicht möglich."),
+    ("http_410", "Die Anzeige ist nicht mehr online. Ein Fenster ist hier nicht möglich."),
+]
+
+
+@pytest.mark.parametrize("code,satz", SELBST_FENSTER_ZU)
+def test_selbst_bewerben_nennt_den_grund_ohne_fenster(client, falsch, code, satz):
+    """Die drei Codes, die das Selbst-Fenster schliessen, stehen als Satz da, nicht als Code."""
+    k = _pkarte(client, falsch, zustand="selbst_bewerben", selbst_fenster=False, fehler=code)
+    assert satz in k and code not in k and "Letzter Versuch" not in k
+    assert "fenster-selbst" not in k and "Im Fenster selbst bewerben" not in k
+    assert "Habe ich selbst abgeschickt" in _form(k, "ausgang", 'value="raus"')
+
+
+def test_selbst_abgeschickt_braucht_haken(client, falsch):
+    k = _pkarte(client, falsch, zustand="selbst_bewerben")
+    assert ("Der Bot schickt hier nichts ab. Nur bestätigen, wenn du dich selbst auf der Seite beworben hast."
+            in k)
+    f = _form(k, "ausgang", 'value="raus"')
+    assert 'name="selbst" value="ja"' in f and 'name="bestaetigt" value="ja"' in f
+    assert "Ja, ich habe mich selbst beworben" in f and "<button>Habe ich selbst abgeschickt</button>" in f
+    r = _ppost(client, "ausgang", lauf_id=LAUF_P, ausgang="raus", selbst="ja")
+    assert r.status_code == 400 and "Der Bestätigungshaken fehlt. Nichts wurde gesendet." in r.text
+    assert falsch.aktionen() == []
+    r = _ppost(client, "ausgang", lauf_id=LAUF_P, ausgang="raus", selbst="ja", bestaetigt="ja")
+    assert r.status_code == 303 and r.headers["location"] == "/freigaben?bw_hinweis=abgeschickt#bewerbungen"
+    assert falsch.aktionen() == [("POST", f"/bewerbungen/{BID}/portal/ausgang",
+                                  {"lauf_id": LAUF_P, "von": "mira", "ausgang": "raus"})]
+
+
+def test_ausgang_ohne_selbst_braucht_keinen_haken(client, falsch):
+    """"Ist raus" (unklar) bleibt ein Klick; `selbst`/`bestaetigt` gehen nie an die Zentrale."""
+    r = _ppost(client, "ausgang", lauf_id=LAUF_P, ausgang="raus")
+    assert r.status_code == 303
+    assert falsch.aktionen()[0][2] == {"lauf_id": LAUF_P, "von": "mira", "ausgang": "raus"}
+
+
+FUELL_HINWEISE = [
+    ("formular_nicht_gefunden", "Kein Bewerbungsformular auf der Seite gefunden. Im Fenster bis zum Formular "
+                                "klicken, dann noch einmal „Jetzt ausfüllen“."),
+    ("fuellen_fehlgeschlagen", "Ausfüllen hat nicht geklappt. Noch einmal versuchen oder im Fenster selbst "
+                               "ausfüllen."),
+    ("befehl_nicht_geschrieben", "Der Auftrag kam nicht beim Bot an. Noch einmal versuchen."),
+    ("absenden_offen", "Möglicherweise wurde schon abgeschickt – der Bot füllt nicht noch einmal aus. "
+                       "Im Fenster prüfen."),
+    ("komisch_x", "Ausfüllen nicht möglich (komisch_x)."),
+]
+
+
+def test_selbst_fenster_karte_je_phase(client, falsch):
+    basis = dict(zustand="im_fenster", modus="selbst")
+    k = _pkarte(client, falsch, fenster_phase="seite", **basis)
+    assert ("Du bist dran – im Fenster oben: CAPTCHA oder Anmeldung lösen, bis das Bewerbungsformular zu "
+            "sehen ist.") in k
+    assert "Jetzt ausfüllen" in _form(k, "fuellen") and "Sitzung beenden" in _form(k, "beenden")
+    assert "Ausfüllen nicht möglich" not in k and "Der Bot füllt aus" not in k
+    k = _pkarte(client, falsch, fenster_phase="fuellt", **basis)
+    assert "Der Bot füllt aus …" in k and "Sitzung beenden" in _form(k, "beenden")
+    assert _ohne_form(k, "fuellen") and "CAPTCHA oder Anmeldung lösen" not in k
+    k = _pkarte(client, falsch, fenster_phase="gefuellt", **basis)
+    assert "Du bist dran – im Fenster oben: prüfen, Häkchen setzen, selbst abschicken." in k
+    assert "Sitzung beenden" in _form(k, "beenden") and _ohne_form(k, "fuellen")
+    k = _pkarte(client, falsch, fenster_phase=None, **basis)
+    assert "Du bist dran – im Fenster oben" in k and "CAPTCHA oder Anmeldung" not in k
+    assert _ohne_form(k, "fuellen") and "Sitzung beenden" in _form(k, "beenden")
+    k = _pkarte(client, falsch, zustand="im_fenster", modus="formular", fenster_phase="seite")
+    assert "CAPTCHA oder Anmeldung" not in k and _ohne_form(k, "fuellen")
+    for code, text in FUELL_HINWEISE:
+        k = _pkarte(client, falsch, fenster_phase="seite", fuell_fehler=code, **basis)
+        assert text in k
+    k = _pkarte(client, falsch, fenster_phase="seite", fuell_fehler='x"><script>', **basis)
+    assert "<script>" not in k
 
 
 def test_frage_offen_zeigt_felder_und_speichern(client, falsch):
