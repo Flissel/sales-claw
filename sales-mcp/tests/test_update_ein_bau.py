@@ -134,7 +134,8 @@ class Aufbau:
             _schreiben(a / name, "services: {}\n")
         # Ein zweiter Laden mit Wegwerf-Umgebungsdatei.
         _schreiben(a / "deploy" / "laeden" / "zwei.env",
-                   "LADEN_PRAEFIX=zwei\nMEDIEN_ORDNER=/x/zwei-medien\nMEDIEN_ERZEUGT_ORDNER=/x/zwei-erzeugt\n")
+                   "LADEN_PRAEFIX=zwei\nMEDIEN_ORDNER=/x/zwei-medien\nMEDIEN_ERZEUGT_ORDNER=/x/zwei-erzeugt\n"
+                   "MITSCHRIFTEN_ORDNER=/x/zwei-mitschriften\n")
         _schreiben(self.bin / "docker", _DOCKER, ausfuehrbar=True)
         _schreiben(self.bin / "git", _GIT, ausfuehrbar=True)
         _schreiben(self.bin / "sleep", "#!/usr/bin/env bash\nexit 0\n", ausfuehrbar=True)
