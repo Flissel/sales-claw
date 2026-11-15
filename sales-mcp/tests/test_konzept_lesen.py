@@ -23,6 +23,11 @@ SHA_VEKTOREN = "bcc2557e31d83f0a0365e12cfecbe26620ea9c4f42c73c9022ab72bdf07311a2
 # Sales nimmt am Draht ein Konzept ohne `auftrag` und mit `firma: null` weiter wie bisher an (angleichen), der
 # gemeinsame Pruefer lehnt beides ab: genau diese beiden Vektoren weichen bewusst ab.
 NACHSICHT = ("ungueltig_firma_null", "ungueltig_auftrag_fehlt")
+# Sales ist hier strenger als der gemeinsame Pruefer (Schlusspruefung I2: die Werkbank baut ihre erste Gliederung nur
+# aus Konzepten mit Stufennamen, Kurzbeschreibungen und Szenen je Stufe): Vektor -> Sales-Satz.
+STRENGER = {"gueltig_stufe_name_leer": "Jede Stufe braucht einen Namen.",
+            "gueltig_kurz_leer": "Jede Szene braucht eine Kurzbeschreibung.",
+            "gueltig_leere_stufe_zaehlt_keine_szene": "Jede Stufe braucht mindestens eine Szene."}
 FAELLE = json.loads(VEKTOREN.read_text(encoding="utf-8"))["faelle"]
 
 
@@ -85,6 +90,9 @@ def test_vektor_sales_einstieg_pruefen(fall):
     if fall["name"] in NACHSICHT:         # bewusste Abweichung auf dem Sales-Draht (Entscheid des Controllers)
         assert kl.video_pruefen(daten) is not None and satz is None
         assert video_konzept.pruefen(video_konzept.bereinigen(daten["video"])) is None
+        return
+    if fall["name"] in STRENGER:
+        assert kl.video_pruefen(daten) is None and satz == STRENGER[fall["name"]], satz
         return
     assert satz == kl.video_pruefen(daten) or (satz is not None and kl.video_pruefen(daten) is None), satz
     if "video" in fall:

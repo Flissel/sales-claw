@@ -31,6 +31,7 @@ PFAD = "/api/auftraege/video"
 HERKUNFT = "rowboat"
 MAX_RUMPF = 64 * 1024
 LOG = logging.getLogger("sales-ui")
+SATZ_UNGUELTIG = "Der Rumpf enthält ungültige Zeichen."
 
 
 def _fehler(status: int, satz: str) -> JSONResponse:
@@ -39,6 +40,23 @@ def _fehler(status: int, satz: str) -> JSONResponse:
 
 def _keine_konstante(name: str):
     raise ValueError(f"{name} ist kein JSON")          # NaN, Infinity, -Infinity
+
+
+def _hat_nul(wert) -> bool:
+    """Steht in irgendeinem Text (auch in einem Schluessel) U+0000? jsonb kann es nicht speichern; ohne diese
+    Pruefung waere das ein unbehandelter 500 beim Speichern. Iterativ, damit die Tiefe keine Rolle spielt."""
+    offen = [wert]
+    while offen:
+        w = offen.pop()
+        if isinstance(w, str):
+            if "\x00" in w:
+                return True
+        elif isinstance(w, dict):
+            offen.extend(w.keys())
+            offen.extend(w.values())
+        elif isinstance(w, list):
+            offen.extend(w)
+    return False
 
 
 async def _rumpf(request: Request):
@@ -61,9 +79,11 @@ async def _rumpf(request: Request):
     try:
         json.dumps(daten, ensure_ascii=False).encode("utf-8")      # einzelne Surrogate lassen sich nicht kodieren
     except UnicodeEncodeError:
-        return None, _fehler(400, "Der Rumpf enthält ungültige Zeichen.")
+        return None, _fehler(400, SATZ_UNGUELTIG)
     except RecursionError:                                         # zu tief verschachtelt, keine Zeichenfrage
         return None, _fehler(400, "Der Rumpf ist zu tief verschachtelt.")
+    if _hat_nul(daten):
+        return None, _fehler(400, SATZ_UNGUELTIG)
     return daten, None
 
 
@@ -77,7 +97,7 @@ def routen(ui) -> list[Route]:
             return fehler
         server = ui.server
         if server.SCHEMA not in server._AUFTRAG_SCHEMAS:
-            return _fehler(400, "Aufträge gibt es in diesem Laden noch nicht.")
+            return _fehler(400, video_uebergabe.SATZ_KEIN_AUFTRAGSBUCH)
         thema, beschreibung = daten.get("thema"), daten.get("beschreibung")
         zielgruppe, konzept = daten.get("zielgruppe"), daten.get("konzept")
         if (not isinstance(thema, str) or not all(w is None or isinstance(w, str)
@@ -99,7 +119,7 @@ def routen(ui) -> list[Route]:
         if not mandant:
             return _fehler(400, video_uebergabe.SATZ_KEINE_FIRMA)
         firma = konzept.get("firma")
-        if isinstance(firma, str) and firma.strip() and firma.strip() != mandant:
+        if isinstance(firma, str) and js_trim(firma) and js_trim(firma) != mandant:
             return _fehler(400, video_uebergabe.SATZ_FIRMA)
         konzept = video_konzept.bereinigen(konzept)           # nur bekannte Felder werden gespeichert
         sha = video_konzept.block_hash(konzept)

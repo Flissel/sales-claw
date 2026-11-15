@@ -478,3 +478,68 @@ def test_bestehender_auftrag_geben_video_unveraendert(buch):
         "fehler": "Die Zielgruppe darf höchstens 300 Zeichen haben."}
     assert "von" not in json.loads(buch.buch_aufrufe[0][1][3])     # der Salesman-Weg schreibt weder von noch konzept
     assert len(buch.buch_aufrufe) == 1 and buch.anlegen == []
+
+
+# --- Schlusspruefung I4: U+0000 (jsonb kann es nicht speichern) -----------------------------------------------
+
+def _mit_nul(ort):
+    k = konzept()
+    if ort == "thema":
+        k["thema"] = "KI im\x00Vertrieb"
+    elif ort == "kurz":
+        k["stufen"][1]["szenen"][3]["kurz"] = "Szene\x00"
+    elif ort == "notiz":
+        k["stufen"][1]["szenen"][0]["notiz"] = "\x00"
+    elif ort == "pfad":
+        k["pfad"] = "a\x00b"
+    elif ort == "unbekanntes_feld":
+        k["zusatz"] = ["x", {"tief": "\x00"}]
+    elif ort == "schluessel":
+        k["a\x00b"] = 1
+    r = rumpf(k)
+    if ort == "oben":
+        r["beschreibung"] = "x\x00"
+    return r
+
+
+@pytest.mark.parametrize("ort", ["thema", "kurz", "notiz", "pfad", "unbekanntes_feld", "schluessel", "oben"])
+def test_nul_irgendwo_im_rumpf_400_ohne_speichern(client, buch, ort):
+    r = client.post(URL, json=_mit_nul(ort), headers=KOPF)
+    assert r.status_code == 400 and r.json() == {"fehler": "Der Rumpf enthält ungültige Zeichen."}
+    assert buch.anlegen == []
+
+
+def test_ein_geschriebenes_nul_zeichen_ist_kein_nul(client, buch):
+    k = konzept(kernaussage="Das Zeichen \u0000 als Text, nicht als Zeichen.")
+    assert client.post(URL, json=rumpf(k), headers=KOPF).status_code == 200
+
+
+# --- Schlusspruefung I2: leere Stufennamen und Kurzbeschreibungen -------------------------------------------------
+
+@pytest.mark.parametrize("wert,satz", [
+    ("", "Jede Szene braucht eine Kurzbeschreibung."),
+    ("\ufeff", "Jede Szene braucht eine Kurzbeschreibung."),
+])
+def test_leere_kurzbeschreibung_400(client, buch, wert, satz):
+    k = konzept()
+    k["stufen"][0]["szenen"][0]["kurz"] = wert
+    r = client.post(URL, json=rumpf(k), headers=KOPF)
+    assert r.status_code == 400 and r.json() == {"fehler": satz} and buch.anlegen == []
+
+
+def test_leerer_stufenname_400(client, buch):
+    k = konzept()
+    k["stufen"][0]["name"] = "\ufeff "
+    r = client.post(URL, json=rumpf(k), headers=KOPF)
+    assert r.status_code == 400 and r.json() == {"fehler": "Jede Stufe braucht einen Namen."} and buch.anlegen == []
+
+
+# --- Schlusspruefung T6: firma wird wie JavaScript getrimmt -------------------------------------------------------
+
+def test_firma_mit_feff_am_rand_gilt_als_dieselbe_firma(client, buch):
+    assert client.post(URL, json=rumpf(konzept(firma="\ufefffin2gether\u00a0")), headers=KOPF).status_code == 200
+
+
+def test_firma_mit_u0085_am_rand_ist_eine_andere_firma(client, buch):
+    r = client.post(URL, json=rumpf(konzept(firma="\x85fin2gether")), headers=KOPF)
+    assert r.status_code == 400 and "anderen Firma" in r.json()["fehler"]

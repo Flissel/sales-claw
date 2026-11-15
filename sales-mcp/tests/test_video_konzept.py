@@ -255,3 +255,51 @@ def test_firma_null_oder_fehlend_gilt_wie_keine_firma():
     del k["firma"]
     assert vk.pruefen(k) is None and "firma" not in vk.bereinigen(k) and "firma" not in vk.bereinigen(konzept(firma=None))
     assert vk.pruefen(konzept(firma=5)) == "Die Firma muss ein Text sein."
+
+
+# --- Sales-eigene Regel: die Werkbank braucht Namen und Kurzbeschreibungen fuer die 1:1-Gliederung ---------------
+
+LEER = ["", "   ", "\ufeff", " \ufeff\u00a0\t", "\u0001", "\u2028"]    # U+FEFF/U+00A0/U+2028: nur in JavaScript Leerraum
+
+
+@pytest.mark.parametrize("wert", LEER)
+def test_leerer_stufenname_wird_abgelehnt(wert):
+    k = konzept()
+    k["stufen"][1]["name"] = wert
+    assert vk.pruefen(k) == "Jede Stufe braucht einen Namen."
+
+
+@pytest.mark.parametrize("wert", LEER)
+def test_leere_kurzbeschreibung_wird_abgelehnt(wert):
+    k = konzept()
+    k["stufen"][0]["szenen"][2]["kurz"] = wert
+    assert vk.pruefen(k) == "Jede Szene braucht eine Kurzbeschreibung."
+
+
+def test_js_trim_kennt_feff_python_strip_nicht():
+    assert kl.js_trim("\ufeff") == "" and "\ufeff".strip() != ""      # sonst prueft der Test nichts
+
+
+def test_stufe_ohne_szenen_wird_abgelehnt():
+    k = konzept()
+    k["stufen"].append({"name": "Leer", "szenen": []})                 # 8 Szenen bleiben 8: der gemeinsame Pruefer schweigt
+    assert kl.video_pruefen_objekt(vk.angleichen(k)) is None
+    assert vk.pruefen(k) == "Jede Stufe braucht mindestens eine Szene."
+
+
+def test_gueltige_namen_mit_raendern_gelten():
+    k = konzept()
+    k["stufen"][0]["name"] = " \ufeffProblem\u00a0"
+    k["stufen"][0]["szenen"][0]["kurz"] = "\tSzene\u200b"
+    assert vk.pruefen(k) is None
+
+
+def test_neun_stufen_meldet_weiter_der_gemeinsame_pruefer():
+    k = konzept(stufen=[{"name": f"S{i}", "szenen": [{"kurz": "s", "bildart": "slide"}]} for i in range(9)])
+    assert vk.pruefen(k) == "Es sind höchstens 8 Stufen erlaubt."
+
+
+def test_leerer_name_hat_vorrang_nicht_vor_dem_gemeinsamen_pruefer():
+    k = konzept(thema="ab")
+    k["stufen"][0]["name"] = ""
+    assert vk.pruefen(k) == "Das Thema muss 3 bis 300 Zeichen lang sein."

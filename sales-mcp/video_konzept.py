@@ -20,6 +20,16 @@ FELD_MAX = 500                         # firma, pfad, name
 _OHNE_HASH = ("auftrag", "pfad", "name")
 
 
+SATZ_STUFE_NAME = "Jede Stufe braucht einen Namen."
+SATZ_STUFE_LEER = "Jede Stufe braucht mindestens eine Szene."
+SATZ_SZENE_KURZ = "Jede Szene braucht eine Kurzbeschreibung."
+
+
+def _sichtbar(text: str) -> bool:
+    """Bleibt nach JS-Trimmung (und ohne C0-Steuerzeichen, die die Werkbank ebenfalls entfernt) etwas uebrig?"""
+    return bool("".join(z for z in js_trim(text) if ord(z) >= 0x20).strip())
+
+
 def _minuten(wert):
     """4.0 ist dieselbe Zahl wie 4 (JSON kennt keinen Unterschied): ganze Zahlen werden int."""
     if isinstance(wert, float) and wert.is_integer():
@@ -91,6 +101,16 @@ def pruefen(konzept) -> str | None:
         wert = konzept.get(feld)
         if wert is not None and (not isinstance(wert, str) or utf16_laenge(wert) > FELD_MAX):
             return f"Das Feld {feld} des Konzepts muss ein kurzer Text sein."
+    # Die Werkbank baut ihre erste Gliederung nur dann eins zu eins aus dem Konzept, wenn jede Stufe einen Namen und
+    # jede Szene eine Kurzbeschreibung hat; der gemeinsame Pruefer verlangt das (noch) nicht. Stufen und Szenen sind
+    # hier schon als Liste von Objekten geprueft. Die Obergrenze von 8 Stufen prueft der gemeinsame Pruefer.
+    for stufe in konzept["stufen"]:
+        if not _sichtbar(stufe["name"]):
+            return SATZ_STUFE_NAME
+        if not stufe["szenen"]:
+            return SATZ_STUFE_LEER
+        if any(not _sichtbar(sz["kurz"]) for sz in stufe["szenen"]):
+            return SATZ_SZENE_KURZ
     if utf16_laenge(_kanonisch(bereinigen(konzept))) > BLOCK_MAX:
         return f"Das Konzept ist größer als {BLOCK_MAX} Zeichen."
     return None
