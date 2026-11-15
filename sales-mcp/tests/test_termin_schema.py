@@ -22,7 +22,9 @@ SPALTEN = {
     "termin_mitschriften": {
         "id", "uid", "segmente", "geholt_am", "auswertung_status",
         "auswertung_json", "auswertung_md", "auswertung_am", "modell",
-        "entwurf_id", "auswertung_versuche"},
+        "entwurf_id", "auswertung_versuche", "rubrik", "rubrik_manuell",
+        "bericht_pfad", "bericht_am", "bericht_stand", "einordnung_versuche",
+        "einordnung_am"},
     "termin_vorschlaege": {
         "id", "mitschrift_id", "art", "lead_id", "daten", "status",
         "erstellt_am", "erledigt_am"},
@@ -145,3 +147,18 @@ def test_termin_akten_bilder_uebersprungen_zaehler():
         "and column_name='bilder_uebersprungen'")[0]
     assert (z["data_type"], z["is_nullable"]) == ("integer", "NO")
     assert z["column_default"] == "0"
+
+
+def test_mitschriften_spalten_vorgaben():
+    # Mitschriften-Ablage (14.11.2026): neue Zeile ohne Angaben -> Rubrik und
+    # Bericht leer, nicht manuell gesetzt, noch kein Einordnungsversuch.
+    _akte()
+    _mitschrift()
+    z = server._q(
+        "select rubrik, rubrik_manuell, bericht_pfad, bericht_am, bericht_stand, "
+        "einordnung_versuche, einordnung_am from termin_mitschriften")[0]
+    assert z["rubrik_manuell"] is False
+    assert z["einordnung_versuche"] == 0
+    for leer in ("rubrik", "bericht_pfad", "bericht_am", "bericht_stand",
+                 "einordnung_am"):
+        assert z[leer] is None, leer

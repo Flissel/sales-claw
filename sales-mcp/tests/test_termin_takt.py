@@ -17,6 +17,8 @@ os.environ["SALES_DB_SCHEMA"] = "sales_test"
 import auswertung  # noqa: E402
 import betreiber_hinweis  # noqa: E402
 import briefing  # noqa: E402
+import mitschrift_bericht  # noqa: E402
+import neu_auswertung  # noqa: E402
 import ollama  # noqa: E402
 import server  # noqa: E402
 import termin_akte  # noqa: E402
@@ -106,7 +108,11 @@ def fake(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def leer(monkeypatch):
+def leer(monkeypatch, tmp_path):
+    # Mitschriften-Ablage: ohne eigene Fixture gibt es keinen Ordner (Schritt ruht)
+    monkeypatch.setenv("MITSCHRIFTEN_PFAD", str(tmp_path / "keine-ablage"))
+    monkeypatch.setattr(termin_takt, "_LETZTER_ABGLEICH", None, raising=False)
+    monkeypatch.setattr(termin_takt, "_bericht_pause", {}, raising=False)
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.termin_akten, sales_test.activities, "
                      "sales_test.drafts, sales_test.leads cascade")
@@ -1332,3 +1338,274 @@ def test_auswertung_verworfen_wenn_segmente_geaendert(fake, monkeypatch, caplog)
     monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis())
     termin_takt.runde(JETZT + timedelta(seconds=30))
     assert _mit()["auswertung_status"] == "fertig"
+
+
+# ---------- Mitschriften-Ablage (Task 4): Einordnen, Bericht, Abgleich ----------
+
+KURSE = json.dumps({"rubrik": "Kurse", "neu": True})
+
+
+@pytest.fixture
+def ablage(monkeypatch, tmp_path):
+    ordner = tmp_path / "mitschriften"
+    ordner.mkdir()
+    monkeypatch.setenv("MITSCHRIFTEN_PFAD", str(ordner))
+    return ordner
+
+
+@pytest.fixture
+def ki(monkeypatch):
+    """Ollama erreichbar; chat antwortet mit ki.antwort (Exception: wird geworfen)."""
+    class Ki:
+        antwort: object = KURSE
+        aufrufe = 0
+
+    k = Ki()
+
+    def chat(system, nutzer, als_json=False, timeout_s=None):
+        k.aufrufe += 1
+        if isinstance(k.antwort, Exception):
+            raise k.antwort
+        return k.antwort
+
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    monkeypatch.setattr(ollama, "chat", chat)
+    return k
+
+
+def _fertig(uid="u1", **spalten):
+    """Akte (vorbei, ohne Bot-Fenster) mit fertig ausgewerteter Mitschrift."""
+    _akte(uid, beginn=JETZT - timedelta(days=1), status="fertig")
+    werte = {"auswertung_json": json.dumps(_ergebnis()), "auswertung_md": "## Ergebnis",
+             "auswertung_am": JETZT - timedelta(days=1), **spalten}
+    _mitschrift(uid, status="fertig", **werte)
+    return uid
+
+
+def _bild_fertig(uid="u1"):
+    import io
+    from PIL import Image
+    puffer = io.BytesIO()
+    Image.new("RGB", (32, 24), (10, 200, 10)).save(puffer, "JPEG")
+    return str(server._q(
+        "insert into termin_bilder (uid, aufgenommen_am, bild, breite, hoehe, dhash, "
+        "beschreibung, beschreibung_status) values (%s, %s, %s, 32, 24, 1, 'Folie', 'fertig') "
+        "returning id", (uid, JETZT - timedelta(days=1), puffer.getvalue()))[0]["id"])
+
+
+def _html(ordner):
+    return sorted(str(p.relative_to(ordner)).replace(os.sep, "/") for p in ordner.rglob("*.html"))
+
+
+def test_ablage_ordnet_ein_und_legt_ab(fake, ablage, ki):
+    _fertig("u1")
+    termin_takt.runde(JETZT)
+    assert _mit("u1")["rubrik"] == "Kurse"
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    m = _mit("u1")
+    assert m["bericht_pfad"] and m["bericht_pfad"].startswith("Kurse/")
+    assert (ablage / m["bericht_pfad"]).is_file()
+    assert m["bericht_stand"] == mitschrift_bericht.stand("u1")
+    assert ki.aufrufe == 1
+
+
+def test_ablage_ki_aus_legt_unsortiert_ab(fake, ablage, ki, monkeypatch):
+    _fertig("u1")
+    monkeypatch.setattr(ollama, "erreichbar", lambda: False)
+    termin_takt.runde(JETZT)
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert _mit("u1")["rubrik"] is None and ki.aufrufe == 0
+    assert _html(ablage) == []
+    # KI erreichbar, aber der Aufruf scheitert -> Unsortiert, Bericht dort
+    monkeypatch.setattr(ollama, "erreichbar", lambda: True)
+    ki.antwort = ollama.OllamaFehler("kaputt")
+    # (eine Runde: einordnung_am setzt die Datenbank mit now(), JETZT liegt 2099 -
+    # eine zweite Runde faende den Neuversuch schon faellig)
+    termin_takt.runde(JETZT + timedelta(minutes=1))
+    m = _mit("u1")
+    assert m["rubrik"] == "Unsortiert" and m["einordnung_versuche"] == 1
+    assert m["bericht_pfad"].startswith("Unsortiert/")
+    assert _html(ablage) == [m["bericht_pfad"]]
+
+
+def test_ablage_neuversuch_unsortiert(fake, ablage, ki):
+    _fertig("u1", rubrik="Unsortiert", einordnung_versuche=1,
+            einordnung_am=JETZT - timedelta(hours=2))
+    alt = mitschrift_bericht.ablegen("u1")
+    assert alt.startswith("Unsortiert/")
+    termin_takt.runde(JETZT)
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    m = _mit("u1")
+    assert m["rubrik"] == "Kurse" and m["einordnung_versuche"] == 2
+    assert m["bericht_pfad"].startswith("Kurse/")
+    assert _html(ablage) == [m["bericht_pfad"]]
+    assert ki.aufrufe == 1
+    # Deckel erreicht oder noch keine Stunde her: kein Aufruf
+    _fertig("u2", rubrik="Unsortiert", einordnung_versuche=3,
+            einordnung_am=JETZT - timedelta(hours=2))
+    _fertig("u3", rubrik="Unsortiert", einordnung_versuche=1,
+            einordnung_am=JETZT - timedelta(minutes=30))
+    termin_takt.runde(JETZT + timedelta(minutes=1))
+    termin_takt.runde(JETZT + timedelta(minutes=1, seconds=30))
+    assert ki.aufrufe == 1
+    assert _mit("u2")["rubrik"] == "Unsortiert" and _mit("u3")["rubrik"] == "Unsortiert"
+    # von Hand gesetztes Unsortiert bleibt, auch wenn ein Neuversuch faellig waere
+    server._q("update termin_mitschriften set rubrik_manuell = true, einordnung_versuche = 0 "
+              "where uid = 'u2' returning id")
+    termin_takt.runde(JETZT + timedelta(minutes=2))
+    assert ki.aufrufe == 1 and _mit("u2")["rubrik"] == "Unsortiert"
+
+
+def test_ablage_wartet_bei_anstehendem_termin(fake, ablage, ki, monkeypatch):
+    _fertig("u1")
+    _fertig("u2", rubrik="Kurse")
+    monkeypatch.setattr(termin_takt, "_termin_steht_an", lambda jetzt: True)
+    termin_takt.runde(JETZT)
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert ki.aufrufe == 0 and _mit("u1")["rubrik"] is None
+    assert _mit("u2")["bericht_pfad"].startswith("Kurse/")
+    assert _mit("u1")["bericht_pfad"] is None
+
+
+def test_ablage_neu_bei_geaendertem_stand(fake, ablage, ki, monkeypatch):
+    _fertig("u1", rubrik="Kurse")
+    bid = _bild_fertig("u1")
+    termin_takt.runde(JETZT)
+    m1 = _mit("u1")
+    assert m1["bericht_pfad"] and (ablage / m1["bericht_pfad"]).is_file()
+    termin_takt.runde(JETZT + timedelta(seconds=30))       # Stand gleich: nichts neu
+    assert _mit("u1")["bericht_am"] == m1["bericht_am"]
+    # ein Bild verschwindet (Schicht B / 24-h-Aufraeumen) -> neu erzeugt
+    server._q("delete from termin_bilder where id = %s returning id", (bid,))
+    termin_takt.runde(JETZT + timedelta(minutes=1))
+    m2 = _mit("u1")
+    assert m2["bericht_am"] > m1["bericht_am"] and m2["bericht_stand"] != m1["bericht_stand"]
+    assert m2["bericht_stand"] == mitschrift_bericht.stand("u1")
+    # neu_auswerten: Auswertung neu fertig -> neu erzeugt, Rubrik von Hand bleibt
+    server._q("update termin_mitschriften set rubrik_manuell = true where uid = 'u1' "
+              "returning id")
+    neu_auswertung.neu_auswerten("u1")
+    monkeypatch.setattr(auswertung, "auswerten", lambda s, bilder=None: _ergebnis())
+    termin_takt.runde(JETZT + timedelta(minutes=2))
+    m3 = _mit("u1")
+    assert m3["auswertung_status"] == "fertig" and m3["auswertung_am"] != m2["auswertung_am"]
+    assert m3["bericht_am"] > m2["bericht_am"] and m3["bericht_stand"] != m2["bericht_stand"]
+    assert m3["rubrik"] == "Kurse" and m3["rubrik_manuell"] is True
+    assert _html(ablage) == [m3["bericht_pfad"]]
+    assert ki.aufrufe == 0
+
+
+def test_ablage_verschoben_legt_in_neuer_rubrik_ab(fake, ablage, ki):
+    _fertig("u1", rubrik="Kurse")
+    termin_takt.runde(JETZT)
+    alt = _mit("u1")["bericht_pfad"]
+    server._q("update termin_mitschriften set rubrik = 'Intern', rubrik_manuell = true "
+              "where uid = 'u1' returning id")
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    neu = _mit("u1")["bericht_pfad"]
+    assert neu.startswith("Intern/") and _html(ablage) == [neu] and alt != neu
+
+
+def test_ablage_fehler_blockiert_andere_nicht_und_loggt_keinen_pfad(fake, ablage, ki,
+                                                                    monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    _fertig("u1", rubrik="Kurse")
+    _fertig("u2", rubrik="Kurse")
+    echt = mitschrift_bericht.ablegen
+    versuche = []
+
+    def ablegen(uid):
+        versuche.append(uid)
+        if uid == "u1":
+            raise PermissionError(f"Zugriff verweigert: {ablage}/Kurse/geheim-titel.html")
+        return echt(uid)
+
+    monkeypatch.setattr(mitschrift_bericht, "ablegen", ablegen)
+    ergebnis = termin_takt.runde(JETZT)
+    assert ergebnis["ablage"] == 0 and versuche == ["u1"]
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert versuche == ["u1", "u2"] and _mit("u2")["bericht_pfad"]
+    termin_takt.runde(JETZT + timedelta(minutes=1))        # u1 pausiert
+    assert versuche == ["u1", "u2"]
+    termin_takt.runde(JETZT + timedelta(minutes=62))       # nach einer Stunde erneut
+    assert versuche == ["u1", "u2", "u1"]
+    assert str(ablage) not in caplog.text and "geheim-titel" not in caplog.text
+    assert "PermissionError" in caplog.text and termin_takt._h("u1") in caplog.text
+
+
+def test_ablage_ohne_beschreibbaren_ordner_ruht(fake, ki, tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="sales-termine")
+    datei = tmp_path / "keinordner"
+    datei.write_text("x")
+    monkeypatch.setenv("MITSCHRIFTEN_PFAD", str(datei))
+    _fertig("u1")
+    for i in range(3):
+        assert termin_takt.runde(JETZT + timedelta(seconds=30 * i))["ablage"] == 0
+    assert ki.aufrufe == 0 and _mit("u1")["rubrik"] is None
+    meldungen = [r.getMessage() for r in caplog.records if "Mitschriften-Ablage" in r.getMessage()]
+    assert len(meldungen) == 1 and str(datei) not in caplog.text
+
+
+def test_takt_abgleich_hoechstens_stuendlich(fake, ablage, monkeypatch):
+    aufrufe = []
+    monkeypatch.setattr(mitschrift_bericht, "abgleichen",
+                        lambda: aufrufe.append(1) or {"geloescht": 0, "zurueckgesetzt": 0,
+                                                      "ordner_entfernt": 0})
+    termin_takt.runde(JETZT)
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    assert len(aufrufe) == 1
+    termin_takt.runde(JETZT + timedelta(minutes=61))
+    assert len(aufrufe) == 2
+    termin_takt.runde(JETZT + timedelta(minutes=62))
+    assert len(aufrufe) == 2
+
+
+def test_abgleich_fehlende_datei_baut_der_takt_einzeln_neu(fake, ablage, ki, monkeypatch):
+    _fertig("u1", rubrik="Kurse")
+    _fertig("u2", rubrik="Kurse")
+    termin_takt.runde(JETZT)
+    termin_takt.runde(JETZT + timedelta(seconds=30))
+    p1, p2 = _mit("u1")["bericht_pfad"], _mit("u2")["bericht_pfad"]
+    (ablage / p2).unlink()
+    aufrufe = []
+    echt = mitschrift_bericht.ablegen
+    monkeypatch.setattr(mitschrift_bericht, "ablegen",
+                        lambda uid: aufrufe.append(uid) or echt(uid))
+    termin_takt.runde(JETZT + timedelta(minutes=61))    # Abgleich: nur zuruecksetzen
+    assert aufrufe == [] and _mit("u2")["bericht_pfad"] is None
+    termin_takt.runde(JETZT + timedelta(minutes=61, seconds=30))  # Bericht-Schritt
+    assert aufrufe == ["u2"] and _mit("u2")["bericht_pfad"] == p2
+    assert _html(ablage) == sorted([p1, p2])
+
+
+@pytest.mark.parametrize("status,versuche", [("leer", 0), ("fehler", 3)])
+def test_ablage_veralteter_bericht_geht_weg(fake, ablage, ki, monkeypatch, status,
+                                          versuche):
+    _fertig("u1", rubrik="Kurse")
+    _fertig("u2", rubrik="Kurse")
+    _fertig("u3", rubrik="Kurse")
+    for i in range(3):
+        termin_takt.runde(JETZT + timedelta(seconds=30 * i))
+    pfade = {u: _mit(u)["bericht_pfad"] for u in ("u1", "u2", "u3")}
+    assert all(pfade.values())
+    # u1 endet leer bzw. endgueltig gescheitert; u2 wird gerade neu ausgewertet (offen);
+    # u3 ist gescheitert, darf aber noch einmal versuchen
+    server._q("update termin_mitschriften set auswertung_status = %s, "
+              "auswertung_versuche = %s where uid = 'u1' returning id", (status, versuche))
+    server._q("update termin_mitschriften set auswertung_status = 'offen' "
+              "where uid = 'u2' returning id")
+    server._q("update termin_mitschriften set auswertung_status = 'fehler', "
+              "auswertung_versuche = 1, auswertung_am = %s where uid = 'u3' returning id",
+              (JETZT + timedelta(minutes=2),))
+    # Auswertung und Einordnung ruhen (Termin steht an), der Schritt laeuft trotzdem
+    monkeypatch.setattr(termin_takt, "_termin_steht_an", lambda jetzt: True)
+    termin_takt.runde(JETZT + timedelta(minutes=2))
+    m1 = _mit("u1")
+    assert (m1["bericht_pfad"], m1["bericht_stand"], m1["bericht_am"]) == (None, None, None)
+    assert not (ablage / pfade["u1"]).exists()
+    assert m1["rubrik"] == "Kurse"
+    for u in ("u2", "u3"):
+        assert _mit(u)["bericht_pfad"] == pfade[u] and (ablage / pfade[u]).is_file()
+    termin_takt.runde(JETZT + timedelta(minutes=2, seconds=30))   # bleibt weg
+    assert _mit("u1")["bericht_pfad"] is None
+    assert _html(ablage) == sorted([pfade["u2"], pfade["u3"]])

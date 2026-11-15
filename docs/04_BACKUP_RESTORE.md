@@ -167,6 +167,16 @@ also mit derselben Sorgfalt behandeln wie eine, die Passworthashes enthält
 — Zugriff einschränken, nicht unverschlüsselt ablegen, nicht in ein
 Ticket/Log kopieren.
 
+## Mitschriften-Ordner je Laden (14.11.2026)
+
+Die Terminberichte der Mitschriften-Ablage liegen als Dateien im Ordner
+`MITSCHRIFTEN_ORDNER` des Ladens (Vorgabe Basis-Laden:
+`./laeden-daten/sales/mitschriften`, jeder weitere Laden
+`./laeden-daten/<name>/mitschriften`). `deploy/sicherung.sh` sichert ihn je
+Laden als `mitschriften.tar.gz` neben den Volumes, `deploy/wiederherstellen.sh`
+leert den Ordner und entpackt ihn wieder. Fehlt die Datei in einer Sicherung,
+meldet die Wiederherstellung nur einen Hinweis und lässt den Ordner unverändert.
+
 ## Härtung (Fix-Runde 1)
 
 Ein Review der ersten Fassung ergab zwei Befunde. Beide stammten aus dem

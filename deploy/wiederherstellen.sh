@@ -97,6 +97,50 @@ for vol in $VOLUMES; do
     sh -c "find /ziel -mindepth 1 -delete && tar xzf /quelle/$vol.tar.gz -C /ziel"
 done
 
+# MITSCHRIFTEN JE LADEN (14.11.2026, Terminberichte). sicherung.sh legt den
+# Ordner des Ladens als mitschriften.tar.gz ab (MITSCHRIFTEN_ORDNER aus
+# deploy/laeden/<laden>.env, beim Basis-Laden ./laeden-daten/sales/mitschriften).
+# Das ist KEIN Volume, sondern ein Ordner auf dem Host: er wird geleert und
+# aus der Sicherung entpackt. Fehlt die Datei (Sicherung vor diesem Datum oder
+# noch keine Berichte), ist das nur ein Hinweis - kein Fehler.
+WURZEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "$UNTERORDNER/mitschriften.tar.gz" ]; then
+  md=""
+  if [ "$LADEN" != sales ] && [ -r "$WURZEL/deploy/laeden/$LADEN.env" ]; then
+    md="$(sed -n 's/^MITSCHRIFTEN_ORDNER=//p' "$WURZEL/deploy/laeden/$LADEN.env" | tr -d '[:space:]')"
+  fi
+  # Nur der Basis-Laden bekommt die Vorgabe. Fuer einen anderen Laden ohne Zeile
+  # wuerde sie den Ordner des Basis-Ladens leeren und mit fremden Berichten fuellen.
+  if [ "$LADEN" = sales ]; then md="${md:-./laeden-daten/sales/mitschriften}"; fi
+  if [ -z "$md" ]; then
+    echo "FEHLER: kein MITSCHRIFTEN_ORDNER fuer Laden '$LADEN' (deploy/laeden/$LADEN.env) - Mitschriften-Ordner NICHT wiederhergestellt." >&2
+    FEHLER=$((FEHLER + 1))
+  else
+    case "$md" in /*) ;; *) md="$WURZEL/${md#./}" ;; esac
+    md="${md%/}"; md="${md%/.}"
+    # Schutz vor dem Loeschen: nur ein Ordner namens "mitschriften", nie / oder die
+    # Wurzel (MITSCHRIFTEN_ORDNER=./ oder . wuerde sonst den Checkout leeren).
+    if [ "${md##*/}" != mitschriften ] || [ "$md" = "$WURZEL" ]; then
+      echo "FEHLER: MITSCHRIFTEN_ORDNER ergibt '$md' - muss auf einen Ordner namens mitschriften zeigen (nicht / und nicht die Wurzel); NICHT wiederhergestellt." >&2
+      FEHLER=$((FEHLER + 1))
+    elif ! tar tzf "$UNTERORDNER/mitschriften.tar.gz" >/dev/null 2>&1; then
+      # Archiv VOR dem Leeren pruefen: ein kaputtes darf den Ordner nicht leeren.
+      echo "FEHLER: $UNTERORDNER/mitschriften.tar.gz ist nicht lesbar - Ordner $md bleibt unveraendert." >&2
+      FEHLER=$((FEHLER + 1))
+    else
+      mkdir -p "$md"
+      if find "$md" -mindepth 1 -delete && tar xzf "$UNTERORDNER/mitschriften.tar.gz" -C "$md"; then
+        echo "Mitschriften-Ordner $md wiederhergestellt."
+      else
+        echo "FEHLER: Mitschriften-Ordner $md konnte nicht wiederhergestellt werden." >&2
+        FEHLER=$((FEHLER + 1))
+      fi
+    fi
+  fi
+else
+  echo "HINWEIS: $UNTERORDNER/mitschriften.tar.gz fehlt - Mitschriften-Ordner bleibt unveraendert."
+fi
+
 if [ ! -f "$UNTERORDNER/schema.sql.gz" ]; then
   echo "FEHLER: $UNTERORDNER/schema.sql.gz fehlt, obwohl andere Teile dieses Ladens gesichert wurden - Kundendaten (Leads, Entwuerfe, Aktivitaeten) werden NICHT wiederhergestellt." >&2
   FEHLER=$((FEHLER + 1))

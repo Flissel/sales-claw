@@ -76,16 +76,42 @@ for P in $PRAEFIXE; do
   # es EINE globale media.tar.gz, und media-erzeugt fehlte ganz — dort liegen
   # die Dateien, die der Betreiber per WhatsApp an sich selbst schickt, und
   # die lassen sich nicht neu erzeugen.
-  for paar in MEDIEN_ORDNER:media MEDIEN_ERZEUGT_ORDNER:media-erzeugt; do
+  # MITSCHRIFTEN_ORDNER (14.11.2026, Terminberichte): Vorgabe des Basis-Ladens ist
+  # ./laeden-daten/sales/mitschriften, nicht ./mitschriften - daher je Paar eine
+  # eigene Vorgabe (standard), waehrend der Dateiname mitschriften.tar.gz bleibt.
+  for paar in MEDIEN_ORDNER:media MEDIEN_ERZEUGT_ORDNER:media-erzeugt MITSCHRIFTEN_ORDNER:mitschriften; do
     v="${paar%%:*}"; vorgabe="${paar#*:}"
+    standard="./$vorgabe"
+    if [ "$v" = MITSCHRIFTEN_ORDNER ]; then standard="./laeden-daten/sales/mitschriften"; fi
     dir=""
     if [ "$P" != sales ] && [ -r "$WURZEL/deploy/laeden/$P.env" ]; then
       dir="$(sed -n "s/^$v=//p" "$WURZEL/deploy/laeden/$P.env" | tr -d '[:space:]')"
     fi
-    dir="${dir:-./$vorgabe}"
+    # Nur der Basis-Laden bekommt die Vorgabe; ein anderer Laden ohne Zeile wuerde
+    # sonst den Ordner des Basis-Ladens unter seinem Namen sichern - ueberspringen.
+    if [ "$v" = MITSCHRIFTEN_ORDNER ] && [ "$P" != sales ] && [ -z "$dir" ]; then
+      echo "FEHLER: $P hat kein MITSCHRIFTEN_ORDNER (deploy/laeden/$P.env) - die Terminberichte dieses Ladens fehlen in dieser Sicherung." >&2
+      FEHLER=$((FEHLER + 1))
+      continue
+    fi
+    dir="${dir:-$standard}"
     case "$dir" in /*) ;; *) dir="$WURZEL/${dir#./}" ;; esac
     if [ -d "$dir" ]; then
-      tar czf "$UNTERORDNER/$vorgabe.tar.gz" -C "$dir" .
+      if [ "$v" = MITSCHRIFTEN_ORDNER ]; then
+        # Der Taktgeber schreibt hier laufend; tar meldet "Datei beim Lesen geaendert"
+        # mit Exit 1 - das ist kein Fehler (unter set -e wuerde es die ganze Nacht
+        # beenden). Ab Exit 2 ist das Archiv unbrauchbar: FEHLER zaehlen, weitermachen.
+        rc=0
+        tar czf "$UNTERORDNER/$vorgabe.tar.gz" -C "$dir" . || rc=$?
+        if [ "$rc" -ge 2 ]; then
+          echo "FEHLER: tar fuer $P/mitschriften endete mit Code $rc - Archiv unbrauchbar." >&2
+          FEHLER=$((FEHLER + 1))
+        elif [ "$rc" -eq 1 ]; then
+          echo "HINWEIS: $P/mitschriften waehrend der Sicherung veraendert (tar Exit 1) - Archiv bleibt gueltig." >&2
+        fi
+      else
+        tar czf "$UNTERORDNER/$vorgabe.tar.gz" -C "$dir" .
+      fi
     fi
   done
 

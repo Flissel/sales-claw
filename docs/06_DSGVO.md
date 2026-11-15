@@ -173,6 +173,35 @@ Checkliste für den Dienst `sales-auge` („Laura (Bildschirm)“, Runbook: Absc
 - [ ] **Offen, vor Kundenterminen:** Hinweis in der Einladung („bitte keine persönlichen Daten zeigen, sonst wird die
       Aufzeichnung gelöscht“) und Schalter auch dort. **Noch nicht umgesetzt**; bis dahin kein Kundentermin.
 
+## Terminberichte der Mitschriften-Ablage (seit 14.11.2026)
+
+Checkliste für die Bericht-Dateien (Runbook: Abschnitt Mitschriften-Ablage):
+
+- [ ] **Was gespeichert wird:** je Mitschrift mit fertiger Auswertung eine HTML-Datei mit Auswertung, bereinigtem
+      Transkript und höchstens 6 geprüften Standbildern je Thema (verkleinert). Ungeprüfte Bilder kommen nie hinein.
+      Oben steht „Intern – enthält Kundendaten, nicht weitergeben“. Inhaltlich nichts Neues gegenüber Mitschrift,
+      Auswertung und Standbildern – aber als Datei außerhalb der Datenbank.
+- [ ] **Wo:** im Ordner `MITSCHRIFTEN_ORDNER` des Ladens auf unserem Server (Basis-Laden
+      `./laeden-daten/sales/mitschriften`), ein Unterordner je Rubrik. Der Dateiname trägt nur Datum, gekürzten Titel und
+      einen gekürzten Hash der uid. Die Datenbank führt Buch (`termin_mitschriften.bericht_pfad`).
+- [ ] **Rubrik per KI:** die Rubrik wählt dieselbe KI wie die Auswertung (KI-Tor `sales-ki`, im Übergang also
+      Anthropic – Vorbehalt wie im Abschnitt Mitschriften). Sie bekommt Titel, Art, Beteiligte und Kurzfassung, nicht
+      das Transkript.
+- [ ] **Wer löscht:** jeder Löschweg der Mitschrift löscht die Datei mit (`mitschrift_entfernen` beim Ablehnen oder
+      nachträglichen Verwerfen der Aufnahme und beim Löschantrag, Sicherheitsnetz `_mitschriften_abraeumen`). Dafür ist
+      der Ordner in allen Diensten eingehängt, die löschen: `sales-mcp` (Löschantrag über das MCP-Werkzeug), `sales-ui`
+      und `sales-termine`. Fehlt die Einhängung trotzdem, warnt das Log (nur die Anzahl) und der Abgleich räumt nach.
+- [ ] **Veralteter Bericht:** endet eine Neu-Auswertung leer oder scheitert die Auswertung endgültig, löscht der
+      Taktgeber den alten Bericht (er zeigte die alte Auswertung und das unbereinigte Transkript).
+- [ ] **Abgleich stündlich:** der Taktgeber `sales-termine` gleicht höchstens einmal je Stunde Dateien und Buchungen ab.
+      Eine Bericht-Datei ohne Mitschrift (z. B. nach Löschung der Akte per Kaskade oder wenn das Entfernen scheiterte)
+      wird dabei gelöscht, sobald sie älter als 10 Minuten ist; eine Waise kann also gut eine Stunde überleben. Fehlt der
+      Ordner oder enthält er keine einzige erwartete Datei, löscht der Abgleich nichts (Schutz gegen einen falsch
+      eingehängten Ordner) – dann bleibt eine Waise, bis der Ordner wieder stimmt.
+- [ ] **Sicherung:** der Ordner ist je Laden in der Sicherung (`mitschriften.tar.gz`, `deploy/sicherung.sh`). Ein
+      gelöschter Bericht steckt wie die gelöschte Mitschrift in älteren Sicherungen, bis diese ablaufen.
+- [ ] **Logs:** nur gekürzte uid, Anzahlen und Fehlerart; keine Titel, Namen, Rubrik-Namen oder Pfade.
+
 ## Werbe-Einwilligung (§ 7 UWG, seit 31.08.2026)
 
 Neben der DSGVO (Datenverarbeitung) gilt das UWG (Ansprache): elektronische

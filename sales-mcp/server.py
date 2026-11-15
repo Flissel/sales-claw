@@ -8901,8 +8901,10 @@ def _mitschriften_abraeumen(lead_id: str) -> None:
            "where uid = %s returning uid", (uid,))
     # Sicherheitsnetz nach dem Abraeumen je Akte (Wortlaut des Briefs): fiele
     # eine Akte durch akten_eines_leads, geht die Mitschrift hier trotzdem.
-    _q("delete from termin_mitschriften where uid in (select uid from "
-       f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning id", (lead_id, lead_id))
+    termin_akte.berichte_entfernen(_q(
+        "delete from termin_mitschriften where uid in (select uid from "
+        f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning bericht_pfad",
+        (lead_id, lead_id)))
     _q("delete from termin_bilder where uid in (select uid from "
        f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning id", (lead_id, lead_id))
     # Von Gesperrten bleibt nur die Adresse (Final-Review I6).

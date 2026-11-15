@@ -30,3 +30,12 @@ Drei Dinge, die man wissen muss:
 3. **Der Bot kann bestellen, aber nie ausführen.** Updates führt das
    Wirtssystem aus, Freigaben erteilst du, die Zugriffsliste ändert nur
    ein Mensch.
+
+## Mitschriften
+
+Unter *Mitschriften* (Seitenleiste) liegen die Berichte der ausgewerteten Kundentermine. Jede **Rubrik** (z. B. Kurse, Kundentermine) ist ein Reiter mit der Zahl der Berichte; der Reiter *Unsortiert* sammelt, was die KI nicht einordnen konnte. Die Liste zeigt die neuesten zuerst mit Datum, Beteiligten und Kurzfassung.
+
+- **Bericht öffnen** zeigt den Bericht im Browser; zum Drucken oder als PDF den Browser-Druck nutzen („Als PDF speichern“). **HTML herunterladen** speichert die Datei. **Akte** springt zum Termin.
+- **Verschieben nach …** legt den Bericht in eine andere Rubrik; im Feld „neue Rubrik“ kannst du jederzeit eine neue anlegen (Buchstaben, Ziffern, Leerzeichen, Bindestrich, höchstens 40 Zeichen).
+- Was du von Hand verschoben hast, überschreibt die KI nie wieder.
+- Die Berichte sind intern und enthalten Kundendaten – nicht weitergeben.

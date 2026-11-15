@@ -13,6 +13,9 @@ Alle `TERMIN_TAKT_S` Sekunden (Vorgabe 30) eine Runde, jeder Schritt mit eigenem
      und Meeting loeschen, was beim Abholen liegen blieb
   6. Eine offene Mitschrift mit dem lokalen Ollama auswerten (nicht kurz vor
      oder waehrend eines Termins mit Bot - der Takt soll dann nicht stehen)
+  7. Mitschriften-Ablage: eine fertige Mitschrift per KI einer Rubrik zuordnen
+     (gleiche Pause wie 6), einen Bericht (neu) ablegen, hoechstens stuendlich
+     Dateien und Buchungen abgleichen (`mitschrift_bericht.abgleichen`)
 
 NUR DER TAKTGEBER SPRICHT MIT VEXA (Final-Review C1): Oberflaeche und MCP haben
 keinen VEXA_API_KEY; sie setzen nur Status und lassen die Vexa-Ids stehen.
@@ -50,6 +53,8 @@ import bildschirm
 import betreiber_hinweis
 import briefing
 import mitschrift_bereinigen
+import mitschrift_bericht
+import mitschrift_einordnung
 import ollama
 import server
 import termin_akte
@@ -553,21 +558,119 @@ def _auswerten(jetzt: datetime) -> int:
         "and auswertung_versuche < %s and auswertung_am <= %s) "
         "order by (auswertung_status = 'fehler'), geholt_am, id limit 1",
         (MAX_AUSWERTUNGEN, jetzt - NEUVERSUCH_NACH))
-    if not kandidaten:
-        return 0
-    ok = ollama.erreichbar()
-    _wechsel("ollama", ok, "Ollama erreichbar", "Ollama nicht erreichbar - Auswertung wartet")
-    if not ok:
+    if not kandidaten or not _ollama_da():
         return 0
     return int(_je_akte("Auswertung", kandidaten[0]["uid"],
                         lambda: _auswerten_eine(kandidaten[0], jetzt)))
+
+
+def _ollama_da() -> bool:
+    ok = ollama.erreichbar()
+    _wechsel("ollama", ok, "Ollama erreichbar", "Ollama nicht erreichbar - Auswertung wartet")
+    return ok
+
+
+# ---------- 7. Mitschriften-Ablage ----------
+
+ABGLEICH_ALLE = timedelta(hours=1)
+# Letzter Datei-Abgleich dieses Prozesses (None: die erste Runde gleicht ab).
+_LETZTER_ABGLEICH: datetime | None = None
+# uid -> letzter gescheiterter Bericht-Versuch: eine kaputte Mitschrift haelt die
+# anderen nicht auf, sie kommt nach NEUVERSUCH_NACH wieder dran.
+_bericht_pause: dict[str, datetime] = {}
+
+
+def _ablage_veraltet(jetzt: datetime) -> int:
+    """Hoechstens ein veralteter Bericht je Runde: die Auswertung ist nach einer
+    Neu-Auswertung leer oder endgueltig gescheitert (Versuche aufgebraucht) -
+    der alte Bericht zeigte die alte Auswertung. Buchung leeren, Datei weg.
+    'offen' bleibt unberuehrt (die Neu-Auswertung laeuft noch)."""
+    weg = server._q(
+        "with alt as (select id, uid, bericht_pfad from termin_mitschriften "
+        "where bericht_pfad is not null and (auswertung_status = 'leer' "
+        "or (auswertung_status = 'fehler' and auswertung_versuche >= %s)) "
+        "order by geholt_am, id limit 1 for update skip locked) "
+        "update termin_mitschriften m set bericht_pfad = null, bericht_stand = null, "
+        "bericht_am = null from alt where m.id = alt.id "
+        "returning alt.uid, alt.bericht_pfad", (MAX_AUSWERTUNGEN,))
+    if not weg:
+        return 0
+    uid, pfad = weg[0]["uid"], weg[0]["bericht_pfad"]
+    return int(_je_akte("Bericht veraltet", uid,
+                        lambda: mitschrift_bericht.datei_entfernen(pfad)))
+
+
+def _ablage_einordnen(jetzt: datetime) -> int:
+    """Hoechstens eine KI-Einordnung je Runde: ohne Rubrik, oder 'Unsortiert'
+    (nicht von Hand) mit faelligem Neuversuch. Nicht vor/waehrend eines Termins
+    mit Bot und nicht ohne Ollama - dann bleibt die Rubrik leer."""
+    kandidaten = server._q(
+        "select uid from termin_mitschriften where auswertung_status = 'fertig' "
+        "and (rubrik is null or (rubrik = %s and not rubrik_manuell "
+        "and einordnung_versuche < %s and einordnung_am <= %s)) "
+        "order by (rubrik is not null), geholt_am, id limit 1",
+        (mitschrift_bericht.UNSORTIERT, mitschrift_einordnung.MAX_VERSUCHE,
+         jetzt - mitschrift_einordnung.NEUVERSUCH_NACH))
+    if not kandidaten or _termin_steht_an(jetzt) or not _ollama_da():
+        return 0
+    uid = kandidaten[0]["uid"]
+    return int(_je_akte("Einordnung", uid, lambda: mitschrift_einordnung.einordnen(uid)))
+
+
+def _ablage_bericht(jetzt: datetime) -> int:
+    """Hoechstens ein Bericht je Runde: noch keiner, Stand (Auswertung oder
+    Bildbestand) geaendert oder Datei liegt nicht im Ordner der Rubrik."""
+    for uid, wann in list(_bericht_pause.items()):
+        if not timedelta(0) <= jetzt - wann < NEUVERSUCH_NACH:
+            del _bericht_pause[uid]
+    kandidaten = server._q(
+        "select m.uid, m.rubrik from termin_mitschriften m "
+        "where m.rubrik is not null and m.auswertung_status = 'fertig' "
+        "and not (m.uid = any(%s::text[])) "
+        "and (m.bericht_pfad is null "
+        f"or m.bericht_stand is distinct from ({mitschrift_bericht.STAND_SQL}) "
+        "or split_part(m.bericht_pfad, '/', 1) <> m.rubrik) "
+        "order by m.geholt_am, m.id limit 1", (list(_bericht_pause),))
+    if not kandidaten:
+        return 0
+    uid, rubrik = kandidaten[0]["uid"], kandidaten[0]["rubrik"]
+    pfad: list = []
+    ok = _je_akte("Bericht", uid, lambda: pfad.append(mitschrift_bericht.ablegen(uid)))
+    if not ok or not pfad or not pfad[0] or pfad[0].split("/", 1)[0] != rubrik:
+        _bericht_pause[uid] = jetzt
+        return 0
+    return 1
+
+
+def _ablage_abgleich(jetzt: datetime) -> int:
+    global _LETZTER_ABGLEICH
+    if (_LETZTER_ABGLEICH is not None
+            and timedelta(0) <= jetzt - _LETZTER_ABGLEICH < ABGLEICH_ALLE):
+        return 0
+    _LETZTER_ABGLEICH = jetzt
+    try:
+        r = mitschrift_bericht.abgleichen()
+    except Exception as e:  # noqa: BLE001 - nur der Typname ins Log (Pfade!)
+        LOG.warning("Abgleich der Mitschriften-Ablage fehlgeschlagen (%s)", type(e).__name__)
+        return 0
+    return int(r.get("geloescht", 0)) + int(r.get("zurueckgesetzt", 0))
+
+
+def _ablage(jetzt: datetime) -> int:
+    ok = mitschrift_bericht._beschreibbar(mitschrift_bericht.ordner())
+    _wechsel("mitschriften", ok, "Mitschriften-Ablage bereit",
+             "Mitschriften-Ablage fehlt oder ist nicht beschreibbar - Berichte warten")
+    if not ok:
+        return 0
+    return (_ablage_veraltet(jetzt) + _ablage_einordnen(jetzt) + _ablage_bericht(jetzt)
+            + _ablage_abgleich(jetzt))
 
 
 # ---------- Runde und Schleife ----------
 
 SCHRITTE = (("abgleich", _abgleichen), ("briefing", _briefing), ("bot", _bot),
             ("verfolgen", _verfolgen), ("nachloeschen", _nachloeschen),
-            ("auswerten", _auswerten))
+            ("auswerten", _auswerten), ("ablage", _ablage))
 
 
 def runde(jetzt: datetime) -> dict:
