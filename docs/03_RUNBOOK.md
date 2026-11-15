@@ -4252,7 +4252,9 @@ die Werkbank“. Der Rowboat-Dienst `rowboat-auftraege` schickt das Konzept an `
 (Tabelle `video_uebergabe`). Den Auftrag gibt es erst, wenn der Betreiber auf der Seite `/marketing/werkbank` im
 Abschnitt „Übergaben aus Rowboat“ (`#uebergaben`) unter seinem Login „Ja, übergeben“ drückt; erst dann gelten die
 Prüfungen und die Tagesgrenze (zwei Videos je Laden und Tag). „Nein“ verwirft. Die Karte zeigt alles, was an das
-Videomodell geht (Vorgang, Zeit, Datei, Thema, Zielgruppe, Hook, Kernaussage, Abschluss, Stufen und Szenen).
+Videomodell geht (Vorgang, Zeit, Datei, Thema, Zielgruppe, Hook, Kernaussage, Abschluss, Stufen und Szenen, die
+im Konzept eingetragene Auftragsnummer). Texte über 300 Zeichen sind im Fließtext mit „… (gekürzt, alles unter „Alles lesen“)
+markiert; unsichtbare Zeichen stehen als Platzhalter (`⟨U+200B⟩`), der volle Text steht unter „Alles lesen“.
 
 - Höchstens **5 offene** Übergaben je Laden (die sechste bekommt 429 „Es sind schon 5 Übergaben offen. Bitte erst in
   Sales entscheiden.“); dasselbe Konzept (gleicher Inhalt) kann nicht zweimal gleichzeitig offen sein (409).
@@ -4274,26 +4276,62 @@ anlegen wie bei den anderen Herkünften (Wert nur in die Schlüsseldatei des Die
 Übergaben bleiben liegen, bis sie entschieden werden oder verfallen; offene Karten lassen sich auf der Seite mit
 „Nein“ verwerfen.
 
-**Vor dem Ausrollen (je Laden-Schema, in dieser Reihenfolge).**
+**Vor dem Ausrollen (nur Schema `sales`, in dieser Reihenfolge: erst die SQL-Skripte, dann der Code).**
 
-1. Tabellen anlegen; beide Skripte sind wiederholbar (`create ... if not exists`, ein zweiter Lauf ändert nichts).
-   Als `supabase_admin`, `<schema>` = Schema des Ladens (`sales`, `sales_<laden>`):
+Die Annahme weist jedes andere Schema ab (`_AUFTRAG_SCHEMAS`); weitere Laden-Schemas brauchen die Skripte für diese
+Funktion nicht (sie schaden aber nicht). Beide Skripte sind additiv und dem alten Code unbekannt, sie dürfen also vor
+dem Ausliefern laufen. Läuft der neue Code bei fehlender Tabelle, zeigt die Werkbank-Seite „Die Übergabe ist auf diesem
+Laden noch nicht eingerichtet.“ und die Annahme antwortet 503.
 
-       psql "<DB-URL>" -v ON_ERROR_STOP=1 -v schema=<schema> -f db/freigabe-eingang.sql
-       psql "<DB-URL>" -v ON_ERROR_STOP=1 -v schema=<schema> -f db/video-uebergabe.sql
+1. **SQL zuerst, vor dem Merge und vor `update.sh`.** Beide Skripte sind wiederholbar (`create ... if not exists`, ein
+   zweiter Lauf ändert nichts). Als `supabase_admin` auf dem Offload-Host, Schema `sales`:
 
-   (`freigabe-eingang.sql` erweitert die Schlüssel-Herkünfte um `rowboat`; ohne diesen Lauf lässt sich der Schlüssel
-   nicht anlegen. Die Form für den Offload-Host steht oben unter „Freigabe-Eingang: Tabellen“.)
-2. Schlüssel `rowboat` anlegen (Wert nur in die Schlüsseldatei des Dienstes `rowboat-auftraege` auf dem Mini-PC).
-3. Prüfen, dass `LADEN_PRAEFIX` des Basis-Ladens `sales` ist: `sales-ui` bekommt die Variable nicht in der Compose-Datei,
-   die Annahme und die Werkbank-Seite rechnen mit dem Vorgabewert `sales` (offen aus der Prüfung vom 14.11.2026, M4).
-   Heißt der Laden anders, zählen Rowboat und Salesman die Tagesgrenze unter verschiedenen Namen.
-4. Die Testsuite läuft nie mit `--env-file .env` gegen die echte Datenbank (die DB-Tests der Übergaben legen ein
-   Test-Schema `auftrag` an und überspringen sich, wenn ein fremdes `auftrag` existiert; ein echtes Auftragsbuch fassen
-   sie nie an). Die Rolle `sales_app` ist von allen Läden geteilt und darf `video_uebergabe` in allen Spalten
-   ändern (bewusst, nur nicht löschen).
-5. Abnahme am echten System: „Gib es an die Werkbank“ in Rowboat, Link öffnen, „Ja“ drücken, Auftragsnummer und
-   Werkbank-Seite des Auftrags prüfen (zeigt auch, dass `sales_app` `auftrag.sales_anlegen` ausführen darf).
+       ssh offload-vm 'docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales' < db/freigabe-eingang.sql
+       ssh offload-vm 'docker exec -i debian-supabase-db-1 psql -q -U supabase_admin -d postgres -v ON_ERROR_STOP=1 -v schema=sales' < db/video-uebergabe.sql
+
+   `freigabe-eingang.sql` erweitert die Schlüssel-Herkünfte um `rowboat` und löscht dazu die Prüfregel unter ihrem
+   Standardnamen `freigabe_schluessel_herkunft_check`. Heißt die Regel in der echten Datenbank anders, bleibt die alte
+   stehen und der Schlüssel für `rowboat` lässt sich nicht anlegen: danach `\d sales.freigabe_schluessel` ansehen; das
+   Anlegen des Schlüssels in Schritt 3 ist der Beweis.
+2. Code ausliefern (Merge, `update.sh`).
+3. **Schlüssel `rowboat` anlegen**, Wert nie anzeigen, direkt in die Schlüsseldatei des Dienstes auf dem Mini-PC
+   (der Name der Datei ist `./sales-schluessel` im Verzeichnis `~/rowboat-headless/`, wie in Compose und README dort):
+
+       docker compose exec -T sales-ui python -m freigabe_schluessel anlegen rowboat | (umask 077; cat > ~/rowboat-headless/sales-schluessel)
+4. **Umgebung von `sales-ui` prüfen** (nur die Namen, `.env` nie öffnen):
+   - `UI_SESSION_SECRET` ist gesetzt. **Ohne ihn lässt sich nichts bestätigen:** die Seite zeigt die Übergaben nur zum
+     Lesen und beide Aktionen („Ja, übergeben“, „Nein“) antworten 403.
+   - `UI_BASIS_URL` ist die Adresse, die der Betreiber wirklich öffnet (sonst bekommt Rowboat einen Link auf
+     `http://127.0.0.1:8791/...`, die Loopback-Adresse des Mini-PCs). Sie bestimmt auch, welche `Origin` die Seite beim
+     Ja/Nein als eigene gelten lässt (Schema, Host und Port müssen stimmen, hinter `tailscale serve` also `https://...`).
+   - `MARKETING_MANDANT` ist gesetzt; `LADEN_PRAEFIX` des Basis-Ladens ist `sales`. `sales-ui` bekommt die Variable
+     nicht in der Compose-Datei, die Annahme und die Werkbank-Seite rechnen mit dem Vorgabewert `sales` (offen aus der
+     Prüfung vom 14.11.2026, M4). Heißt der Laden anders, zählen Rowboat und Salesman die Tagesgrenze unter
+     verschiedenen Namen.
+5. **Den Werkbank-Arbeiter neu starten, bevor das erste Ja gedrückt wird.** Die Marketing-Dienste auf dem PC aus dem
+   neuen vibemind-os-Stand neu starten und prüfen, dass der laufende Prozess ihn hat (der PC läuft aus dem
+   Haupt-Checkout, abgekoppelt). Ein altes Programm baut die erste Gliederung nicht eins zu eins aus dem Konzept. Ein
+   Ja bei ausgeschaltetem Arbeiter lässt den Auftrag nach 120 Minuten verfallen, er zählt trotzdem zu den zwei Videos
+   je Tag.
+6. Die Testsuite läuft nie mit `--env-file .env` gegen die echte Datenbank (die DB-Tests der Übergaben legen ein
+   Test-Schema `auftrag` an, aber nur mit `SALES_TEST_AUFTRAG_STANDIN=1`, das allein der CI-Workflow setzt, und sie
+   überspringen sich, wenn ein fremdes `auftrag` existiert; ein echtes Auftragsbuch fassen sie nie an). Die Rolle
+   `sales_app` ist von allen Läden geteilt und darf `video_uebergabe` in allen Spalten ändern (bewusst, nur nicht
+   löschen).
+7. Abnahme am echten System: „Gib es an die Werkbank“ in Rowboat, Link öffnen, „Ja“ drücken, Auftragsnummer und
+   Werkbank-Seite des Auftrags prüfen (zeigt auch, dass `sales_app` `auftrag.sales_anlegen` ausführen darf). Das dritte
+   Video am selben Tag: der Satz zur Tagesgrenze erscheint auf der Sales-Seite beim Ja, nicht in Rowboat.
+
+**Zurückrollen.** Den Werkbank-Arbeiter **nicht** zurückrollen, solange ein Auftrag mit Konzept in Arbeit ist (seine
+Gliederung zitiert die Quelle `konzept`); erst beenden oder abbrechen. Aufträge ohne Konzept sind in beiden Fällen
+unberührt. Die Annahme sofort stoppen: siehe „Not-Aus für Rowboat-Übergaben“; offene Karten lassen sich weiter bestätigen
+(zum Stoppen „Nein“ drücken oder den Sales-Code zurücknehmen). Die Tabelle kann liegen bleiben.
+
+**Bekannte Grenze (vom Betreiber am 15.11.2026 angenommen).** Der Agent in der Rowboat-App kann den dort eingebauten
+Browserbereich ohne Rückfrage bedienen. Ist der Betreiber in diesem Bereich bei Sales angemeldet, könnte der Agent die
+Werkbank-Seite öffnen und „Ja, übergeben“ selbst drücken. **Empfehlung: im Browserbereich von Rowboat nie bei Sales
+anmelden.** Was trotzdem hält: höchstens zwei Videos je Laden und Tag, jedes Stück eines Videos braucht weiter die
+Freigabe in der Werkbank, und der Not-Aus ist das Widerrufen des Schlüssels `rowboat`.
 
 **Aufräumen.** Entschiedene Zeilen (bis zu 64 KiB Konzept je Zeile) bleiben zunächst als Spur liegen. Wer sie
 nach 90 Tagen entfernen will, tut das von Hand als `supabase_admin` (`sales_app` darf nicht löschen), nie automatisch:
