@@ -301,13 +301,18 @@ def routen(ui) -> list:
         """Die Anfrage stammt von dieser Seite: `Sec-Fetch-Site` (wenn gesendet) muss same-origin sein, `Origin`
         (wenn gesendet) muss GENAU eine Herkunft dieser Oberflaeche sein: Schema + Host + Port, siehe
         `eigene_herkuenfte` (mit gesetzter UI_BASIS_URL zaehlt nur sie, auch hinter `tailscale serve` mit https). Ein
-        anderes Schema oder ein anderer Port ist fremd. Fehlen beide Koepfe, gilt die Anfrage wie bei den uebrigen Aktionen der
-        Seite (die pruefen keinen Herkunftskopf); Browser senden bei einem POST immer Origin."""
+        anderes Schema oder ein anderer Port ist fremd. `Origin: null` sagt nichts (die Seite sendet `Referrer-Policy:
+        no-referrer`, dann schickt der Browser bei einem gleichen-Ursprungs-Formular `null`): es gilt nur zusammen mit
+        `Sec-Fetch-Site: same-origin`; ohne diesen Kopf ist es von einem fremden Sandbox-Formular nicht zu unterscheiden
+        und wird abgewiesen. Fehlen beide Koepfe, gilt die Anfrage wie bei den uebrigen Aktionen der Seite (Nicht-Browser;
+        Anmeldung und CSRF-Marke gelten weiter)."""
         kopf = request.headers
         site = kopf.get("sec-fetch-site")
         if site is not None and site != "same-origin":
             return False
         origin = kopf.get("origin")
+        if origin == "null":
+            return site == "same-origin"
         if origin is not None:
             if _herkunft(origin) not in eigene_herkuenfte(request):
                 return False
