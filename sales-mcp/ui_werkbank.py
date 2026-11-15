@@ -299,10 +299,9 @@ def routen(ui) -> list:
 
     def gleiche_herkunft(request) -> bool:
         """Die Anfrage stammt von dieser Seite: `Sec-Fetch-Site` (wenn gesendet) muss same-origin sein, `Origin`
-        (wenn gesendet) muss GENAU eine Herkunft dieser Oberflaeche sein: Schema + Host + Port. Erlaubt sind die
-        Herkunft der Anfrage selbst (Schema, mit dem sie hier ankommt, + Host-Kopf) und die von UI_BASIS_URL (die
-        Adresse, die der Betreiber im Browser oeffnet, auch hinter `tailscale serve` mit https). Ein anderes Schema
-        oder ein anderer Port ist fremd. Fehlen beide Koepfe, gilt die Anfrage wie bei den uebrigen Aktionen der
+        (wenn gesendet) muss GENAU eine Herkunft dieser Oberflaeche sein: Schema + Host + Port, siehe
+        `eigene_herkuenfte` (mit gesetzter UI_BASIS_URL zaehlt nur sie, auch hinter `tailscale serve` mit https). Ein
+        anderes Schema oder ein anderer Port ist fremd. Fehlen beide Koepfe, gilt die Anfrage wie bei den uebrigen Aktionen der
         Seite (die pruefen keinen Herkunftskopf); Browser senden bei einem POST immer Origin."""
         kopf = request.headers
         site = kopf.get("sec-fetch-site")
@@ -327,11 +326,27 @@ def routen(ui) -> list:
         return teile.scheme, host.lower(), port or (443 if teile.scheme == "https" else 80)
 
     def eigene_herkuenfte(request) -> set:
+        """Die Herkuenfte (Schema, Host, Port), die ein Ja/Nein von dieser Seite haben darf.
+        UI_BASIS_URL gesetzt (weicht vom Vorgabewert http://127.0.0.1:<Port> ab): NUR deren Herkunft, dazu die Hosts aus
+        ERLAUBTE_HOSTS mit dem Schema der Basisadresse. Nicht gesetzt: die Herkunft der Anfrage selbst (Schema, mit dem
+        sie ankommt, + Host-Kopf), dazu die Hosts aus ERLAUBTE_HOSTS mit https. Loopback-Namen zaehlen nur ueber die
+        Herkunft der Anfrage bzw. der Basisadresse, nie als https-Herkunft (die Oberflaeche dient sie nur per http)."""
+        basis = getattr(ui, "UI_BASIS_URL", "") or ""
+        gesetzt = bool(basis) and basis.rstrip("/") != f"http://127.0.0.1:{getattr(ui, 'PORT', 8791)}"
         eigene = set()
-        host = request.headers.get("host", "")
-        for url in (f"{request.url.scheme}://{host}", getattr(ui, "UI_BASIS_URL", "")):
-            h = _herkunft(url) if url else None
+        if gesetzt:
+            h = _herkunft(basis)
+            schema = h[0] if h else "https"
             if h:
+                eigene.add(h)
+        else:
+            schema = "https"
+            h = _herkunft(f"{request.url.scheme}://{request.headers.get('host', '')}")
+            if h:
+                eigene.add(h)
+        for eintrag in getattr(ui, "ERLAUBTE_HOSTS", ()):
+            h = _herkunft(f"{schema}://{eintrag}")
+            if h and h[1] not in ("127.0.0.1", "localhost"):
                 eigene.add(h)
         return eigene
 

@@ -506,14 +506,16 @@ def test_origin_aus_ui_basis_url_zaehlt_mit_ihrem_schema(klient, buch, monkeypat
                 headers={"host": "laden.example:8445", "Origin": "https://laden.example:8445"}).status_code == 303
 
 
-def test_origin_anderer_extra_host_ohne_basisadresse_ist_fremd(klient, buch, monkeypatch):
-    """Frueher reichte ein Host aus ERLAUBTE_HOSTS in jedem Schema und jeder Schreibweise."""
+def test_origin_extra_host_ohne_basisadresse_zaehlt_nur_mit_https(klient, buch, monkeypatch):
+    """Frueher reichte ein Host aus ERLAUBTE_HOSTS in jedem Schema; ohne gesetzte UI_BASIS_URL gilt er nur mit https."""
     monkeypatch.setattr(ui, "ERLAUBTE_HOSTS", (*ui.ERLAUBTE_HOSTS, "extra.example", "extra.example:443"))
     vorbereiten()
-    for origin in ("http://extra.example", "https://extra.example", "https://extra.example:443"):
+    for origin in ("http://extra.example", "http://extra.example:443", "https://extra.example:8443"):
         assert post(klient, "werkbank-uebergabe-nein", {"id": kennung()},
                     headers={"Origin": origin}).status_code == 403, origin
     assert zeile()["status"] == "offen"
+    assert post(klient, "werkbank-uebergabe-nein", {"id": kennung()},
+                headers={"Origin": "https://extra.example"}).status_code == 303
 
 
 # --- Schlusspruefung N1/N2: Auftragsnummer und deutliche Kuerzung --------------------------------------------

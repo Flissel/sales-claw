@@ -510,7 +510,10 @@ def test_nul_irgendwo_im_rumpf_400_ohne_speichern(client, buch, ort):
 
 
 def test_ein_geschriebenes_nul_zeichen_ist_kein_nul(client, buch):
-    k = konzept(kernaussage="Das Zeichen \u0000 als Text, nicht als Zeichen.")
+    geschrieben = chr(92) + "u0000"                              # die sechs Zeichen Backslash, u, 0, 0, 0, 0
+    assert len(geschrieben) == 6 and "\x00" not in geschrieben
+    k = konzept(kernaussage=f"Das Zeichen {geschrieben} als Text, nicht als Zeichen.")
+    assert "\x00" not in json.dumps(k, ensure_ascii=False)
     assert client.post(URL, json=rumpf(k), headers=KOPF).status_code == 200
 
 
