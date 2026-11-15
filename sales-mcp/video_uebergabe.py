@@ -40,6 +40,7 @@ SATZ_ENTSCHIEDEN = "Diese Übergabe ist schon entschieden."
 SATZ_FEHLT = "Diese Übergabe gibt es nicht."
 SATZ_KEINE_FIRMA = "Für diesen Laden ist keine Marketing-Firma eingetragen."
 SATZ_FIRMA = "Das Konzept gehört zu einer anderen Firma als dieser Laden."
+SATZ_KEIN_AUFTRAGSBUCH = "Aufträge gibt es in diesem Laden noch nicht."     # derselbe Satz wie bei der Annahme
 SATZ_NICHT_EINGERICHTET = "Die Übergabe ist auf diesem Laden noch nicht eingerichtet."
 SATZ_NICHT_LESBAR = "Die Übergaben sind gerade nicht lesbar."
 SATZ_UNKLAR = "Ob der Auftrag angelegt wurde, ist unklar. Bitte die Werkbank-Liste prüfen."
@@ -133,8 +134,10 @@ def verwerfen(kennung, von: str) -> bool:
 
 
 def _bestellung(kennung: str, konzept: dict):
-    """Die Angaben des Auftrags aus dem gespeicherten Konzept, mit denselben Pruefungen wie beim Salesman und
-    bei der Annahme -> ((laden, mandant, eingabe), None) oder (None, Fehlersatz)."""
+    """Die Angaben des Auftrags aus dem gespeicherten Konzept, mit denselben Pruefungen wie bei der Annahme
+    (Laden mit Auftragsbuch, gemeinsamer Pruefer, Firma) -> ((laden, mandant, eingabe), None) oder (None, Fehlersatz)."""
+    if server.SCHEMA not in server._AUFTRAG_SCHEMAS:      # wie bei der Annahme; die Zeile bleibt offen, der Satz steht dabei
+        return None, SATZ_KEIN_AUFTRAGSBUCH
     satz = video_konzept.pruefen(konzept)                # der gemeinsame Pruefer, dieselben Regeln wie bei der Annahme
     if satz:
         return None, satz
@@ -144,7 +147,7 @@ def _bestellung(kennung: str, konzept: dict):
     if not mandant:
         return None, SATZ_KEINE_FIRMA
     firma = konzept.get("firma")
-    if isinstance(firma, str) and firma.strip() and firma.strip() != mandant:
+    if isinstance(firma, str) and js_trim(firma) and js_trim(firma) != mandant:
         return None, SATZ_FIRMA
     laden = os.environ.get("LADEN_PRAEFIX", "").strip() or "sales"
     sha = video_konzept.block_hash(konzept)

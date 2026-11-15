@@ -25,6 +25,7 @@ import re
 from datetime import datetime, timezone
 import stat
 import time
+import unicodedata
 import urllib.parse
 
 from starlette.concurrency import run_in_threadpool
@@ -80,6 +81,32 @@ UEBERGABE_HINWEIS = "Was im Konzept steht, geht an das Videomodell und kann im V
 UEBERGABE_NUR_MIT_ANMELDUNG = "Bestätigen geht nur mit Anmeldung."
 UEBERGABE_DOPPELT = "Es gibt eine weitere offene Übergabe für diese Datei – bitte vergleichen."
 KUERZEN_BEI = 300                  # Hook, Kernaussage, Abschluss: sichtbar bis hierher, der Rest unter "Alles lesen"
+UEBERGABE_GEKUERZT = "… (gekürzt, alles unter „Alles lesen“)"
+_SICHTBAR_LASSEN = "\n\r\t"           # Zeilenumbruch und Tab sind lesbar, alles andere Unsichtbare nicht
+
+
+def sichtbar_machen(text) -> str:
+    """Steuer-, Format- und Trennzeichen (Cc, Cf, Zl, Zp, Cs, Co, Cn: z. B. U+200B, U+202E, U+FEFF) werden als
+    sichtbarer Platzhalter `⟨U+200B⟩` geschrieben. Damit kann ein Text, den der Betreiber liest, nicht aus Unsichtbarem
+    bestehen oder seine Leserichtung drehen. Maskiert (HTML) wird erst danach."""
+    return "".join(z if z in _SICHTBAR_LASSEN or unicodedata.category(z) not in _UNSICHTBAR else f"⟨U+{ord(z):04X}⟩"
+                   for z in str(text or ""))
+
+
+_UNSICHTBAR = frozenset(("Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn"))
+
+
+def kuerzen_sichtbar(text, grenze: int = KUERZEN_BEI) -> tuple[str, bool]:
+    """Der Anfang des Textes mit sichtbar gemachten Zeichen, hoechstens `grenze` angezeigte Zeichen (ein Platzhalter
+    zaehlt mit seiner Laenge und wird nie zerschnitten) -> (Text, wurde_gekuerzt)."""
+    ausgabe, n = [], 0
+    for z in str(text or ""):
+        stueck = sichtbar_machen(z)
+        if n + len(stueck) > grenze:
+            return "".join(ausgabe), True
+        ausgabe.append(stueck)
+        n += len(stueck)
+    return "".join(ausgabe), False
 
 
 def alter_text(sekunden) -> str:
@@ -272,21 +299,41 @@ def routen(ui) -> list:
 
     def gleiche_herkunft(request) -> bool:
         """Die Anfrage stammt von dieser Seite: `Sec-Fetch-Site` (wenn gesendet) muss same-origin sein, `Origin`
-        (wenn gesendet) muss diese Oberflaeche sein. Fehlen beide Koepfe, gilt die Anfrage wie bei den uebrigen
-        Aktionen der Seite (die pruefen keinen Herkunftskopf); Browser senden bei einem POST immer Origin."""
+        (wenn gesendet) muss GENAU eine Herkunft dieser Oberflaeche sein: Schema + Host + Port. Erlaubt sind die
+        Herkunft der Anfrage selbst (Schema, mit dem sie hier ankommt, + Host-Kopf) und die von UI_BASIS_URL (die
+        Adresse, die der Betreiber im Browser oeffnet, auch hinter `tailscale serve` mit https). Ein anderes Schema
+        oder ein anderer Port ist fremd. Fehlen beide Koepfe, gilt die Anfrage wie bei den uebrigen Aktionen der
+        Seite (die pruefen keinen Herkunftskopf); Browser senden bei einem POST immer Origin."""
         kopf = request.headers
         site = kopf.get("sec-fetch-site")
         if site is not None and site != "same-origin":
             return False
         origin = kopf.get("origin")
         if origin is not None:
-            host = kopf.get("host", "")
-            teile = urllib.parse.urlsplit(origin)
-            ok = teile.scheme in ("http", "https") and teile.netloc != "" and (
-                teile.netloc == host or teile.netloc in getattr(ui, "ERLAUBTE_HOSTS", ()))
-            if not ok:
+            if _herkunft(origin) not in eigene_herkuenfte(request):
                 return False
         return True
+
+    def _herkunft(url: str):
+        """(Schema, Host, Port) einer Origin oder URL, Schema und Host kleingeschrieben; None, wenn unbrauchbar."""
+        try:
+            teile = urllib.parse.urlsplit(url)
+            host, port = teile.hostname, teile.port
+        except ValueError:
+            return None
+        if teile.scheme not in ("http", "https") or not host or teile.path not in ("", "/") or teile.query \
+                or teile.fragment or teile.username is not None:
+            return None
+        return teile.scheme, host.lower(), port or (443 if teile.scheme == "https" else 80)
+
+    def eigene_herkuenfte(request) -> set:
+        eigene = set()
+        host = request.headers.get("host", "")
+        for url in (f"{request.url.scheme}://{host}", getattr(ui, "UI_BASIS_URL", "")):
+            h = _herkunft(url) if url else None
+            if h:
+                eigene.add(h)
+        return eigene
 
     def zeit_text(zeit) -> str:
         if not isinstance(zeit, datetime):
@@ -324,9 +371,9 @@ def routen(ui) -> list:
                     'Der Grund steht an der Übergabe.</p>')
         return ""
 
-    def gekuerzt(text) -> tuple[str, bool]:
-        text = str(text or "")
-        return (text[:KUERZEN_BEI], True) if len(text) > KUERZEN_BEI else (text, False)
+    def t(text) -> str:
+        """Text aus dem Konzept fuer die Karte: Unsichtbares als Platzhalter, dann HTML-maskiert."""
+        return e(sichtbar_machen(text))
 
     def uebergabe_karte(z: dict, darf: bool, doppelt: bool) -> str:
         k = z["konzept"] if isinstance(z.get("konzept"), dict) else {}
@@ -334,15 +381,17 @@ def routen(ui) -> list:
         szenen = sum(len([sz for sz in liste(s.get("szenen")) if isinstance(sz, dict)]) for s in stufen)
         kennung = str(z["id"])
         vorgang = kennung[:8]
-        datei = " · ".join(f"{titel}: {e(wert)}" for titel, wert in
+        datei = " · ".join(f"{titel}: {t(wert)}" for titel, wert in
                            (("Konzept", k.get("name")), ("Datei", k.get("pfad"))) if wert) or "Konzept: ohne Namen"
-        firma = f' · Firma: {e(k["firma"])}' if k.get("firma") else ""
+        firma = f' · Firma: {t(k["firma"])}' if k.get("firma") else ""
         teile = [f'<div class="karte" id="u-{e(vorgang)}">',
                  f'<div><b>Vorgang {e(vorgang)}</b> · eingegangen {e(zeit_text(z.get("erstellt_am")))} '
                  f'({e(alter_text(z.get("alter_s")))})</div>',
-                 f'<div><b>{e(k.get("thema", ""))}</b> · {e(k.get("minuten", ""))} Minuten · '
+                 f'<div><b>{t(k.get("thema", ""))}</b> · {e(k.get("minuten", ""))} Minuten · '
                  f'{len(stufen)} Stufen · {szenen} Szenen</div>',
                  f'<div class="meta">Laden: {e(laden())}{firma} · {datei}</div>']
+        if k.get("auftrag"):
+            teile.append(f'<p class="meta">Im Konzept eingetragener Auftrag: {t(str(k["auftrag"])[:8])}</p>')
         if doppelt:
             teile.append(f'<p class="warnung">{e(UEBERGABE_DOPPELT)}</p>')
         if z.get("frueher_auftrag"):
@@ -350,24 +399,25 @@ def routen(ui) -> list:
                          f'{e(str(z["frueher_auftrag"])[:8])}).</p>')
         teile.append(f'<p class="hinweis">{e(UEBERGABE_HINWEIS)}</p>')
         # Alles, was an das Videomodell geht, steht auf der Karte: Zielgruppe, Hook, Kernaussage, Abschluss
-        # (sichtbar, ab 300 Zeichen gekuerzt - der volle Text steht unter "Alles lesen"), Stufen und Szenen darunter.
+        # (ab 300 Zeichen gekuerzt, die Kuerzung steht im Text; unsichtbare Zeichen als Platzhalter - der volle Text steht
+        # unter "Alles lesen"), Stufen und Szenen darunter.
         voll = []
-        teile.append(f'<p class="wb-text"><b>Zielgruppe:</b> {e(k.get("zielgruppe", ""))}</p>')
+        teile.append(f'<p class="wb-text"><b>Zielgruppe:</b> {t(k.get("zielgruppe", ""))}</p>')
         for titel, feld in (("Hook", "hook"), ("Kernaussage", "kernaussage"), ("Abschluss", "abschluss")):
-            sichtbar, abgeschnitten = gekuerzt(k.get(feld))
-            rest = ' <span class="meta">… gekürzt, vollständig unter „Alles lesen“</span>' if abgeschnitten else ""
+            sichtbar, abgeschnitten = kuerzen_sichtbar(k.get(feld))
+            rest = f' <b class="warnung">{e(UEBERGABE_GEKUERZT)}</b>' if abgeschnitten else ""
             teile.append(f'<p class="wb-text"><b>{titel}:</b> {e(sichtbar)}{rest}</p>')
             if abgeschnitten:
-                voll.append(f'<p class="wb-text"><b>{titel} (vollständig):</b> {e(k.get(feld))}</p>')
+                voll.append(f'<p class="wb-text"><b>{titel} (vollständig):</b> {t(k.get(feld))}</p>')
         for s in stufen:
             punkte = []
             for sz in liste(s.get("szenen")):
                 if not isinstance(sz, dict):
                     continue
-                notiz = f' <span class="meta">Notiz: {e(sz["notiz"])}</span>' if sz.get("notiz") else ""
-                punkte.append(f'<li>{e(sz.get("kurz", ""))} <span class="meta">({e(sz.get("bildart", ""))})</span>'
+                notiz = f' <span class="meta">Notiz: {t(sz["notiz"])}</span>' if sz.get("notiz") else ""
+                punkte.append(f'<li>{t(sz.get("kurz", ""))} <span class="meta">({e(sz.get("bildart", ""))})</span>'
                               f'{notiz}</li>')
-            voll.append(f'<h4>{e(s.get("name", ""))}</h4><ul>{"".join(punkte)}</ul>')
+            voll.append(f'<h4>{t(s.get("name", ""))}</h4><ul>{"".join(punkte)}</ul>')
         teile.append(f'<details><summary>Alles lesen: Stufen und Szenen</summary>{"".join(voll)}</details>')
         if z.get("fehler"):
             teile.append(f'<p class="warnung">{e(z["fehler"])}</p>')

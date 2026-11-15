@@ -246,6 +246,28 @@ def test_pruefung_beim_ja_auch_fuer_ein_schon_gespeichertes_konzept(buch):
     assert buch.aufrufe == [] and zeile()["status"] == "offen"
 
 
+def test_ja_prueft_auch_das_schema_wie_die_annahme(buch, monkeypatch):
+    vorbereiten()
+    monkeypatch.setattr(server, "SCHEMA", "ivan_x")                  # kein Auftragsbuch in diesem Laden
+    assert vu.bestaetigen(eine_id(), "mira") == ("abgelehnt", "Aufträge gibt es in diesem Laden noch nicht.")
+    assert buch.aufrufe == [] and zeile()["status"] == "offen"
+    assert zeile()["fehler"] == "Aufträge gibt es in diesem Laden noch nicht."
+
+
+def test_firma_wird_beim_ja_wie_javascript_getrimmt(buch):
+    k = konzept(firma="\ufefffin2gether\u00a0")                      # nur JavaScript trimmt U+FEFF
+    server._q("insert into video_uebergabe (konzept, konzept_sha) values (%s::jsonb, %s) returning id",
+              (json.dumps(k), "b" * 64))
+    assert vu.bestaetigen(eine_id(), "mira")[0] == "ok"
+
+
+def test_firma_mit_u0085_am_rand_ist_beim_ja_eine_andere_firma(buch):
+    k = konzept(firma="\x85fin2gether")                               # Python strip() entfernt U+0085, JavaScript nicht
+    server._q("insert into video_uebergabe (konzept, konzept_sha) values (%s::jsonb, %s) returning id",
+              (json.dumps(k), "c" * 64))
+    assert vu.bestaetigen(eine_id(), "mira") == ("abgelehnt", vu.SATZ_FIRMA)
+
+
 def test_ja_ohne_marketing_firma(buch, monkeypatch):
     vorbereiten()
     monkeypatch.setenv("MARKETING_MANDANT", "")

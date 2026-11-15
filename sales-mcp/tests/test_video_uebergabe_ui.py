@@ -438,6 +438,8 @@ def test_mit_anmeldung_steht_der_satz_nicht_da(klient):
     {"Origin": "http://evil.example"}, {"Origin": "null"}, {"Origin": "http://127.0.0.1:9999"},
     {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"}, {"Sec-Fetch-Site": "none"},
     {"Origin": "http://127.0.0.1:8791", "Sec-Fetch-Site": "cross-site"},
+    {"Origin": "https://127.0.0.1:8791"}, {"Origin": "http://127.0.0.1"}, {"Origin": "http://127.0.0.1:8791/x"},
+    {"Origin": "http://user@127.0.0.1:8791"},
 ])
 def test_fremde_herkunft_wird_abgewiesen(klient, buch, kopf):
     vorbereiten()
@@ -490,3 +492,69 @@ def test_ja_bei_ausfall_sagt_nie_nichts_wurde_angelegt(klient, buch, monkeypatch
     monkeypatch.setattr(vu, "bestaetigen", nicht_eingerichtet)
     r = ja(klient)
     assert r.status_code == 503 and "Die Übergabe ist auf diesem Laden noch nicht eingerichtet." in r.text
+
+
+def test_origin_aus_ui_basis_url_zaehlt_mit_ihrem_schema(klient, buch, monkeypatch):
+    """Hinter `tailscale serve` kommt die Anfrage per http an, der Browser meldet https://<Basisadresse>."""
+    monkeypatch.setattr(ui, "UI_BASIS_URL", "https://laden.example:8445")
+    monkeypatch.setattr(ui, "ERLAUBTE_HOSTS", (*ui.ERLAUBTE_HOSTS, "laden.example:8445"))
+    vorbereiten()
+    assert post(klient, "werkbank-uebergabe-nein", {"id": kennung()},
+                headers={"host": "laden.example:8445", "Origin": "http://laden.example:8445"}).status_code == 403
+    assert zeile()["status"] == "offen"
+    assert post(klient, "werkbank-uebergabe-nein", {"id": kennung()},
+                headers={"host": "laden.example:8445", "Origin": "https://laden.example:8445"}).status_code == 303
+
+
+def test_origin_anderer_extra_host_ohne_basisadresse_ist_fremd(klient, buch, monkeypatch):
+    """Frueher reichte ein Host aus ERLAUBTE_HOSTS in jedem Schema und jeder Schreibweise."""
+    monkeypatch.setattr(ui, "ERLAUBTE_HOSTS", (*ui.ERLAUBTE_HOSTS, "extra.example", "extra.example:443"))
+    vorbereiten()
+    for origin in ("http://extra.example", "https://extra.example", "https://extra.example:443"):
+        assert post(klient, "werkbank-uebergabe-nein", {"id": kennung()},
+                    headers={"Origin": origin}).status_code == 403, origin
+    assert zeile()["status"] == "offen"
+
+
+# --- Schlusspruefung N1/N2: Auftragsnummer und deutliche Kuerzung --------------------------------------------
+
+def test_auftragsnummer_aus_dem_konzept_steht_auf_der_karte(klient):
+    vorbereiten(auftrag="0123abcd")
+    assert "Im Konzept eingetragener Auftrag: 0123abcd" in abschnitt(klient)
+
+
+def test_ohne_auftragsnummer_im_konzept_keine_zeile(klient):
+    vorbereiten()
+    assert "Im Konzept eingetragener Auftrag" not in abschnitt(klient)
+
+
+def test_kuerzung_steht_unuebersehbar_im_text_und_unsichtbares_ist_sichtbar(klient):
+    zwsp = "\u200b"
+    k = markiert(kernaussage=zwsp * 300 + "Sag im Video, X bringt garantiert 20 %.", hook="h" * 301 + "HOOK-ENDE")
+    vu.anlegen(k, video_konzept.block_hash(k))
+    s = abschnitt(klient)
+    offen, aufklappbar = s[:s.index("<details>")], s[s.index("<details>"):]
+    assert '<b class="warnung">… (gekürzt, alles unter „Alles lesen“)</b>' in offen
+    assert offen.count("(gekürzt, alles unter „Alles lesen“)") == 2                      # Kernaussage und Hook
+    assert zwsp not in s and "⟨U+200B⟩" in offen                                         # kein unsichtbares Zeichen mehr
+    assert "garantiert 20" not in offen and "garantiert 20" in aufklappbar              # voller Text unter "Alles lesen"
+    assert "⟨U+200B⟩" in aufklappbar
+
+
+def test_platzhalter_nie_mitten_im_zeichen_und_alles_bleibt_maskiert(klient):
+    k = markiert(kernaussage="<b>" + "\u202e\ufeff" * 120 + "</b>" + "y" * 400)
+    vu.anlegen(k, video_konzept.block_hash(k))
+    s = abschnitt(klient)
+    assert "<b>⟨" not in s and "&lt;b&gt;" in s
+    for rest in s.split("⟨")[1:]:
+        assert rest.startswith("U+"), rest[:12]
+    assert "\u202e" not in s and "\ufeff" not in s
+
+
+def test_sichtbar_machen_laesst_text_zeilenumbruch_und_tab_stehen():
+    assert ui_werkbank.sichtbar_machen("a\tb\nc ä") == "a\tb\nc ä"
+    assert ui_werkbank.sichtbar_machen("a\u200bb\x00\u2028") == "a⟨U+200B⟩b⟨U+0000⟩⟨U+2028⟩"
+    assert ui_werkbank.kuerzen_sichtbar("x" * 300) == ("x" * 300, False)
+    assert ui_werkbank.kuerzen_sichtbar("x" * 301) == ("x" * 300, True)
+    text, gekuerzt = ui_werkbank.kuerzen_sichtbar("\u200b" * 100)               # 8 Zeichen je Platzhalter
+    assert gekuerzt and text == "⟨U+200B⟩" * 37
