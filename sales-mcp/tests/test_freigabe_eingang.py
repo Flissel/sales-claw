@@ -197,6 +197,19 @@ def test_schluessel_hash_nicht_klartext():
         fe.schluessel_anlegen("sales")
 
 
+def test_schluessel_herkunft_rowboat():
+    klar = fe.schluessel_anlegen("rowboat")
+    assert fe.schluessel_herkunft(klar) == "rowboat"
+    assert fe.schluessel_herkunft("falsch") is None
+    with pytest.raises(fe.EingabeFehler):
+        fe.schluessel_anlegen("rowboat-ui")
+
+
+def test_schluessel_rowboat_ist_keine_freigabe_herkunft():
+    # der Schluessel gilt nur der Auftragsannahme; Freigaben bleiben den anderen Diensten
+    assert "rowboat" not in fe.ART_JE_HERKUNFT
+
+
 def test_schluessel_neu_ersetzt_alten():
     alt = fe.schluessel_anlegen("selbstbild")
     neu = fe.schluessel_anlegen("selbstbild")

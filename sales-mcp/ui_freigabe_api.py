@@ -21,6 +21,9 @@ import freigabe_eingang as fe
 
 PRAEFIX = "/api/freigaben/"
 MAX_RUMPF = 8 * 1024
+# Nur diese Herkuenfte duerfen an die Freigabe-Endpunkte. Der Schluessel `rowboat` gehoert der Auftragsannahme
+# (ui_auftraege_api) und kommt hier nie durch - auch nicht in Aufrufen, die heute ins Leere laufen.
+FREIGABE_HERKUENFTE = ("debugger-claw", "selbstbild", "werkstatt")
 LOG = logging.getLogger("sales-ui")
 
 
@@ -73,7 +76,7 @@ def routen(ui) -> list[Route]:
     def gesichert(handler):
         async def huelle(request: Request):
             herkunft = await run_in_threadpool(_herkunft, request)
-            if herkunft is None:
+            if herkunft not in FREIGABE_HERKUENFTE:       # None, rowboat: wie ein falscher Schluessel
                 return _fehler(401, "nicht_berechtigt")
             LOG.info("freigabe-api herkunft=%s pfad=%s", herkunft, request.url.path)
             return await handler(request, herkunft)

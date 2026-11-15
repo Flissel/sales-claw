@@ -88,11 +88,19 @@ create unique index if not exists freigabe_auftraege_offen_je_eintrag
 -- Zugangsschluessel der einliefernden Systeme (nur der Hash liegt hier).
 create table if not exists :"schema".freigabe_schluessel (
   herkunft text primary key check (herkunft in
-    ('debugger-claw','selbstbild','werkstatt')),
+    ('debugger-claw','selbstbild','werkstatt','rowboat')),
   hash text not null,
   aktiv boolean default true,
   angelegt_am timestamptz default now()
 );
+
+-- Konzept-Flaeche (14.11.2026): neue Schluessel-Herkunft rowboat (Auftragsannahme). Auf einer
+-- bestehenden Tabelle greift das `create table if not exists` oben nicht; darum wird der
+-- Spalten-CHECK (Standardname <tabelle>_<spalte>_check) ersetzt. Wiederholbar, ein Statement.
+alter table :"schema".freigabe_schluessel
+  drop constraint if exists freigabe_schluessel_herkunft_check,
+  add constraint freigabe_schluessel_herkunft_check check (herkunft in
+    ('debugger-claw','selbstbild','werkstatt','rowboat'));
 
 -- Rechte: sales_app liest, legt an und aendert, loescht nie. In sales_test
 -- zusaetzlich truncate (die Fixtures raeumen auf). Der Blankett-Grant im
