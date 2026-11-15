@@ -494,6 +494,25 @@ def test_ja_bei_ausfall_sagt_nie_nichts_wurde_angelegt(klient, buch, monkeypatch
     assert r.status_code == 503 and "Die Übergabe ist auf diesem Laden noch nicht eingerichtet." in r.text
 
 
+def test_seite_sendet_no_referrer_darum_kommt_origin_null(klient):
+    """Gekoppelt: die Seite sendet `Referrer-Policy: no-referrer`; deshalb schickt der Browser bei Ja/Nein `Origin: null`,
+    und `gleiche_herkunft` muss das mit `Sec-Fetch-Site: same-origin` annehmen (Test darunter)."""
+    r = klient.get(LISTE, headers=HOST, follow_redirects=False)
+    assert r.headers.get("referrer-policy") == "no-referrer"
+
+
+def test_origin_null_gilt_nur_mit_sec_fetch_site_same_origin(klient, buch):
+    vorbereiten()
+    for kopf in ({"Origin": "null"}, {"Origin": "null", "Sec-Fetch-Site": "cross-site"},
+                 {"Origin": "null", "Sec-Fetch-Site": "same-site"}, {"Origin": "null", "Sec-Fetch-Site": "none"}):
+        for aktion in ("werkbank-uebergabe-ja", "werkbank-uebergabe-nein"):
+            assert post(klient, aktion, {"id": kennung()}, headers=kopf).status_code == 403, kopf
+    assert zeile()["status"] == "offen" and buch.aufrufe == []
+    assert post(klient, "werkbank-uebergabe-nein", {"id": kennung()},
+                headers={"Origin": "null", "Sec-Fetch-Site": "same-origin"}).status_code == 303
+    assert zeile()["status"] == "verworfen"
+
+
 def test_origin_aus_ui_basis_url_zaehlt_mit_ihrem_schema(klient, buch, monkeypatch):
     """Hinter `tailscale serve` kommt die Anfrage per http an, der Browser meldet https://<Basisadresse>."""
     monkeypatch.setattr(ui, "UI_BASIS_URL", "https://laden.example:8445")

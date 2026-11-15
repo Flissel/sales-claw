@@ -4262,6 +4262,8 @@ markiert; unsichtbare Zeichen stehen als Platzhalter (`⟨U+200B⟩`), der volle
 - Bestätigen geht **nur mit Anmeldung**: läuft die Oberfläche ohne `UI_SESSION_SECRET`, zeigt die Seite die Übergaben
   nur zum Lesen („Bestätigen geht nur mit Anmeldung.“) und beide Aktionen antworten 403. Zusätzlich verlangen die
   Aktionen die CSRF-Marke und eine Anfrage von derselben Seite (`Origin`/`Sec-Fetch-Site`).
+- Der Browser schickt bei „Ja“/„Nein“ `Origin: null`, weil die Seite `Referrer-Policy: no-referrer` sendet; die Prüfung
+  verlässt sich dann auf `Sec-Fetch-Site: same-origin` (ohne diesen Kopf wird `Origin: null` abgewiesen).
 - Fehlt die Tabelle im Schema des Ladens, zeigt die Seite im Abschnitt „Die Übergabe ist auf diesem Laden noch nicht
   eingerichtet.“ und die Annahme antwortet 503 mit demselben Satz.
 
