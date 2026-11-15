@@ -1,13 +1,15 @@
 """Das Ja gegen ECHTES SQL: Anspruch, Auftrag, Sicherungspunkt und Statuswechsel laufen wirklich in einer Transaktion.
 
-NUR IN DER CI lauffaehig (Postgres mit db/video-uebergabe.sql fuer sales_test). Im Unterschied zu test_video_uebergabe.py
+NUR IN DER CI lauffaehig (Postgres mit db/video-uebergabe.sql fuer sales_test) und nur mit der Umgebungsvariable
+SALES_TEST_AUFTRAG_STANDIN=1, die ausschliesslich .github/workflows/tests.yml setzt: ohne sie wird das ganze Modul
+uebersprungen und nichts angelegt, auch nicht gegen eine Entwickler-DB ohne Auftragsbuch. Im Unterschied zu test_video_uebergabe.py
 ersetzt hier NICHTS `auftrag_buch.anlegen`: der echte Code ruft `auftrag.sales_anlegen`. Das Auftragsbuch gibt es in
 keiner Test-DB, darum legt dieses Modul ein Test-Schema `auftrag` aus tests/auftrag_standin.sql an (gleiche Namen,
 Signaturen und Fehlertexte wie 096/098 in vibemind-os) und wirft es am Ende weg.
 
-Schutz: das Modul laeuft nur, wenn `server.SCHEMA == "sales_test"` und das Schema `auftrag` entweder nicht existiert
-oder die Marke dieses Ersatzes traegt. Existiert ein anderes `auftrag` (ein echtes Auftragsbuch), wird ALLES
-uebersprungen und nichts angefasst.
+Schutz, alles zusammen: (1) die Umgebungsvariable, (2) das Test-Schema `sales_test`, (3) das Schema `auftrag`
+existiert entweder nicht oder traegt die Marke dieses Ersatzes. Existiert ein anderes `auftrag` (ein echtes
+Auftragsbuch), wird ALLES uebersprungen und nichts angefasst. Der Ersatz wird im `finally` der Fixture entfernt.
 """
 import json
 import os
@@ -23,6 +25,7 @@ import server  # noqa: E402
 import video_konzept  # noqa: E402
 import video_uebergabe as vu  # noqa: E402
 
+SCHALTER = "SALES_TEST_AUFTRAG_STANDIN"
 MARKE = "TEST-STANDIN fuer video_uebergabe (kein echtes Auftragsbuch)"
 SQL = Path(__file__).with_name("auftrag_standin.sql")
 TAGESGRENZE = "Heute sind schon zwei Videos bestellt – morgen wieder."
@@ -30,17 +33,22 @@ TAGESGRENZE = "Heute sind schon zwei Videos bestellt – morgen wieder."
 
 @pytest.fixture(scope="module", autouse=True)
 def standin():
-    assert server.SCHEMA == "sales_test"
+    if os.environ.get(SCHALTER) != "1":
+        pytest.skip(f"nur in der CI: {SCHALTER}=1 setzt allein der Workflow")
+    if server.SCHEMA != "sales_test":
+        pytest.skip("nur gegen das Test-Schema sales_test")
     vorhanden = server._q("select obj_description(oid, 'pg_namespace') as c from pg_namespace "
                           "where nspname = 'auftrag'")
     if vorhanden and vorhanden[0]["c"] != MARKE:
         pytest.skip("Schema `auftrag` gehoert einem echten Auftragsbuch - nichts angefasst")
-    with server.pool.connection() as conn:
-        conn.execute("drop schema if exists auftrag cascade")        # nur der eigene Ersatz kann hier stehen
-        conn.execute(SQL.read_text(encoding="utf-8"))
-    yield
-    with server.pool.connection() as conn:
-        conn.execute("drop schema if exists auftrag cascade")
+    try:
+        with server.pool.connection() as conn:
+            conn.execute("drop schema if exists auftrag cascade")    # nur der eigene Ersatz kann hier stehen
+            conn.execute(SQL.read_text(encoding="utf-8"))
+        yield
+    finally:                                                          # auch nach einem Fehler beim Anlegen oder Testen
+        with server.pool.connection() as conn:
+            conn.execute("drop schema if exists auftrag cascade")
 
 
 @pytest.fixture(autouse=True)

@@ -80,6 +80,7 @@ jobs:
           -v "$GITHUB_WORKSPACE:/repo" -w /repo/sales-mcp
           -e SALES_DB_SCHEMA=sales_test
           -e SALES_DB_URL="postgresql://postgres:ci@localhost:5432/postgres"
+          -e SALES_TEST_AUFTRAG_STANDIN=1
           sales-mcp-ci
           python -m pytest tests/ -q --tb=short -p no:cacheprovider
 

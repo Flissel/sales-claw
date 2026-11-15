@@ -1,11 +1,14 @@
 -- Minimaler Ersatz fuer das Auftragsbuch (Schema `auftrag`), NUR fuer test_video_uebergabe_sql.py.
 -- Namen und Signaturen wie in vibemind-os spaces/marketing/db/096_auftragsbuch.sql und 098_auftragsbuch_video.sql
 -- (Auszug): Tabelle auftrag.auftraege und Funktion auftrag.sales_anlegen(p_an, p_laden, p_mandant, p_art, p_eingabe,
--- p_eltern) mit denselben Pruefungen und demselben Wortlaut der Fehler (RAISE EXCEPTION -> SQLSTATE P0001), darunter die
--- Tagesgrenze "hoechstens 2 Video-Auftraege je Laden pro Tag". Der Test schaltet das Verhalten ueber auftrag.test_modus:
+-- p_eltern). Nachgebildet sind NUR: `an` = marketing, Laden und Mandant gesetzt und die Tagesgrenze "hoechstens 2
+-- Video-Auftraege je Laden pro Tag" (Fehler als RAISE EXCEPTION -> SQLSTATE P0001, Wortlaut wie 098). NICHT enthalten:
+-- die Grenzen von 5 je Laden und 20 je Absender, die Pruefung der Art und des Absenders, der Eltern-Auftrag. Der Test
+-- schaltet das Verhalten ueber auftrag.test_modus:
 --   ok | ablehnung (P0001, allgemein) | rechte (42501) | ausfall_nach_insert (Division durch null nach dem Insert).
 -- Die Datei wird nur ausgefuehrt, wenn das Schema `auftrag` NICHT existiert (oder dieser Marke traegt); ein echtes
--- Auftragsbuch wird nie angefasst. Der Test legt das Schema an und wirft es am Ende wieder weg.
+-- Auftragsbuch wird nie angefasst. Der Test legt das Schema an und wirft es am Ende wieder weg (auch bei einem
+-- Fehler); er laeuft nur mit SALES_TEST_AUFTRAG_STANDIN=1, das nur der CI-Workflow setzt.
 create schema auftrag;
 comment on schema auftrag is 'TEST-STANDIN fuer video_uebergabe (kein echtes Auftragsbuch)';
 
