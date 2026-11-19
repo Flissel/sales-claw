@@ -209,6 +209,7 @@ def pruefen(roh: object, bild_ids: set[str]) -> dict:
 def erzeugen(uid: str, jetzt: datetime) -> dict:
     """KI-Auftrag + Pruefung; speichert kurs_json und Stand. Bei Fehler Versuch zaehlen
     (nach MAX_VERSUCHE kurs_status = 'fehler') und die Ausnahme weiterreichen."""
+    stand = None
     try:
         stand = kurs_stand(uid)
         eingabe = kurs_eingabe(uid)
@@ -218,8 +219,9 @@ def erzeugen(uid: str, jetzt: datetime) -> dict:
     except Exception as err:
         server._q("update termin_mitschriften set kurs_versuche = kurs_versuche + 1, "
                   "kurs_am = %s, kurs_status = case when kurs_versuche + 1 >= %s "
-                  "then 'fehler' else kurs_status end where uid = %s returning id",
-                  (jetzt, MAX_VERSUCHE, uid))
+                  "then 'fehler' else kurs_status end, "
+                  "kurs_stand = coalesce(%s, kurs_stand) where uid = %s returning id",
+                  (jetzt, MAX_VERSUCHE, stand, uid))
         log.warning("Kursmitschrift fehlgeschlagen uid=%s (%s)",
                     mitschrift_bericht.uid8(uid), type(err).__name__)
         raise

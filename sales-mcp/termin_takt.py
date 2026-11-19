@@ -690,7 +690,8 @@ def _kurs_veraltet() -> int:
     ist, entfernen (die Sitzung laeuft dann wie neu, mit frischen Versuchen). Unberuehrt
     bleibt, was nie verarbeitet wurde."""
     kandidaten = server._q(
-        f"select m.uid from termin_mitschriften m where {_KURS_DATEN_SQL} "
+        f"select m.uid from termin_mitschriften m where ({_KURS_DATEN_SQL} "
+        f"or (m.kurs_status = 'fehler' and m.kurs_stand is not null)) "
         f"and (not ({_KURS_RUBRIK_SQL}) or m.kurs_stand is distinct from "
         f"({kurs_mitschrift.KURS_STAND_SQL})) order by m.geholt_am, m.id",
         (kurs_mitschrift.RUBRIK_KURSE,))

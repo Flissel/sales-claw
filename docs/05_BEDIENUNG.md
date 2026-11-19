@@ -42,7 +42,7 @@ Unter *Mitschriften* (Seitenleiste) liegen die Berichte der ausgewerteten Kunden
 
 ## Kurse und Handbücher
 
-In der Rubrik **Kurse** (Reiter unter *Mitschriften*) zeigt jede Karte zusätzlich den Stand der **Kursmitschrift**: „wird erzeugt“, „fertig“ oder „Fehler“ (nach drei Versuchen im Stundenabstand; eine neue Auswertung startet sie neu). Steht dort „Lernenden wählen“, fehlt noch die Zuordnung.
+In der Rubrik **Kurse** (Reiter unter *Mitschriften*) zeigt jede Karte zusätzlich den Stand der **Kursmitschrift**: „wird erzeugt“, „fertig“ oder „Fehler“ (nach drei Versuchen im Stundenabstand; eine neue Auswertung mit geändertem Stand – oder Herausschieben aus „Kurse“ und zurück – startet sie neu, sonst bleibt es bei „Fehler“). Steht dort „Lernenden wählen“, fehlt noch die Zuordnung.
 
 - **Lernende/r wählen:** Auswahlfeld (Teilnehmer und zuletzt Gewählte) oder *Kontakt suchen*, dann *Speichern*. Das darf nur du; auch private Kontakte gehen. Wechselst du die Person, geht die Sitzung aus dem alten Handbuch.
 - **Kursmitschrift (Felix)** öffnet die interne Fassung („Intern – enthält Kundendaten, nicht weitergeben“). **Kursmitschrift (Lernende)** ist die Fassung zum Weitergeben (ohne Roh-Transkript, ohne „Offen“), **herunterladen** speichert sie. **Kursmitschrift PDF** lädt das PDF.

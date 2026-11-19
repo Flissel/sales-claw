@@ -454,3 +454,33 @@ def test_ausgabe_faellig_fehler_stoppt_andere_lernende_nicht(ki, monkeypatch):
     _runden(40)
     assert server._q("select 1 from kurs_handbuch where lead_id = %s", (b,))
     assert not server._q("select 1 from kurs_handbuch where lead_id = %s", (a,))
+
+
+def test_erzeugen_dreimal_fehler_bleibt_fehler_bis_neuer_stand(ki, monkeypatch):
+    _sitzung("k-1")
+
+    def kaputt(system, nutzer, **kw):
+        ki.n += 1
+        raise RuntimeError("ki weg")
+    monkeypatch.setattr(ollama, "chat", kaputt)
+    for i in range(3):
+        with pytest.raises(RuntimeError):
+            km.erzeugen("k-1", JETZT + timedelta(hours=i))
+    z = _z("k-1")
+    assert z["kurs_status"] == "fehler" and z["kurs_json"] is None
+    assert z["kurs_stand"] == km.kurs_stand("k-1")
+    # unveraendert: bleibt Fehler ueber mehrere Runden, keine KI
+    vorher = ki.n
+    _runden(5, start=JETZT + timedelta(hours=5))
+    assert ki.n == vorher
+    z = _z("k-1")
+    assert z["kurs_status"] == "fehler" and z["kurs_versuche"] == 3
+    # neue Auswertung: naechste Runde setzt zurueck, Pfad (a) versucht es wieder
+    monkeypatch.setattr(ollama, "chat", ki.chat)
+    server._q("update termin_mitschriften set auswertung_am = %s where uid = 'k-1' "
+              "returning id", (JETZT + timedelta(days=1),))
+    termin_takt._kurs(JETZT + timedelta(days=1, hours=1))
+    z = _z("k-1")
+    assert ki.kurs == 1
+    assert z["kurs_status"] == "fertig" and z["kurs_json"] is not None
+    assert z["kurs_versuche"] == 0 and z["kurs_stand"] == km.kurs_stand("k-1")

@@ -4220,6 +4220,8 @@ abgelehnt oder nachträglich verworfen, Löschantrag) und das Sicherheitsnetz `s
 Datenbank-Kaskade (Akte gelöscht) räumt der nächste Abgleich ab. Fehlt einem dieser Dienste die Einhängung, steht im
 Log `Bericht-Dateien nicht entfernt: Mitschriften-Ablage fehlt (anzahl=N)` – dann bleibt die Datei bis zum Abgleich.
 
+**Kurse:** Kursmitschrift und Handbuch legen weitere Dateien in diesen Ordner, siehe Abschnitt „Meeting-Mittelpunkt: Kursmitschrift und Kurs-Handbuch“.
+
 **Sicherung.** `deploy/sicherung.sh` sichert den Ordner je Laden als `mitschriften.tar.gz` (`docs/04_BACKUP_RESTORE.md`).
 
 **Logs:** `docker logs --since 1h sales-termine | grep -iE "Mitschriften-Ablage|Abgleich|Bericht|einordnung"`. Sie
@@ -4572,7 +4574,7 @@ ist (die Arbeit bleibt fällig, nichts geht verloren).
 **Status `termin_mitschriften.kurs_status`.** `null` = wird erzeugt (Oberfläche: „wird erzeugt“), `fertig`, `fehler`.
 Je Sitzung höchstens **3 Versuche** (`MAX_VERSUCHE`), je **1 Stunde** Abstand (`NEUVERSUCH_NACH`); beim dritten Fehlschlag
 wird der Status `fehler`. Eine Sitzung mit `fehler` wird übersprungen und aus dem Handbuch genommen (das Handbuch läuft
-ohne sie weiter). Neu starten: eine neue Auswertung (neuer Stand) setzt Zähler und Status zurück.
+ohne sie weiter). Neu starten: eine neue Auswertung (geändertes Transkript, geänderte Auswertung oder Bilder = neuer Stand) setzt Zähler und Status in der nächsten Runde zurück (auch bei `fehler` der Kursmitschrift selbst; die Sitzung wird dann neu erzeugt). Ebenso: aus „Kurse“ heraus- und wieder hineinverschieben.
 
 **Lernenden wählen.** `kurs_lead_id` setzt **nur Felix** in der Oberfläche (Reiter „Kurse“, Auswahl oder Kontaktsuche);
 vorgeschlagen werden die Teilnehmer ohne Organisator und die zuletzt Gewählten. Auch private Kontakte sind erlaubt. Ohne
@@ -4590,7 +4592,7 @@ Der stündliche Abgleich (oben) kennt diese Dateien: Waisen älter als 10 Minute
 **Wenn etwas hakt**
 
 - Status bleibt „wird erzeugt“: `docker logs --since 1h sales-termine | grep -iE "Kurs"`; Ollama erreichbar? Termin in
-  15 Minuten? Nach 3 Fehlversuchen steht `fehler`; eine neue Auswertung (`scripts/neu_auswerten.py`) startet neu.
+  15 Minuten? Nach 3 Fehlversuchen steht `fehler`; eine neue Auswertung mit neuem Stand (`scripts/neu_auswerten.py`) oder Herausschieben aus „Kurse“ und zurück startet neu; ohne neuen Stand bleibt `fehler` bestehen.
 - Kein PDF / „PDF-Erzeugung nicht erreichbar“: läuft `sales-auge`? Ist `AUGE_URL` im Container gesetzt
   (`docker exec sales-termine printenv AUGE_URL`)?
 - Handbuch fehlt: Lernende/r gewählt? Sitzung `fertig`? Im Reiter „Handbücher“ „Handbuch neu ausgeben“.

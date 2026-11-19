@@ -389,13 +389,6 @@ Der Laden verschickt für die Website die Bestätigungsmail des Double-Opt-in
 - **Empfänger der Daten:** der Mailanbieter des Ladens (`SMTP_HOST`), wie bei
   jeder anderen ausgehenden Mail.
 
-## Grenze
-
-Dieses Dokument ist Betriebsanleitung, keine Rechtsberatung. Bei
-Streitfällen (Auskunftsumfang, Aufbewahrungsfristen, Reichweite der
-Bestandskunden-Ausnahme) entscheidet der Betreiber mit rechtlicher
-Beratung — nicht Claude, nicht der Bot.
-
 ## Kursmitschrift und Kurs-Handbuch (seit 16.11.2026)
 
 Checkliste für Kursmitschrift und Handbuch (Runbook: Abschnitt Kursmitschrift und Kurs-Handbuch):
@@ -418,7 +411,7 @@ Checkliste für Kursmitschrift und Handbuch (Runbook: Abschnitt Kursmitschrift u
       2. *Aus „Kurse“ verschieben:* Kursmitschrift und Handbuch-Quelle gehen in derselben Transaktion weg.
       3. *Lernenden wechseln oder entfernen:* die Sitzung geht aus dem Handbuch des alten Lernenden.
       4. *Lead löschen / Löschantrag des Lernenden (`loeschantrag_vermerken`):* das **ganze Handbuch** (Kapitel, Fassungen,
-         Quellen, HTML und PDF) wird gelöscht und `kurs_lead_id` an allen Mitschriften geleert.
+         Quellen, HTML und PDF) wird gelöscht und `kurs_lead_id` an allen Mitschriften geleert. Das gilt unmittelbar für den Löschantrag (`loeschantrag_vermerken` ruft `alles_entfernen`). Wird ein Lead nur in der Datenbank gelöscht, entfernt die Kaskade zwar die Zeilen (Kapitel, Fassungen, Quellen; `kurs_lead_id` wird leer), die **Dateien** (HTML, PDF) aber erst der stündliche Abgleich als Waisen, nach der Schonfrist von 10 Minuten – also bis zu gut einer Stunde später.
 - [ ] **Kapitelfassungen beim Entfernen einer Sitzung:** die Kapitel werden auf die Fassung **vor** dieser Sitzung
       zurückgerollt, alle Fassungen, die sie enthalten, werden gelöscht, spätere Sitzungen arbeitet der Taktgeber in
       Datumsfolge neu ein. Der Text der entfernten Sitzung bleibt so in keiner Fassung zurück.
@@ -431,3 +424,10 @@ Checkliste für Kursmitschrift und Handbuch (Runbook: Abschnitt Kursmitschrift u
 - [ ] **Auskunft:** `kontakt_auskunft` enthält diese Dateien nicht von selbst; bei einem Auskunftsersuchen prüft der
       Betreiber das Handbuch des Lernenden und die Kursmitschriften seiner Termine von Hand (Rechte Dritter,
       Art. 15 Abs. 4).
+
+## Grenze
+
+Dieses Dokument ist Betriebsanleitung, keine Rechtsberatung. Bei
+Streitfällen (Auskunftsumfang, Aufbewahrungsfristen, Reichweite der
+Bestandskunden-Ausnahme) entscheidet der Betreiber mit rechtlicher
+Beratung — nicht Claude, nicht der Bot.
