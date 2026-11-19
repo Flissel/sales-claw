@@ -127,7 +127,7 @@ def _handbuecher_rumpf(csrf: str | None) -> str:
             "left join kurs_handbuch_fassung f on f.id = k.aktuelle_fassung "
             "where k.lead_id = %s order by k.reihenfolge, k.erstellt_am", (lid,))
         sitzungen = {u for k in kap for u in (k["quellen"] or [])}
-        beginne = kurs_handbuch._beginne(sorted(sitzungen))
+        beginne = kurs_handbuch.sitzungs_beginne(sorted(sitzungen))
         stand = _tag(lead["stand_am"]) or "noch nicht ausgegeben"
         n = len(sitzungen)
         aktionen = []
@@ -142,7 +142,7 @@ def _handbuecher_rumpf(csrf: str | None) -> str:
                 '<form method="post" action="/mitschriften/handbuch/ausgeben" class="verschieben">'
                 f'<input type="hidden" name="csrf" value="{csrf}">'
                 f'<input type="hidden" name="lead" value="{lid}">'
-                '<button type="submit">Handbuch jetzt ausgeben</button></form>')
+                '<button type="submit">Handbuch neu ausgeben</button></form>')
         zeilen = []
         for k in kap:
             kid = str(k["id"])
@@ -188,39 +188,6 @@ def _datei_lesen(rel: str | None, kennung: str):
     except OSError as err:
         log.warning("Datei nicht lesbar %s (%s)", kennung, type(err).__name__)
         return None
-
-
-def kapitel_aendern(lead: str, kid: str, aktion: str, titel: str | None) -> str:
-    """Kapitel umbenennen oder verschieben, alles in einer Transaktion unter der
-    Handbuch-Sperre und mit Zeilensperre auf die Kapitel des Lernenden (nach id).
-    Rueckgabe: "ok" | "fehlt" (Kapitel gehoert nicht zu lead) | "neu" (Huelle, wird aufgebaut).
-    Jede Aenderung (ausser Verschieben am Rand) macht die Ausgabe faellig
-    (fassungen_stand = null)."""
-    with server.pool.connection() as conn:
-        kurs_handbuch._handbuch_sperren(conn, lead)
-        zeilen = conn.execute(
-            "select id, reihenfolge, aktuelle_fassung, erstellt_am from kurs_handbuch_kapitel "
-            "where lead_id = %s order by id for update", (lead,)).fetchall()
-        ziel = next((r for r in zeilen if str(r["id"]) == kid), None)
-        if ziel is None:
-            return "fehlt"
-        if ziel["aktuelle_fassung"] is None:
-            return "neu"
-        if aktion == "umbenennen":
-            conn.execute("update kurs_handbuch_kapitel set titel = %s where id = %s", (titel, kid))
-        else:
-            reihe = sorted(zeilen, key=lambda r: (r["reihenfolge"], r["erstellt_am"], str(r["id"])))
-            i = next(j for j, r in enumerate(reihe) if str(r["id"]) == kid)
-            j = i - 1 if aktion == "hoch" else i + 1
-            if j < 0 or j >= len(reihe):
-                return "ok"                       # am Rand: nichts zu tun
-            reihe[i], reihe[j] = reihe[j], reihe[i]
-            for pos, r in enumerate(reihe, 1):
-                if r["reihenfolge"] != pos:
-                    conn.execute("update kurs_handbuch_kapitel set reihenfolge = %s where id = %s",
-                                 (pos, r["id"]))
-        conn.execute("update kurs_handbuch set fassungen_stand = null where lead_id = %s", (lead,))
-    return "ok"
 
 
 def routen(ui, leiste) -> list:
@@ -294,8 +261,14 @@ def routen(ui, leiste) -> list:
             return _nicht_gefunden("Diese Kurs-Mitschrift gibt es nicht (mehr).")
         roh = str(form.get("lead_id") or "").strip()
         if not kurs_mitschrift.lernender_setzen(uid, roh or None):
-            return ui._fehlerseite(400, "Lernende/r ungültig",
-                                   "Diesen Kontakt gibt es nicht. Nichts geändert.")
+            lid = kurs_handbuch.gueltige_id(roh) if roh else None
+            if roh and (lid is None or not server._q("select 1 from leads where id = %s",
+                                                      (lid,))):
+                return ui._fehlerseite(400, "Lernende/r ungültig",
+                                       "Diesen Kontakt gibt es nicht. Nichts geändert.")
+            return ui._fehlerseite(409, "Nicht mehr in „Kurse“",
+                                   "Diese Mitschrift gehört nicht mehr zur Rubrik Kurse. "
+                                   "Nichts geändert.")
         log.info("Lernende/r %s uid=%s", "gesetzt" if roh else "entfernt", mb.uid8(uid))
         return RedirectResponse(f"/mitschriften?rubrik={quote(z[0]['rubrik'], safe='')}",
                                 status_code=303)
@@ -340,7 +313,7 @@ def routen(ui, leiste) -> list:
             ui.CSRF_TOKEN if _schreiben() else None))
 
     def _handbuch_zeile(request):
-        lead = kurs_handbuch._id(request.query_params.get("lead"))
+        lead = kurs_handbuch.gueltige_id(request.query_params.get("lead"))
         z = server._q("select pfad, pdf, stand_am from kurs_handbuch where lead_id = %s",
                       (lead,)) if lead else []
         return lead, (z[0] if z else None)
@@ -370,8 +343,8 @@ def routen(ui, leiste) -> list:
         fehler = _pruefen(form)
         if fehler:
             return fehler
-        lead = kurs_handbuch._id(form.get("lead"))
-        kid = kurs_handbuch._id(form.get("kapitel_id"))
+        lead = kurs_handbuch.gueltige_id(form.get("lead"))
+        kid = kurs_handbuch.gueltige_id(form.get("kapitel_id"))
         aktion = str(form.get("aktion") or "")
         if aktion not in ("umbenennen", "hoch", "runter"):
             return ui._fehlerseite(400, "Aktion ungültig", "Nichts geändert.")
@@ -384,14 +357,14 @@ def routen(ui, leiste) -> list:
                                        "Nichts geändert.")
         if lead is None or kid is None:
             return _nicht_gefunden("Dieses Kapitel gibt es nicht (mehr).")
-        ergebnis = kapitel_aendern(lead, kid, aktion, titel)
+        ergebnis = await asyncio.to_thread(kurs_handbuch.kapitel_aendern, lead, kid, aktion,
+                                           titel)
         if ergebnis == "fehlt":
             return _nicht_gefunden("Dieses Kapitel gibt es nicht (mehr).")
         if ergebnis == "neu":
             return ui._fehlerseite(409, "Kapitel wird neu aufgebaut",
                                    "Dieses Kapitel wird gerade neu aufgebaut. "
                                    "Später erneut versuchen.")
-        log.info("Kapitel %s lead=%s", aktion, lead[:8])
         return RedirectResponse("/mitschriften/handbuecher", status_code=303)
 
     @ui._gesichert_seite
@@ -400,13 +373,13 @@ def routen(ui, leiste) -> list:
         fehler = _pruefen(form)
         if fehler:
             return fehler
-        lead = kurs_handbuch._id(form.get("lead"))
+        lead = kurs_handbuch.gueltige_id(form.get("lead"))
         if lead is None:
+            return _nicht_gefunden("Diesen Lernenden gibt es nicht.")
+        if not server._q("select 1 from leads where id = %s", (lead,)):
             return _nicht_gefunden("Diesen Lernenden gibt es nicht.")
         try:
             await asyncio.to_thread(kurs_handbuch.ausgeben, lead)
-        except ValueError:
-            return _nicht_gefunden("Diesen Lernenden gibt es nicht.")
         except kurs_pdf.PdfFehler as err:
             log.warning("Handbuch-Ausgabe fehlgeschlagen lead=%s (PdfFehler)", lead[:8])
             return ui._fehlerseite(502, "Ausgabe fehlgeschlagen", f"{err} Nichts geändert.")

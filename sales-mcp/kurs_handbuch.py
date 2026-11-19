@@ -909,3 +909,62 @@ def alles_entfernen(lead_id: str) -> None:
     if zeilen or kapitel or quellen:
         log.info("Handbuch ganz entfernt lead=%s kapitel=%d quellen=%d", _lead8(lid),
                  len(kapitel), len(quellen))
+
+
+# ---------- Oberflaeche: Kapitel umbenennen / umsortieren ----------
+
+def gueltige_id(wert: object) -> str | None:
+    """Oeffentlich fuer die Oberflaeche: gueltige UUID (klein) oder None."""
+    return _id(wert)
+
+
+def sitzungs_beginne(uids: list[str]) -> dict[str, datetime]:
+    """Oeffentlich fuer die Oberflaeche: Beginn je Sitzungs-uid."""
+    return _beginne(uids)
+
+
+def kapitel_aendern(lead_id: str, kapitel_id: str, aktion: str, titel: str | None = None) -> str:
+    """Kapitel eines Lernenden umbenennen (`umbenennen`, mit `titel`) oder um eine Stelle
+    verschieben (`hoch`/`runter`). Rueckgabe: "ok" | "fehlt" (Kapitel gehoert nicht zu
+    `lead_id`) | "neu" (Huelle, wird gerade neu aufgebaut: nicht aenderbar). Verschieben am
+    Rand ist ein "ok" ohne Wirkung. Jede Aenderung macht die Ausgabe faellig
+    (`kurs_handbuch.fassungen_stand = null`).
+
+    SPERR-REIHENFOLGE (wie quelle_entfernen_in/einfuegen_vorbereiten/alles_entfernen):
+    Mitschrift-Zeile, Quellen, dann Kapitel-Zeilen, ERST DANACH die Handbuch-Sperre
+    (`_handbuch_sperren`) und `kurs_handbuch`. Hier also: alle Kapitel des Lernenden `for
+    update` (nach id sortiert), dann `_handbuch_sperren`, dann `kurs_handbuch`. Die umgekehrte
+    Reihenfolge liefe mit den Rueckbau-Pfaden in einen Deadlock."""
+    if aktion not in ("umbenennen", "hoch", "runter"):
+        raise ValueError("Aktion ungueltig")
+    lid, kid = _gueltig(lead_id), _id(kapitel_id)
+    if kid is None:
+        return "fehlt"
+    with server.pool.connection() as conn:
+        zeilen = conn.execute(
+            "select id, reihenfolge, aktuelle_fassung, erstellt_am from kurs_handbuch_kapitel "
+            "where lead_id = %s order by id for update", (lid,)).fetchall()
+        ziel = next((r for r in zeilen if str(r["id"]) == kid), None)
+        if ziel is None:
+            return "fehlt"
+        if ziel["aktuelle_fassung"] is None:
+            return "neu"
+        if aktion == "umbenennen":
+            conn.execute("update kurs_handbuch_kapitel set titel = %s where id = %s",
+                         (titel, kid))
+        else:
+            reihe = sorted(zeilen, key=lambda r: (r["reihenfolge"], r["erstellt_am"], str(r["id"])))
+            i = next(j for j, r in enumerate(reihe) if str(r["id"]) == kid)
+            j = i - 1 if aktion == "hoch" else i + 1
+            if j < 0 or j >= len(reihe):
+                return "ok"                       # am Rand: nichts zu tun
+            reihe[i], reihe[j] = reihe[j], reihe[i]
+            for pos, r in enumerate(reihe, 1):
+                if r["reihenfolge"] != pos:
+                    conn.execute("update kurs_handbuch_kapitel set reihenfolge = %s "
+                                 "where id = %s", (pos, r["id"]))
+        _handbuch_sperren(conn, lid)
+        conn.execute("update kurs_handbuch set fassungen_stand = null where lead_id = %s",
+                     (lid,))
+    log.info("Kapitel %s lead=%s", aktion, _lead8(lid))
+    return "ok"

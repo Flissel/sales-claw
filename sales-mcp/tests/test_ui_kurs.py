@@ -214,9 +214,10 @@ def test_kurs_kopfzeilen_und_inhalt(ablage):
     r = _get(f"/mitschriften/kurs?uid={q}&fassung=lernend")
     assert r.status_code == 200 and r.text == "<p>LERNENDEN-FASSUNG</p>"
     assert r.headers["cache-control"] == "private, no-store"
-    assert "script-src 'none'" not in r.headers["content-security-policy"]
-    assert "script" not in r.headers["content-security-policy"]
-    assert r.headers["content-security-policy"].startswith("default-src 'none'")
+    csp = r.headers["content-security-policy"]
+    assert csp.startswith("default-src 'none'")
+    assert all(d.strip() == "script-src 'none'" for d in csp.split(";")
+               if d.strip().startswith("script-src"))
     assert "content-disposition" not in r.headers
     f = _get(f"/mitschriften/kurs?uid={q}&fassung=felix&download=1")
     assert f.text == "<p>FELIX-FASSUNG</p>"
@@ -468,3 +469,68 @@ def test_ausgeben_fehler_ohne_stacktrace(handbuch, monkeypatch, caplog):
     log = "\n".join(m.getMessage() for m in caplog.records)
     assert "RuntimeError" in log and "geheim" not in log and "Anna" not in log
     assert _post("/mitschriften/handbuch/ausgeben", lead="kein-uuid").status_code == 404
+
+
+def test_ausgeben_button_text(handbuch):
+    assert "Handbuch neu ausgeben" in _get("/mitschriften/handbuecher").text
+
+
+def test_ausgeben_fehlerarten(handbuch, monkeypatch):
+    lead, _k1, _k2 = handbuch
+    unbekannt = "00000000-0000-0000-0000-000000000000"
+    assert _post("/mitschriften/handbuch/ausgeben", lead=unbekannt).status_code == 404
+
+    def pfad_kaputt(_lid):
+        raise ValueError("Ablagepfad ungueltig")
+    monkeypatch.setattr(kurs_handbuch, "ausgeben", pfad_kaputt)
+    r = _post("/mitschriften/handbuch/ausgeben", lead=lead)
+    assert r.status_code == 500 and "gibt es nicht" not in r.text
+
+
+def test_lernender_nach_rubrikwechsel_409(ablage, monkeypatch):
+    import kurs_mitschrift
+    _kurs(ablage)
+    lead = _lead()
+    monkeypatch.setattr(kurs_mitschrift, "lernender_setzen", lambda uid, lid: False)
+    r = _post("/mitschriften/kurs/lernender", uid=UID, lead_id=lead)
+    assert r.status_code == 409 and "Kurse" in r.text
+    assert _post("/mitschriften/kurs/lernender", uid=UID,
+                 lead_id="00000000-0000-0000-0000-000000000000").status_code == 400
+
+
+def test_kapitel_aendern_wartet_auf_kapitelsperre_ohne_deadlock(handbuch):
+    """A haelt (wie _zurueckrollen) die Kapitel-Zeilen und nimmt danach die Handbuch-Sperre;
+    B (kapitel_aendern) darf in dieser Zeit nicht die Handbuch-Sperre halten und auf die
+    Kapitel warten (AB/BA). Beide enden ohne DeadlockDetected, B sieht den neuen Stand."""
+    import threading
+    import time
+    lead, k1, _k2 = handbuch
+    ergebnis = {}
+
+    def b():
+        try:
+            ergebnis["r"] = kurs_handbuch.kapitel_aendern(lead, k1, "umbenennen", "Von B")
+        except Exception as err:  # noqa: BLE001
+            ergebnis["fehler"] = type(err).__name__
+
+    with server.pool.connection() as a:
+        a.execute("select id from kurs_handbuch_kapitel where lead_id = %s order by id "
+                  "for update", (lead,)).fetchall()
+        t = threading.Thread(target=b)
+        t.start()
+        time.sleep(1.0)                      # B wartet jetzt auf die Kapitel-Zeilen
+        kurs_handbuch._handbuch_sperren(a, lead)
+        a.execute("update kurs_handbuch_kapitel set titel = 'Von A' where id = %s", (k1,))
+        a.execute("update kurs_handbuch set fassungen_stand = now() where lead_id = %s",
+                  (lead,))
+    t.join(30)
+    assert not t.is_alive()
+    assert ergebnis == {"r": "ok"}
+    assert _reihenfolge(lead)[0] == "Von B" and _stand(lead) is None
+
+
+def test_kapitel_aendern_oeffentlich(handbuch):
+    lead, k1, _k2 = handbuch
+    assert kurs_handbuch.kapitel_aendern(lead, k1, "umbenennen", "Neu") == "ok"
+    assert kurs_handbuch.kapitel_aendern(lead, "kein-uuid", "hoch") == "fehlt"
+    assert kurs_handbuch.gueltige_id("kein-uuid") is None

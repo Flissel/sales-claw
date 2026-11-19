@@ -27,8 +27,7 @@ log = logging.getLogger("ui_mitschriften")
 MAX_JE_REITER = 200
 KURZ_MAX = 240
 # Der Bericht ist ein eigenes Dokument: Bilder nur als data:-URI, kein Skript.
-BERICHT_CSP = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
-               "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+BERICHT_CSP = ui_kurs.DATEI_CSP
 
 
 def _json(wert) -> dict:
