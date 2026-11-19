@@ -279,7 +279,8 @@ def verschieben(uid: str, rubrik: str) -> str | None:
     der gespeicherten Rubrik), setzt rubrik_manuell und legt die Datei neu ab.
     None bei ungueltigem Namen oder fehlender Mitschrift. Ein Fehler beim Ablegen
     wird weitergereicht; die Rubrik bleibt dann gespeichert (der Takt baut neu).
-    Aus "Kurse" heraus: Kursmitschrift und Handbuch-Quelle gehen (vor dem Ablegen)."""
+    Aus "Kurse" heraus: Kursmitschrift und Handbuch-Quelle gehen in derselben Transaktion
+    wie der Rubrikwechsel (scheitert der Rueckbau, bleibt die Rubrik), Dateien danach."""
     import kurs_mitschrift  # zirkulaer: kurs_mitschrift importiert mitschrift_bericht
     name = rubrik_normalisieren(rubrik)
     if name is None:
@@ -288,14 +289,18 @@ def verschieben(uid: str, rubrik: str) -> str | None:
         "select distinct rubrik from termin_mitschriften where rubrik is not null "
         "order by rubrik")]
     name = rubrik_angleichen(name, [UNSORTIERT] + vorhandene)
-    vorher = server._q(
-        "update termin_mitschriften m set rubrik = %s, rubrik_manuell = true "
-        "from (select uid, rubrik from termin_mitschriften where uid = %s for update) alt "
-        "where m.uid = alt.uid returning alt.rubrik", (name, uid))
-    if not vorher:
-        return None
-    if kurs_mitschrift.ist_kurs(vorher[0]["rubrik"]) and not kurs_mitschrift.ist_kurs(name):
-        kurs_mitschrift.entfernen(uid)
+    with server.pool.connection() as conn:
+        alt = conn.execute("select rubrik from termin_mitschriften where uid = %s for update",
+                           (uid,)).fetchone()
+        if not alt:
+            return None
+        dateien = kurs_mitschrift.entfernen_in(conn, uid) \
+            if kurs_mitschrift.ist_kurs(alt["rubrik"]) and not kurs_mitschrift.ist_kurs(name) \
+            else []
+        conn.execute("update termin_mitschriften set rubrik = %s, rubrik_manuell = true "
+                     "where uid = %s", (name, uid))
+    for pfad in dateien:
+        datei_entfernen(pfad)
     ablegen(uid)
     return name
 

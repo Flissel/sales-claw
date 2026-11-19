@@ -75,22 +75,29 @@ def vorschlaege(uid: str) -> list[dict]:
 def lernender_setzen(uid: str, lead_id: str | None) -> bool:
     """Lernenden einer Kurs-Mitschrift setzen (None = entfernen). Sonst False. Bei einem
     Wechsel geht die Sitzung zuerst aus dem Handbuch des alten Lernenden (Rueckbau); ins neue
-    arbeitet sie der Taktgeber ein."""
+    arbeitet sie der Taktgeber ein. Alles in einer Transaktion unter der Sperre der
+    Mitschrift-Zeile (wie zuordnen/fortschreiben): ein laufender KI-Auftrag bucht danach nichts
+    mehr fuer den alten Lernenden."""
     import kurs_handbuch  # zirkulaer: kurs_handbuch importiert kurs_mitschrift
-    z = server._q("select rubrik from termin_mitschriften where uid = %s", (uid,))
-    if not z or not ist_kurs(z[0]["rubrik"]):
-        return False
     if lead_id is None:
         neu = None
     else:
         neu = _uuid(lead_id)
         if neu is None or not server._q("select 1 from leads where id = %s", (neu,)):
             return False
-    for alt in kurs_handbuch.lernende_mit_quelle(uid):
-        if alt != neu:
-            kurs_handbuch.quelle_entfernen(alt, uid)
-    server._q("update termin_mitschriften set kurs_lead_id = %s where uid = %s returning uid",
-              (neu, uid))
+    dateien: list[str] = []
+    with server.pool.connection() as conn:
+        z = conn.execute("select rubrik from termin_mitschriften where uid = %s for update",
+                         (uid,)).fetchone()
+        if not z or not ist_kurs(z["rubrik"]):
+            return False
+        for alt in kurs_handbuch.lernende_mit_quelle(uid, conn):
+            if alt != neu:
+                dateien += kurs_handbuch.quelle_entfernen_in(conn, alt, uid)[1]
+        conn.execute("update termin_mitschriften set kurs_lead_id = %s where uid = %s",
+                     (neu, uid))
+    for pfad in dateien:
+        mitschrift_bericht.datei_entfernen(pfad)
     return True
 
 
@@ -371,8 +378,26 @@ def entfernen_dateien(uid: str) -> None:
 def entfernen(uid: str) -> None:
     """Kursmitschrift einer Sitzung ganz entfernen (Loeschen, Verschieben aus "Kurse",
     Neu-Auswertung): erst aus jedem Handbuch nehmen (Rueckbau; die Ausgabe erneuert der
-    Taktgeber), dann Dateien und Buchung. Ohne Kursmitschrift: nichts zu tun."""
+    Taktgeber), dann Dateien und Buchung. Eine Transaktion; Dateien gehen nach dem Commit.
+    Ohne Kursmitschrift: nichts zu tun (wiederholbar)."""
+    with server.pool.connection() as conn:
+        dateien = entfernen_in(conn, uid)
+    for pfad in dateien:
+        mitschrift_bericht.datei_entfernen(pfad)
+
+
+def entfernen_in(conn, uid: str) -> list[str]:
+    """Wie `entfernen`, in der Transaktion des Aufrufers (z. B. Verschieben: Rubrik und
+    Rueckbau zusammen oder gar nicht). Rueckgabe: Dateien zum Loeschen nach dem Commit."""
     import kurs_handbuch  # zirkulaer: kurs_handbuch importiert kurs_mitschrift
-    for lead_id in kurs_handbuch.lernende_mit_quelle(uid):
-        kurs_handbuch.quelle_entfernen(lead_id, uid)
-    entfernen_dateien(uid)
+    z = conn.execute("select kurs_pfad, kurs_pfad_lernend, kurs_pdf from termin_mitschriften "
+                     "where uid = %s for update", (uid,)).fetchone()
+    dateien: list[str] = []
+    for lead_id in kurs_handbuch.lernende_mit_quelle(uid, conn):
+        dateien += kurs_handbuch.quelle_entfernen_in(conn, lead_id, uid)[1]
+    if z:
+        dateien += [z[k] for k in _DATEI_SPALTEN if z[k]]
+        conn.execute("update termin_mitschriften set kurs_pfad = null, kurs_pfad_lernend = null, "
+                     "kurs_pdf = null, kurs_json = null, kurs_stand = null, kurs_status = null "
+                     "where uid = %s", (uid,))
+    return dateien

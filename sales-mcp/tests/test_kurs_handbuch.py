@@ -216,6 +216,13 @@ def _einarbeiten(lead):
         kh.fortschreiben(lead, uid, ziel)
 
 
+def _zuordnen(lead, uid):
+    """Wie der Taktgeber: nur fuer den gewaehlten Lernenden (zuordnen prueft das)."""
+    server._q("update termin_mitschriften set kurs_lead_id = %s where uid = %s returning uid",
+              (lead, uid))
+    return kh.zuordnen(lead, uid)
+
+
 @pytest.fixture
 def sitzung1():
     return _sitzung(UID1, TAG1, [_abschnitt("Termin anlegen"), _abschnitt("Kontakt suchen")])
@@ -223,7 +230,7 @@ def sitzung1():
 
 @pytest.fixture
 def handbuch_nach_sitzung1(lernender, sitzung1, ki):
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     _einarbeiten(lernender)
 
 
@@ -235,7 +242,7 @@ def test_konstanten():
 
 
 def test_erste_sitzung_legt_kapitel_an(lernender, sitzung1, ki):
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     q = server._q("select * from kurs_handbuch_quelle where lead_id = %s", (lernender,))[0]
     assert q["uid"] == UID1 and q["eingearbeitet_am"] is None
     assert q["stand"] == km.kurs_stand(UID1) and q["beginn"] == TAG1
@@ -256,7 +263,7 @@ def test_erste_sitzung_legt_kapitel_an(lernender, sitzung1, ki):
 def test_zuordnung_eingabe_enthaelt_kapitel_kurz_und_datum(lernender, handbuch_nach_sitzung1,
                                                             ki):
     _sitzung(UID2, TAG2, [_abschnitt("Mehr zum Termin")])
-    kh.zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID2)
     system, e = ki.aufrufe[-1]
     assert system == kh.ZUORDNUNG_SYSTEM
     kap = {k["titel"]: k for k in e["kapitel"]}
@@ -274,7 +281,7 @@ def test_ergaenzen_aendert_nur_betroffenes_kapitel(lernender, handbuch_nach_sitz
     kid = _kapitel_id(lernender, "Termin anlegen")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ergaenzen", "kapitel_id": kid, "titel": None}]}
-    kh.zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID2)
     assert kh.offene_auftraege(lernender) == [(UID2, kid)]
     assert kh.fortschreiben(lernender, UID2, kid) == kid
     nachher = _texte(lernender)
@@ -295,13 +302,13 @@ def test_ergaenzen_aendert_nur_betroffenes_kapitel(lernender, handbuch_nach_sitz
 def test_kapitel_eines_anderen_lernenden_wird_abgewiesen(lernender, lernender_b, ki):
     _sitzung(UID1, TAG1, [_abschnitt("Termin anlegen")])
     _sitzung(UID2, TAG2, [_abschnitt("Anderes")])
-    kh.zuordnen(lernender_b, UID2)
+    _zuordnen(lernender_b, UID2)
     _einarbeiten(lernender_b)
     fremd = _kapitel_id(lernender_b, "Anderes")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ergaenzen", "kapitel_id": fremd, "titel": None}]}
     with pytest.raises(ValueError):
-        kh.zuordnen(lernender, UID1)
+        _zuordnen(lernender, UID1)
     assert not server._q("select 1 from kurs_handbuch_quelle where lead_id = %s", (lernender,))
 
 
@@ -320,7 +327,7 @@ def test_ungueltige_zuordnung_wird_abgewiesen(lernender, ki, antwort):
     _sitzung(UID1, TAG1, [_abschnitt("Termin anlegen")])
     ki.zuordnung = lambda e: antwort
     with pytest.raises(ValueError):
-        kh.zuordnen(lernender, UID1)
+        _zuordnen(lernender, UID1)
     assert not server._q("select 1 from kurs_handbuch_quelle where lead_id = %s", (lernender,))
 
 
@@ -328,7 +335,7 @@ def test_fehlender_abschnitt_wird_neues_kapitel(lernender, ki):
     _sitzung(UID1, TAG1, [_abschnitt("Eins"), _abschnitt("Zwei")])
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 1, "entscheidung": "neu", "kapitel_id": None, "titel": "Zwei neu"}]}
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     _einarbeiten(lernender)
     assert sorted(_kapitel_titel(lernender)) == ["Eins", "Zwei neu"]
 
@@ -338,7 +345,7 @@ def test_ersetzen_durch_juengere_sitzung_bleibt_ersetzen(lernender, handbuch_nac
     kid = _kapitel_id(lernender, "Termin anlegen")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ersetzen", "kapitel_id": kid, "titel": None}]}
-    kh.zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID2)
     z = server._q("select zuordnung from kurs_handbuch_quelle where uid = %s", (UID2,))[0]
     assert z["zuordnung"][0]["entscheidung"] == "ersetzen"
     kh.fortschreiben(lernender, UID2, kid)
@@ -350,7 +357,7 @@ def test_ersetzen_durch_aeltere_sitzung_wird_ergaenzen(lernender, handbuch_nach_
     kid = _kapitel_id(lernender, "Termin anlegen")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ersetzen", "kapitel_id": kid, "titel": None}]}
-    kh.zuordnen(lernender, UID3)
+    _zuordnen(lernender, UID3)
     z = server._q("select zuordnung from kurs_handbuch_quelle where uid = %s", (UID3,))[0]
     assert z["zuordnung"][0]["entscheidung"] == "ergaenzen"
     assert z["zuordnung"][0]["kapitel_id"] == kid
@@ -361,7 +368,7 @@ def test_ersetzen_gleichzeitige_sitzung_wird_ergaenzen(lernender, handbuch_nach_
     kid = _kapitel_id(lernender, "Termin anlegen")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ersetzen", "kapitel_id": kid, "titel": None}]}
-    kh.zuordnen(lernender, UID3)
+    _zuordnen(lernender, UID3)
     z = server._q("select zuordnung from kurs_handbuch_quelle where uid = %s", (UID3,))[0]
     assert z["zuordnung"][0]["entscheidung"] == "ergaenzen"
 
@@ -369,8 +376,8 @@ def test_ersetzen_gleichzeitige_sitzung_wird_ergaenzen(lernender, handbuch_nach_
 def test_offene_auftraege_in_datumsfolge(lernender, ki):
     _sitzung(UID2, TAG2, [_abschnitt("Spaeter")])
     _sitzung(UID1, TAG1, [_abschnitt("Frueher")])
-    kh.zuordnen(lernender, UID2)
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID1)
     assert kh.offene_auftraege(lernender) == [(UID1, "neu:0"), (UID2, "neu:0")]
 
 
@@ -381,7 +388,7 @@ def test_zwei_abschnitte_ein_kapitel_ein_auftrag(lernender, handbuch_nach_sitzun
         {"abschnitt": 0, "entscheidung": "ergaenzen", "kapitel_id": kid, "titel": None},
         {"abschnitt": 1, "entscheidung": "ergaenzen", "kapitel_id": kid, "titel": None},
         {"abschnitt": 2, "entscheidung": "neu", "kapitel_id": None, "titel": "C-Kapitel"}]}
-    kh.zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID2)
     assert kh.offene_auftraege(lernender) == [(UID2, kid), (UID2, "neu:2")]
     kh.fortschreiben(lernender, UID2, kid)
     q = server._q("select eingearbeitet_am from kurs_handbuch_quelle where uid = %s", (UID2,))
@@ -397,7 +404,7 @@ def test_hoechstens_drei_bilder_je_kapitel(lernender, ki):
     ids = _sitzung(UID1, TAG1, [_abschnitt("Termin anlegen")], bilder=5)
     ungeprueft = _bild(UID1, TAG1, 9, status="offen")
     ki.kapitel = lambda e: {"text_md": "Text", "bild_ids": ids + [ungeprueft, "erfunden"]}
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     _einarbeiten(lernender)
     gewaehlt = _aktuell(lernender, "Termin anlegen")["bild_ids"]
     assert len(gewaehlt) <= 3
@@ -407,13 +414,13 @@ def test_hoechstens_drei_bilder_je_kapitel(lernender, ki):
 
 def test_bild_ids_aus_alter_sitzung_bleiben_moeglich(lernender, ki):
     ids1 = _sitzung(UID1, TAG1, [_abschnitt("Termin anlegen")], bilder=2)
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     _einarbeiten(lernender)
     ids2 = _sitzung(UID2, TAG2, [_abschnitt("Mehr")], bilder=2)
     kid = _kapitel_id(lernender, "Termin anlegen")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ergaenzen", "kapitel_id": kid, "titel": None}]}
-    kh.zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID2)
     kh.fortschreiben(lernender, UID2, kid)
     # KI-Standard: alte + neue Ids; 4 Ids -> die 3 juengsten (Sitzung 1: letztes, Sitzung 2: beide)
     assert _aktuell(lernender, "Termin anlegen")["bild_ids"] == [ids1[-1]] + ids2
@@ -424,7 +431,7 @@ def test_ungueltige_kapitel_antwort_speichert_nichts(lernender, handbuch_nach_si
     kid = _kapitel_id(lernender, "Termin anlegen")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ergaenzen", "kapitel_id": kid, "titel": None}]}
-    kh.zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID2)
     for schlecht in ("kein json", {"text_md": ""}, {"text_md": "x", "bild_ids": "a"}, [1]):
         ki.kapitel = lambda e, s=schlecht: s
         with pytest.raises(ValueError):
@@ -436,7 +443,7 @@ def test_ungueltige_kapitel_antwort_speichert_nichts(lernender, handbuch_nach_si
 
 
 def test_fortschreiben_neues_kapitel_schlaegt_fehl_ohne_kapitel(lernender, sitzung1, ki):
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     ki.kapitel = lambda e: "kein json"
     with pytest.raises(ValueError):
         kh.fortschreiben(lernender, UID1, "neu:0")
@@ -444,11 +451,11 @@ def test_fortschreiben_neues_kapitel_schlaegt_fehl_ohne_kapitel(lernender, sitzu
 
 
 def test_fortschreiben_fremdes_oder_unbekanntes_ziel(lernender, lernender_b, sitzung1, ki):
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     _einarbeiten(lernender)
     fremd = _kapitel_id(lernender, "Termin anlegen")
     _sitzung(UID2, TAG2, [_abschnitt("Anderes")])
-    kh.zuordnen(lernender_b, UID2)
+    _zuordnen(lernender_b, UID2)
     with pytest.raises(ValueError):
         kh.fortschreiben(lernender_b, UID2, fremd)
     with pytest.raises(ValueError):
@@ -472,7 +479,7 @@ def test_handbuch_html_zaehlt_sitzungen_und_folgt_reihenfolge(lernender,
     kid = _kapitel_id(lernender, "Termin anlegen")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ergaenzen", "kapitel_id": kid, "titel": None}]}
-    kh.zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID2)
     kh.fortschreiben(lernender, UID2, kid)
     server._q("update kurs_handbuch_kapitel set reihenfolge = 9 where id = %s returning id",
               (kid,))
@@ -486,7 +493,7 @@ def test_handbuch_html_escaped_text_und_bild(lernender, ki):
     ids = _sitzung(UID1, TAG1, [_abschnitt("<b>Termin</b>")], bilder=1)
     ki.kapitel = lambda e: {"text_md": "## Schritte\n\n1. Klick <script>x()</script>\n2. Weiter"
                                        "\n\n- **fett** Punkt", "bild_ids": ids}
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     _einarbeiten(lernender)
     h = kh.handbuch_html(lernender)
     assert "<script>" not in h and "&lt;script&gt;" in h
@@ -520,7 +527,7 @@ def test_ausgabe_faellig_nach_neuer_fassung_und_umbenennung(lernender, handbuch_
     kid = _kapitel_id(lernender, "Termin anlegen")
     ki.zuordnung = lambda e: {"zuordnung": [
         {"abschnitt": 0, "entscheidung": "ergaenzen", "kapitel_id": kid, "titel": None}]}
-    kh.zuordnen(lernender, UID2)
+    _zuordnen(lernender, UID2)
     assert not kh.ausgabe_faellig(lernender)       # offener Auftrag: erst fortschreiben
     kh.fortschreiben(lernender, UID2, kid)
     assert kh.ausgabe_faellig(lernender)
@@ -563,7 +570,7 @@ def test_keine_entwuerfe_und_keine_kundentexte_im_log(lernender, sitzung1, ki, a
                                                       auge_liefert_pdf, caplog):
     caplog.set_level(logging.DEBUG)
     vorher = server._q("select count(*) n from drafts")[0]["n"]
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     _einarbeiten(lernender)
     kh.ausgeben(lernender)
     assert server._q("select count(*) n from drafts")[0]["n"] == vorher
@@ -579,4 +586,4 @@ def test_quelle_ohne_kurs_json_wird_abgewiesen(lernender):
     server._q("insert into termin_mitschriften (uid, segmente, rubrik) "
               "values (%s, '[]'::jsonb, 'Kurse') returning id", (UID1,))
     with pytest.raises(ValueError):
-        kh.zuordnen(lernender, UID1)
+        _zuordnen(lernender, UID1)

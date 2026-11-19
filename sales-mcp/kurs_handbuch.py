@@ -96,10 +96,36 @@ HANDBUCH_CSS = kurs_mitschrift.KURS_CSS + """
 code { background: var(--flaeche); padding: 0 .25rem; border-radius: 3px; }"""
 
 
+class Veraltet(ValueError):
+    """Die Sitzung gehoert nicht mehr (so) in dieses Handbuch: Rubrik nicht mehr "Kurse",
+    anderer Lernender, Kursmitschrift entfernt oder ihr Stand hat sich geaendert. Es wurde
+    nichts gespeichert; kein Fehlversuch, der Aufrufer laesst die Sitzung einfach liegen."""
+
+
 # ---------- Hilfen ----------
 
 def _lead8(lead_id: str) -> str:
     return str(lead_id)[:8]
+
+
+def _sitzung_sperren(conn, lead_id: str, uid: str) -> str:
+    """In der Transaktion des Aufrufers: Mitschrift-Zeile sperren (`for update`, immer als
+    erste Sperre) und pruefen, dass sie eine Kursmitschrift dieses Lernenden ist. Rueckgabe:
+    aktueller Kurs-Stand; sonst Veraltet. Dieselbe Sperre nehmen Lernenden-Wechsel,
+    Verschieben und Entfernen, daher kann kein Rueckbau zwischen Pruefen und Schreiben fallen."""
+    z = conn.execute("select rubrik, kurs_lead_id, kurs_json is not null as da "
+                     "from termin_mitschriften where uid = %s for update", (uid,)).fetchone()
+    if not z or not z["da"] or not kurs_mitschrift.ist_kurs(z["rubrik"]) \
+            or str(z["kurs_lead_id"]) != lead_id:
+        raise Veraltet("Sitzung gehoert nicht mehr zu diesem Handbuch")
+    return conn.execute(f"select {kurs_mitschrift.KURS_STAND_SQL} as s "
+                        "from termin_mitschriften m where m.uid = %s", (uid,)).fetchone()["s"]
+
+
+def _handbuch_sperren(conn, lead_id: str) -> None:
+    """Ausgabe und Rueckbau eines Lernenden nacheinander (Transaktions-Sperre, auch wenn
+    noch keine kurs_handbuch-Zeile existiert)."""
+    conn.execute("select pg_advisory_xact_lock(hashtext(%s))", (f"kurs_handbuch:{lead_id}",))
 
 
 def _id(wert: object) -> str | None:
@@ -239,8 +265,14 @@ def _kapitel_quellen_beginne(lead_id: str, kapitel_id: str, ausser: str) -> list
 def zuordnen(lead_id: str, uid: str) -> dict:
     """Ein KI-Auftrag: Abschnitte der Sitzung `uid` den Kapiteln des Lernenden zuordnen und als
     Quelle buchen (noch nicht eingearbeitet). Ungueltige Antwort: ValueError, nichts gespeichert.
+    Gehoert die Sitzung (vorher oder nach dem KI-Auftrag) nicht mehr als Kursmitschrift zu
+    diesem Lernenden oder hat sich ihr Stand geaendert: Veraltet, nichts gespeichert.
     Rueckgabe: {"uid", "zuordnung": [...]}."""
     lead_id = _lead_pruefen(lead_id)
+    stand = kurs_mitschrift.kurs_stand(uid)          # vor kurs_json: Neueres faellt auf
+    with server.pool.connection() as conn:
+        if _sitzung_sperren(conn, lead_id, uid) != stand:
+            raise Veraltet("Stand geaendert")
     beginn, kj = _sitzung(uid)
     abschnitte = kj["abschnitte"]
     if not abschnitte:
@@ -249,7 +281,6 @@ def zuordnen(lead_id: str, uid: str) -> dict:
                     (lead_id, uid))
     if alt and any(e.get("erledigt") for e in _json(alt[0]["zuordnung"])):
         raise ValueError("Sitzung ist schon eingearbeitet")
-    stand = kurs_mitschrift.kurs_stand(uid)
     kapitel = _kapitel_uebersicht(lead_id)
     eingabe = {"kapitel": kapitel, "datum": _iso_tag(beginn),
                "abschnitte": [_abschnitt_eingabe(i, a) for i, a in enumerate(abschnitte)]}
@@ -262,12 +293,21 @@ def zuordnen(lead_id: str, uid: str) -> dict:
         if e["entscheidung"] == "ersetzen" and any(
                 b >= beginn for b in _kapitel_quellen_beginne(lead_id, e["kapitel_id"], uid)):
             e["entscheidung"] = "ergaenzen"
-    server._q(
-        "insert into kurs_handbuch_quelle (lead_id, uid, beginn, stand, zuordnung, "
-        "eingearbeitet_am) values (%s, %s, %s, %s, %s::jsonb, null) "
-        "on conflict (lead_id, uid) do update set beginn = excluded.beginn, "
-        "stand = excluded.stand, zuordnung = excluded.zuordnung, eingearbeitet_am = null "
-        "returning uid", (lead_id, uid, beginn, stand, json.dumps(eintraege)))
+    with server.pool.connection() as conn:
+        # Waehrend des KI-Auftrags kann Felix den Lernenden gewechselt, die Mitschrift
+        # verschoben oder geloescht haben: erst unter Sperre pruefen, dann buchen.
+        if _sitzung_sperren(conn, lead_id, uid) != stand:
+            raise Veraltet("Stand geaendert")
+        alt = conn.execute("select zuordnung from kurs_handbuch_quelle where lead_id = %s "
+                           "and uid = %s for update", (lead_id, uid)).fetchone()
+        if alt and any(e.get("erledigt") for e in _json(alt["zuordnung"])):
+            raise ValueError("Sitzung ist schon eingearbeitet")
+        conn.execute(
+            "insert into kurs_handbuch_quelle (lead_id, uid, beginn, stand, zuordnung, "
+            "eingearbeitet_am) values (%s, %s, %s, %s, %s::jsonb, null) "
+            "on conflict (lead_id, uid) do update set beginn = excluded.beginn, "
+            "stand = excluded.stand, zuordnung = excluded.zuordnung, eingearbeitet_am = null",
+            (lead_id, uid, beginn, stand, json.dumps(eintraege)))
     log.info("Handbuch zugeordnet lead=%s uid=%s abschnitte=%d neu=%d", _lead8(lead_id),
              mitschrift_bericht.uid8(uid), len(eintraege),
              sum(1 for e in eintraege if e["entscheidung"] == "neu"))
@@ -379,11 +419,14 @@ def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:
     bild_ids = _auswahl_bild_ids(vorschlag, quellen, {u: beginne.get(u, beginn) for u in quellen})
 
     with server.pool.connection() as conn:
-        zeile = conn.execute("select zuordnung from kurs_handbuch_quelle "
+        aktuell = _sitzung_sperren(conn, lead_id, uid)     # vor der Quelle sperren
+        zeile = conn.execute("select stand, zuordnung from kurs_handbuch_quelle "
                              "where lead_id = %s and uid = %s for update",
                              (lead_id, uid)).fetchone()
         if not zeile:
-            raise ValueError("Sitzung ist nicht mehr zugeordnet")
+            raise Veraltet("Sitzung ist nicht mehr zugeordnet")
+        if zeile["stand"] != aktuell:
+            raise Veraltet("Stand geaendert")
         eintraege = _json(zeile["zuordnung"])
         if kapitel is None:
             nr = int(ziel[4:])
@@ -546,19 +589,46 @@ def _juengste_fassung(lead_id: str) -> datetime | None:
     return z[0]["m"] if z else None
 
 
+# Kapitelbestand (Fassung, Titel, Reihenfolge) und Ausgabe-Zeile: aendert sich beides
+# zwischen Rendern und Buchen nicht, ist die gerenderte Ausgabe noch richtig.
+_ZUSTAND_SQL = (
+    "select (select md5(coalesce(string_agg(k.id::text || ':' || "
+    "coalesce(k.aktuelle_fassung::text, '') || ':' || k.reihenfolge || ':' || k.titel, "
+    "'|' order by k.id), '')) from kurs_handbuch_kapitel k where k.lead_id = %s) as kapitel, "
+    "(select row(pfad, pdf, fassungen_stand)::text from kurs_handbuch "
+    "where lead_id = %s) as ausgabe")
+
+
+def _noch_gleich(conn, lead_id: str, vorher: dict) -> bool:
+    """Unter der Handbuch-Sperre: hat sich seit `vorher` nichts geaendert?"""
+    _handbuch_sperren(conn, lead_id)
+    if conn.execute(_ZUSTAND_SQL, (lead_id, lead_id)).fetchone() == vorher:
+        return True
+    log.info("Handbuch-Ausgabe verworfen (inzwischen geaendert) lead=%s", _lead8(lead_id))
+    return False
+
+
 def ausgeben(lead_id: str) -> None:
     """HTML und PDF unter `_handbuecher/` schreiben (atomar) und `kurs_handbuch` buchen. Ohne
     Kapitel: Dateien und Zeile entfernen. Das PDF entsteht zuerst: schlaegt es fehl (PdfFehler),
-    wird nichts geschrieben und nichts gebucht."""
+    wird nichts geschrieben und nichts gebucht. Geschrieben und gebucht wird unter der
+    Handbuch-Sperre und nur, wenn sich Kapitel und Ausgabe-Zeile seit Beginn des Renderns
+    nicht geaendert haben (sonst nichts; die Ausgabe bleibt faellig) - so schreibt keine
+    Ausgabe den Inhalt einer inzwischen entfernten Sitzung zurueck."""
     lead_id = _lead_pruefen(lead_id)
+    vorher = server._q(_ZUSTAND_SQL, (lead_id, lead_id))[0]
     alt = server._q("select pfad, pdf from kurs_handbuch where lead_id = %s", (lead_id,))
     zeilen = _kapitel_zeilen(lead_id)
     if not zeilen:
         if alt:
-            mitschrift_bericht.datei_entfernen(alt[0]["pfad"])
-            mitschrift_bericht.datei_entfernen(alt[0]["pdf"])
-            server._q("delete from kurs_handbuch where lead_id = %s returning lead_id",
-                      (lead_id,))
+            with server.pool.connection() as conn:
+                if not _noch_gleich(conn, lead_id, vorher):
+                    return
+                weg = conn.execute("delete from kurs_handbuch where lead_id = %s "
+                                   "returning pfad, pdf", (lead_id,)).fetchall()
+            for z in weg:
+                mitschrift_bericht.datei_entfernen(z["pfad"])
+                mitschrift_bericht.datei_entfernen(z["pdf"])
             log.info("Handbuch entfernt lead=%s", _lead8(lead_id))
         return
     rel_html = f"{ORDNER_NAME}/handbuch-{_lead8(lead_id)}.html"
@@ -569,14 +639,17 @@ def ausgeben(lead_id: str) -> None:
     stand = _juengste_fassung(lead_id)       # vor dem Rendern: Neueres macht erneut faellig
     html = handbuch_html(lead_id)
     pdf = kurs_pdf.pdf_aus_html(html)
-    kurs_pdf.schreiben(ziel_html, html)
-    kurs_pdf.schreiben(ziel_pdf, pdf)
-    server._q(
-        "insert into kurs_handbuch (lead_id, pfad, pdf, stand_am, fassungen_stand) "
-        "values (%s, %s, %s, now(), %s) on conflict (lead_id) do update set "
-        "pfad = excluded.pfad, pdf = excluded.pdf, stand_am = excluded.stand_am, "
-        "fassungen_stand = excluded.fassungen_stand returning lead_id",
-        (lead_id, rel_html, rel_pdf, stand))
+    with server.pool.connection() as conn:
+        if not _noch_gleich(conn, lead_id, vorher):
+            return
+        kurs_pdf.schreiben(ziel_html, html)
+        kurs_pdf.schreiben(ziel_pdf, pdf)
+        conn.execute(
+            "insert into kurs_handbuch (lead_id, pfad, pdf, stand_am, fassungen_stand) "
+            "values (%s, %s, %s, now(), %s) on conflict (lead_id) do update set "
+            "pfad = excluded.pfad, pdf = excluded.pdf, stand_am = excluded.stand_am, "
+            "fassungen_stand = excluded.fassungen_stand",
+            (lead_id, rel_html, rel_pdf, stand))
     if alt:
         for alte, neue in ((alt[0]["pfad"], rel_html), (alt[0]["pdf"], rel_pdf)):
             if alte and alte != neue:
@@ -602,12 +675,17 @@ def ausgabe_faellig(lead_id: str) -> bool:
 
 # ---------- Rueckbau: Quelle entfernen, aeltere Sitzung einfuegen, Loeschantrag ----------
 
-def lernende_mit_quelle(uid: str) -> list[str]:
-    """Lernende, in deren Handbuch die Sitzung `uid` gebucht ist oder Inhalt traegt."""
-    z = server._q(
-        "select lead_id from kurs_handbuch_quelle where uid = %s union "
-        "select k.lead_id from kurs_handbuch_fassung f join kurs_handbuch_kapitel k "
-        "on k.id = f.kapitel_id where %s = any(f.quellen)", (uid, uid))
+_LERNENDE_SQL = (
+    "select lead_id from kurs_handbuch_quelle where uid = %s union "
+    "select k.lead_id from kurs_handbuch_fassung f join kurs_handbuch_kapitel k "
+    "on k.id = f.kapitel_id where %s = any(f.quellen)")
+
+
+def lernende_mit_quelle(uid: str, conn=None) -> list[str]:
+    """Lernende, in deren Handbuch die Sitzung `uid` gebucht ist oder Inhalt traegt
+    (mit `conn` in der Transaktion des Aufrufers)."""
+    z = conn.execute(_LERNENDE_SQL, (uid, uid)).fetchall() if conn is not None \
+        else server._q(_LERNENDE_SQL, (uid, uid))
     return sorted(str(r["lead_id"]) for r in z)
 
 
@@ -697,6 +775,7 @@ def _ausgabe_zuruecknehmen(conn, lead_id: str, inhalt_weg: bool) -> list[str]:
     (`fassungen_stand` leer). Ohne sichtbares Kapitel geht die Zeile; mit `inhalt_weg` (eine
     Sitzung wurde entfernt) werden die Pfade geleert, weil die Dateien ihren Inhalt tragen.
     Rueckgabe: Dateien, die der Aufrufer nach dem Commit loescht."""
+    _handbuch_sperren(conn, lead_id)
     z = conn.execute("select pfad, pdf from kurs_handbuch where lead_id = %s for update",
                      (lead_id,)).fetchone()
     if not z:
@@ -733,25 +812,35 @@ def quelle_entfernen(lead_id: str, uid: str) -> int:
     Rueckgabe: Anzahl betroffener Kapitel."""
     lid = _gueltig(lead_id)
     with server.pool.connection() as conn:
-        conn.execute("select uid from kurs_handbuch_quelle where lead_id = %s for update",
-                     (lid,)).fetchall()
-        zeile = conn.execute("delete from kurs_handbuch_quelle where lead_id = %s and uid = %s "
-                             "returning zuordnung", (lid, uid)).fetchone()
-        # von `uid` angelegte Kapitel (auch Huellen, die eine aeltere Sitzung schon fuellt):
-        # ihr Titel stammt aus der entfernten Sitzung
-        angelegt = {e["kapitel_id"] for e in (_json(zeile["zuordnung"]) if zeile else [])
-                    if e.get("entscheidung") == "neu" and e.get("kapitel_id")}
-        angelegt = {str(r["id"]) for r in conn.execute(
-            "select id from kurs_handbuch_kapitel where lead_id = %s and id = any(%s::uuid[])",
-            (lid, sorted(angelegt))).fetchall()} if angelegt else set()
-        betroffen = _zurueckrollen(conn, lid, {uid}, angelegt, huelle=False)
-        dateien = _ausgabe_zuruecknehmen(conn, lid, inhalt_weg=True) if betroffen else []
+        conn.execute("select 1 from termin_mitschriften where uid = %s for update",
+                     (uid,)).fetchall()               # erste Sperre, wie zuordnen/fortschreiben
+        betroffen, dateien = quelle_entfernen_in(conn, lid, uid)
     for pfad in dateien:
         mitschrift_bericht.datei_entfernen(pfad)
+    return betroffen
+
+
+def quelle_entfernen_in(conn, lead_id: str, uid: str) -> tuple[int, list[str]]:
+    """Wie `quelle_entfernen`, in der Transaktion des Aufrufers (der die Mitschrift-Zeile schon
+    gesperrt hat). Rueckgabe: (betroffene Kapitel, Dateien zum Loeschen nach dem Commit)."""
+    lid = _gueltig(lead_id)
+    conn.execute("select uid from kurs_handbuch_quelle where lead_id = %s for update",
+                 (lid,)).fetchall()
+    zeile = conn.execute("delete from kurs_handbuch_quelle where lead_id = %s and uid = %s "
+                         "returning zuordnung", (lid, uid)).fetchone()
+    # von `uid` angelegte Kapitel (auch Huellen, die eine aeltere Sitzung schon fuellt):
+    # ihr Titel stammt aus der entfernten Sitzung
+    angelegt = {e["kapitel_id"] for e in (_json(zeile["zuordnung"]) if zeile else [])
+                if e.get("entscheidung") == "neu" and e.get("kapitel_id")}
+    angelegt = {str(r["id"]) for r in conn.execute(
+        "select id from kurs_handbuch_kapitel where lead_id = %s and id = any(%s::uuid[])",
+        (lid, sorted(angelegt))).fetchall()} if angelegt else set()
+    betroffen = _zurueckrollen(conn, lid, {uid}, angelegt, huelle=False)
+    dateien = _ausgabe_zuruecknehmen(conn, lid, inhalt_weg=True) if betroffen else []
     if zeile or betroffen:
         log.info("Handbuch-Quelle entfernt lead=%s uid=%s kapitel=%d dateien=%d",
                  _lead8(lid), mitschrift_bericht.uid8(uid), betroffen, len(dateien))
-    return betroffen
+    return betroffen, dateien
 
 
 def einfuegen_vorbereiten(lead_id: str, uid: str, beginn: datetime) -> None:
@@ -783,14 +872,17 @@ def alles_entfernen(lead_id: str) -> None:
     if lid is None:
         return
     with server.pool.connection() as conn:
-        zeilen = conn.execute("delete from kurs_handbuch where lead_id = %s returning pfad, pdf",
-                              (lid,)).fetchall()
-        kapitel = conn.execute("delete from kurs_handbuch_kapitel where lead_id = %s "
-                               "returning id", (lid,)).fetchall()
-        quellen = conn.execute("delete from kurs_handbuch_quelle where lead_id = %s "
-                               "returning uid", (lid,)).fetchall()
+        # Sperr-Reihenfolge wie ueberall: Mitschriften, Quellen, Handbuch. Ein laufendes
+        # zuordnen/fortschreiben sieht danach einen anderen Lernenden und bucht nichts.
         conn.execute("update termin_mitschriften set kurs_lead_id = null "
                      "where kurs_lead_id = %s", (lid,))
+        quellen = conn.execute("delete from kurs_handbuch_quelle where lead_id = %s "
+                               "returning uid", (lid,)).fetchall()
+        kapitel = conn.execute("delete from kurs_handbuch_kapitel where lead_id = %s "
+                               "returning id", (lid,)).fetchall()
+        _handbuch_sperren(conn, lid)
+        zeilen = conn.execute("delete from kurs_handbuch where lead_id = %s returning pfad, pdf",
+                              (lid,)).fetchall()
     for z in zeilen:
         mitschrift_bericht.datei_entfernen(z["pfad"])
         mitschrift_bericht.datei_entfernen(z["pdf"])

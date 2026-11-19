@@ -135,16 +135,20 @@ def _sitzung(uid, beginn, titel, lernender=None, bilder=0):
 
 class KI:
     """Zuordnung: Standard "neu" je Abschnitt; `ziele` = {Abschnittstitel: Kapiteltitel} macht
-    daraus "ergaenzen" in das Kapitel mit diesem Titel. Kapiteltext: alter Text + "Neu: <titel>"."""
+    daraus "ergaenzen" in das Kapitel mit diesem Titel. Kapiteltext: alter Text + "Neu: <titel>".
+    `waehrend` = {system: Aufruf}: laeuft einmal mitten im KI-Auftrag (Felix handelt in der UI)."""
 
     def __init__(self, lead):
         self.lead = lead
         self.ziele: dict[str, str] = {}
         self.eingaben: list[dict] = []
+        self.waehrend: dict[str, object] = {}
 
     def chat(self, system, nutzer, **kw):
         e = json.loads(nutzer)
         self.eingaben.append(e)
+        if system in self.waehrend:
+            self.waehrend.pop(system)()
         if system == kh.ZUORDNUNG_SYSTEM:
             kap = {k["titel"]: k["kapitel_id"] for k in e["kapitel"]}
             aus = []
@@ -184,8 +188,15 @@ def _einarbeiten(lead):
     raise AssertionError("Einarbeiten endet nicht")
 
 
+def _zuordnen(lead, uid):
+    """Wie der Taktgeber: nur fuer den gewaehlten Lernenden (zuordnen prueft das)."""
+    server._q("update termin_mitschriften set kurs_lead_id = %s where uid = %s returning uid",
+              (lead, uid))
+    return kh.zuordnen(lead, uid)
+
+
 def _rein(lead, uid):
-    kh.zuordnen(lead, uid)
+    _zuordnen(lead, uid)
     _einarbeiten(lead)
 
 
@@ -293,7 +304,7 @@ def test_quelle_entfernen_unbekannt_aendert_nichts(lernender, handbuch_1_und_2):
 
 def test_quelle_entfernen_offene_zuordnung(lernender, handbuch_1_und_2, ki):
     _sitzung(UID3, TAG3, ["Export"])
-    kh.zuordnen(lernender, UID3)                  # noch nicht eingearbeitet
+    _zuordnen(lernender, UID3)                  # noch nicht eingearbeitet
     assert kh.quelle_entfernen(lernender, UID3) == 0
     assert _quelle(lernender, UID3) is None and not kh.offene_auftraege(lernender)
 
@@ -347,7 +358,7 @@ def test_offene_zuordnung_auf_geloeschtes_kapitel_wird_neu(lernender, ki):
     _rein(lernender, UID2)
     _sitzung(UID3, TAG3, ["Serien bearbeiten"])
     ki.ziele = {"Serien bearbeiten": "Serien"}
-    kh.zuordnen(lernender, UID3)                              # zugeordnet, nicht eingearbeitet
+    _zuordnen(lernender, UID3)                              # zugeordnet, nicht eingearbeitet
     kh.quelle_entfernen(lernender, UID2)
     assert kh.offene_auftraege(lernender) == [(UID3, "neu:0")]
     _einarbeiten(lernender)
@@ -429,7 +440,7 @@ def test_quelle_entfernen_loescht_huelle_der_quelle(lernender, ki):
     _sitzung(UID1, TAG1, ["Termin anlegen"])
     kh.einfuegen_vorbereiten(lernender, UID1, TAG1)
     ki.ziele = {"Termin anlegen": "Serien"}
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     kh.fortschreiben(lernender, *kh.offene_auftraege(lernender)[0])   # UID1 fuellt die Huelle
     assert _aktuell(lernender, "Serien")["quellen"] == [UID1]
     assert kh.quelle_entfernen(lernender, UID2) == 1
@@ -477,7 +488,7 @@ def test_aeltere_sitzung_wird_an_datumsstelle_eingefuegt(lernender, ki):
     assert _quelle(lernender, UID3)["eingearbeitet_am"] is None
     # das Kapitel der juengeren Sitzung bleibt als leere Huelle (Titel, Reihenfolge), unsichtbar
     assert _titel(lernender) == ["Serien (Felix)"] and not kh._kapitel_zeilen(lernender)
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     offen = kh.offene_auftraege(lernender)
     assert [u for u, _ in offen][0] == UID1
     assert offen[1:] == [(UID2, kid), (UID3, kid)]
@@ -498,7 +509,7 @@ def test_huelle_von_aelterer_sitzung_gefuellt_schoepfer_ergaenzt(lernender, ki):
     _sitzung(UID1, TAG1, ["Termin anlegen"])
     kh.einfuegen_vorbereiten(lernender, UID1, TAG1)
     ki.ziele = {"Termin anlegen": "Serien"}
-    kh.zuordnen(lernender, UID1)
+    _zuordnen(lernender, UID1)
     _einarbeiten(lernender)
     # UID2 legte "Serien" an; die Huelle hatte schon Text von UID1: KI soll ergaenzen
     assert [a["entscheidung"] for a in ki.eingaben[-1]["neue_abschnitte"]] == ["ergaenzen"]
@@ -622,9 +633,113 @@ def test_loeschantrag_nimmt_sitzung_aus_fremdem_handbuch(lernender, lernender_b,
     assert not _fassungen_mit(UID1) and _quelle(lernender_b, UID1) is None
 
 
-def test_alles_entfernen_ohne_handbuch(lernender):
-    kh.alles_entfernen(lernender)
+def test_alles_entfernen_ohne_handbuch_laesst_andere_stehen(lernender, lernender_b, ki):
+    _sitzung(UID1, TAG1, ["Termin anlegen"], lernender=lernender_b)
+    _rein(lernender_b, UID1)
+    vorher = server._q("select id from kurs_handbuch_fassung order by id")
+    kh.alles_entfernen(lernender)                 # hat kein Handbuch: kein Fehler
     kh.alles_entfernen("kein-uuid")
+    assert server._q("select id from kurs_handbuch_fassung order by id") == vorher
+    assert _quelle(lernender_b, UID1) is not None
+    assert str(_zeile(UID1)["kurs_lead_id"]) == lernender_b
+
+
+def test_entfernen_ist_wiederholbar(lernender, kurs_fertig_im_handbuch, ablage):
+    km.entfernen(UID1)
+    km.entfernen(UID1)
+    km.entfernen("gibt-es-nicht@sales-claw")
+    assert not _kursdateien(ablage) and not _fassungen_mit(UID1)
+    assert _zeile(UID1)["kurs_json"] is None
+
+
+# ---------- Nebenlaeufigkeit: Felix handelt waehrend eines KI-Auftrags ----------
+
+def test_lernenden_wechsel_waehrend_zuordnung_bucht_nichts(lernender, lernender_b, ki):
+    _sitzung(UID1, TAG1, ["Termin anlegen"], lernender=lernender)
+    ki.waehrend[kh.ZUORDNUNG_SYSTEM] = lambda: km.lernender_setzen(UID1, lernender_b)
+    with pytest.raises(kh.Veraltet):
+        kh.zuordnen(lernender, UID1)
+    assert _quelle(lernender, UID1) is None and not _fassungen_mit(UID1)
+    assert str(_zeile(UID1)["kurs_lead_id"]) == lernender_b
+
+
+def test_verschieben_waehrend_zuordnung_bucht_nichts(lernender, ki):
+    _sitzung(UID1, TAG1, ["Termin anlegen"], lernender=lernender)
+    ki.waehrend[kh.ZUORDNUNG_SYSTEM] = lambda: mb.verschieben(UID1, "Notizen")
+    with pytest.raises(kh.Veraltet):
+        kh.zuordnen(lernender, UID1)
+    assert not server._q("select 1 from kurs_handbuch_quelle where uid = %s", (UID1,))
+
+
+def test_neuer_bildbestand_waehrend_zuordnung_bucht_nichts(lernender, ki):
+    _sitzung(UID1, TAG1, ["Termin anlegen"], lernender=lernender)
+    ki.waehrend[kh.ZUORDNUNG_SYSTEM] = lambda: _bild(UID1, TAG1, 30)   # Stand aendert sich
+    with pytest.raises(kh.Veraltet):
+        kh.zuordnen(lernender, UID1)
+    assert _quelle(lernender, UID1) is None
+
+
+def test_zuordnung_ohne_gewaehlten_lernenden_wird_abgewiesen(lernender, lernender_b, ki):
+    _sitzung(UID1, TAG1, ["Termin anlegen"], lernender=lernender_b)
+    with pytest.raises(kh.Veraltet):
+        kh.zuordnen(lernender, UID1)
+    assert not ki.eingaben                               # kein KI-Auftrag verschwendet
+    assert _quelle(lernender, UID1) is None
+
+
+def test_lernenden_wechsel_waehrend_fortschreiben_bucht_nichts(lernender, lernender_b, ki):
+    _sitzung(UID1, TAG1, ["Termin anlegen"], lernender=lernender)
+    _zuordnen(lernender, UID1)
+    ki.waehrend[kh.KAPITEL_SYSTEM] = lambda: km.lernender_setzen(UID1, lernender_b)
+    with pytest.raises(kh.Veraltet):
+        _einarbeiten(lernender)
+    assert not _fassungen_mit(UID1) and _titel(lernender) == []
+    assert not server._q("select 1 from kurs_handbuch_quelle where lead_id = %s", (lernender,))
+
+
+@pytest.mark.parametrize("schon_ausgegeben", [True, False])
+def test_quelle_entfernen_waehrend_ausgabe_bucht_nichts_veraltetes(
+        lernender, handbuch_1_2_3, ablage, auge, monkeypatch, schon_ausgegeben):
+    if schon_ausgegeben:
+        kh.ausgeben(lernender)
+    echt = kurs_pdf.pdf_aus_html
+
+    def pdf_waehrenddessen(html):
+        assert "Serie" in html                     # gerendert mit Sitzung 2 ...
+        kh.quelle_entfernen(lernender, UID2)       # ... die Felix jetzt entfernt
+        return echt(html)
+
+    monkeypatch.setattr(kurs_pdf, "pdf_aus_html", pdf_waehrenddessen)
+    kh.ausgeben(lernender)
+    hb = ablage / "_handbuecher"
+    assert not hb.exists() or not any(hb.iterdir())     # nichts Veraltetes geschrieben
+    z = _handbuch(lernender)
+    if schon_ausgegeben:
+        assert (z["pfad"], z["pdf"], z["fassungen_stand"]) == (None, None, None)
+        assert kh.ausgabe_faellig(lernender)
+    else:
+        assert z is None
+    monkeypatch.setattr(kurs_pdf, "pdf_aus_html", echt)
+    _einarbeiten(lernender)
+    assert kh.ausgabe_faellig(lernender)
+    kh.ausgeben(lernender)
+    assert "Serie" not in (ablage / _handbuch(lernender)["pfad"]).read_text(encoding="utf-8")
+
+
+def test_verschieben_aus_kurse_scheitert_rubrik_bleibt(lernender, kurs_fertig_im_handbuch,
+                                                       ablage, monkeypatch):
+    vorher = _zeile(UID1)
+
+    def kaputt(*_a, **_k):
+        raise RuntimeError("Rueckbau scheitert")
+
+    monkeypatch.setattr(kh, "_zurueckrollen", kaputt)
+    with pytest.raises(RuntimeError):
+        mb.verschieben(UID1, "Notizen")
+    z = _zeile(UID1)
+    assert z["rubrik"] == "Kurse" and z["kurs_pfad"] == vorher["kurs_pfad"]
+    assert len(_kursdateien(ablage)) == 3
+    assert _quelle(lernender, UID1) is not None and _fassungen_mit(UID1)
 
 
 # ---------- Abgleich ----------
