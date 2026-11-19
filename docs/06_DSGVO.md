@@ -404,7 +404,11 @@ Checkliste für Kursmitschrift und Handbuch (Runbook: Abschnitt Kursmitschrift u
 - [ ] **Kein Versand durch sales-claw:** keine Mail, kein Entwurf. Felix lädt die PDFs herunter und verschickt sie selbst;
       damit entscheidet er bei jeder Weitergabe, ob sie zulässig ist.
 - [ ] **Lernende/r:** wählt nur Felix (Oberfläche), auch private Kontakte sind möglich. Die Wahl steht in
-      `termin_mitschriften.kurs_lead_id`.
+      `termin_mitschriften.kurs_lead_id`. Ein Kontakt mit **Löschantrag** oder **Sperre** (gemeinsame Verbotsliste)
+      wird weder vorgeschlagen noch in der Suche gefunden und kann nicht gewählt werden (Antwort 400); das gilt auch für
+      eine nach dem Löschantrag stehengebliebene Teilnehmer-Adresse (`grund = 'gesperrt'`). Steht ein solcher Kontakt
+      noch als Lernender eingetragen, ruht sein Handbuch im Taktgeber (keine Zuordnung, kein Fortschreiben, keine
+      Ausgabe).
 - [ ] **Löschwege:**
       1. *Mitschrift löschen* (Aufnahme verwerfen, `mitschrift_entfernen`, Löschantrag, Sicherheitsnetz): Kursmitschrift
          samt Dateien und die Sitzung im Handbuch gehen mit.

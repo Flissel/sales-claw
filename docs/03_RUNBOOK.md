@@ -4560,8 +4560,14 @@ in `auge.py`: HTML höchstens 20 MB (`PDF_MAX_BYTES`), Wartezeit des HTTP-Thread
 (`PDF_RENDER_TIMEOUT_MS`); der Aufrufer wartet höchstens 90 s. Fehlt `AUGE_URL` oder ist `sales-auge` nicht erreichbar,
 gibt es nur einen festen Fehlertext (kein Inhalt im Log).
 
-**Je Runde (Vorgabe 30 s)** höchstens **ein KI-Auftrag** (lokale KI, `OLLAMA_URL`, Zeitlimit 600 s,
-`KURS_KI_TIMEOUT_S`), dazu die KI-freien Teile (Ablegen, PDF-Ausgabe):
+**Je Runde (Vorgabe 30 s)** höchstens **ein KI-Auftrag** über `OLLAMA_URL`, dazu die KI-freien Teile (Ablegen,
+PDF-Ausgabe). **Zeitlimit:** sales-mcp wartet höchstens 600 s (`KURS_KI_TIMEOUT_S`). Im Betrieb zeigt `OLLAMA_URL` auf das
+KI-Tor `sales-ki` (Abschnitt oben); dessen `KI_TIMEOUT_S` (Vorgabe **280 s**) beendet den Aufruf vorher – ein Kurs, dessen
+Kursmitschrift länger braucht, scheitert dann mit Zeitüberschreitung (zählt als Fehlversuch). Für lange Kurse
+`KI_TIMEOUT_S` in `sales-ki` anheben, aber unter 600 s lassen. **Länge:** Die Kursmitschrift schickt das **ganze
+Transkript in einem Aufruf** (keine Stückelung wie bei der Auswertung). Mit `sales-ki` ist das unkritisch; mit einem
+lokalen Ollama als Rückfall (`OLLAMA_NUM_CTX`, Vorgabe 8192) werden lange Kurse abgeschnitten oder scheitern – dann
+`OLLAMA_NUM_CTX` passend anheben oder beim KI-Tor bleiben.
 
 1. Veraltetes entfernen (Rubrik gewechselt oder Stand der Auswertung neu: Kursmitschrift weg, Zähler zurück).
 2. Kursmitschrift ablegen (ohne KI) bzw. die älteste fällige Kursmitschrift erzeugen (ein KI-Auftrag).
@@ -4569,7 +4575,13 @@ gibt es nur einen festen Fehlertext (kein Inhalt im Log).
 4. Handbuch-HTML und -PDF ausgeben (ohne KI, höchstens eines je Runde).
 
 Die KI-Aufträge warten, wenn ein Termin mit Bot in 15 Minuten beginnt oder läuft und solange Ollama nicht erreichbar
-ist (die Arbeit bleibt fällig, nichts geht verloren).
+ist (die Arbeit bleibt fällig, nichts geht verloren). Geprüft wird auch mit der **aktuellen Uhrzeit**, nicht nur mit dem
+Rundenbeginn (Briefing und Auswertung davor können Minuten dauern). Hat ein früherer Schritt derselben Runde die KI
+schon benutzt (Briefing, Auswertung, Einordnung), wartet der Kurs-Auftrag bis zur nächsten Runde. Ebenso warten
+Ablegen und Handbuch-Ausgabe (PDF in `sales-auge`, der live den Bildschirm aufnimmt), solange ein Termin mit Bot ansteht
+oder läuft. Eine weitere Sitzung desselben Lernenden wird erst zugeordnet, wenn die vorige ganz eingearbeitet ist (sonst
+sähe die KI deren Kapitel nicht und legte doppelte an). Lernende mit **Löschantrag oder Sperre** ruhen: keine Zuordnung,
+kein Fortschreiben, keine Ausgabe (Log einmal `... ruht (Loeschantrag oder Sperre)`).
 
 **Status `termin_mitschriften.kurs_status`.** `null` = wird erzeugt (Oberfläche: „wird erzeugt“), `fertig`, `fehler`.
 Je Sitzung höchstens **3 Versuche** (`MAX_VERSUCHE`), je **1 Stunde** Abstand (`NEUVERSUCH_NACH`); beim dritten Fehlschlag
@@ -4577,7 +4589,8 @@ wird der Status `fehler`. Eine Sitzung mit `fehler` wird übersprungen und aus d
 ohne sie weiter). Neu starten: eine neue Auswertung (geändertes Transkript, geänderte Auswertung oder Bilder = neuer Stand) setzt Zähler und Status in der nächsten Runde zurück (auch bei `fehler` der Kursmitschrift selbst; die Sitzung wird dann neu erzeugt). Ebenso: aus „Kurse“ heraus- und wieder hineinverschieben.
 
 **Lernenden wählen.** `kurs_lead_id` setzt **nur Felix** in der Oberfläche (Reiter „Kurse“, Auswahl oder Kontaktsuche);
-vorgeschlagen werden die Teilnehmer ohne Organisator und die zuletzt Gewählten. Auch private Kontakte sind erlaubt. Ohne
+vorgeschlagen werden die Teilnehmer ohne Organisator und die zuletzt Gewählten. Auch private Kontakte sind erlaubt;
+Kontakte mit Löschantrag oder Sperre nicht (nicht vorgeschlagen, nicht gefunden, Wahl abgelehnt mit 400). Ohne
 Lernenden entsteht nur die Kursmitschrift, kein Handbuch. Beim Wechsel geht die Sitzung zuerst aus dem Handbuch des
 alten Lernenden (Kapitel zurückgerollt); der Taktgeber arbeitet sie ins neue ein.
 
