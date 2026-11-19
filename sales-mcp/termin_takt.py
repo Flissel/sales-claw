@@ -715,9 +715,34 @@ def _kurs_fehlversuch(lead_id: str, uid: str, jetzt: datetime, was: str, err: Ex
         "update termin_mitschriften set kurs_versuche = kurs_versuche + 1, kurs_am = %s, "
         "kurs_status = case when kurs_versuche + 1 >= %s then 'fehler' else kurs_status end "
         "where uid = %s returning kurs_status", (jetzt, kurs_mitschrift.MAX_VERSUCHE, uid))
+    fehler = bool(z) and z[0]["kurs_status"] == "fehler"
     LOG.warning("Kurs-Handbuch %s uid=%s lead=%s fehlgeschlagen (%s)%s", was, _h(uid),
                 kurs_handbuch._lead8(lead_id), type(err).__name__,
-                " - Sitzung auf fehler" if z and z[0]["kurs_status"] == "fehler" else "")
+                " - Sitzung auf fehler" if fehler else "")
+    if fehler:
+        # Teilinhalt zurueckrollen: das Handbuch geht ohne diese Sitzung weiter
+        try:
+            kurs_handbuch.quelle_entfernen(lead_id, uid)
+        except kurs_handbuch.Veraltet:
+            pass
+        except Exception as e2:  # noqa: BLE001 - nur der Typname ins Log
+            LOG.warning("Kurs-Handbuch Rueckbau uid=%s lead=%s fehlgeschlagen (%s)", _h(uid),
+                        kurs_handbuch._lead8(lead_id), type(e2).__name__)
+
+
+def _kurs_erfolg(uid: str) -> None:
+    """Ein Handbuch-Auftrag gelang: die naechsten bekommen wieder volle Versuche."""
+    server._q("update termin_mitschriften set kurs_versuche = 0, kurs_am = null "
+              "where uid = %s returning id", (uid,))
+
+
+def _kurs_wartet(lead_id: str, uid: str, jetzt: datetime) -> bool:
+    """Pause im Speicher oder (nach Neustart) gespeicherter Fehlversuch noch nicht lange her."""
+    if (lead_id, uid) in _kurs_pause:
+        return True
+    return bool(server._q(
+        "select 1 from termin_mitschriften where uid = %s and kurs_versuche > 0 "
+        "and kurs_am > %s", (uid, jetzt - kurs_mitschrift.NEUVERSUCH_NACH)))
 
 
 def _kurs_ablegen(uid: str, jetzt: datetime) -> bool:
@@ -766,15 +791,20 @@ def _kurs_zuordnen(jetzt: datetime, ki_frei) -> int:
         f"where {_KURS_RUBRIK_SQL} and m.kurs_status = 'fertig' and m.kurs_lead_id is not null "
         "and not exists (select 1 from kurs_handbuch_quelle q where q.lead_id = m.kurs_lead_id "
         "and q.uid = m.uid) order by a.beginn, m.id", (kurs_mitschrift.RUBRIK_KURSE,))
+    wartend: set[str] = set()               # Lernende mit wartender aelterer Sitzung
     for z in kandidaten:
         uid, lead_id = z["uid"], str(z["kurs_lead_id"])
-        if (lead_id, uid) in _kurs_pause:
+        if lead_id in wartend:
+            continue
+        if _kurs_wartet(lead_id, uid, jetzt):
+            wartend.add(lead_id)            # keine juengere vorziehen (Rueckrollen)
             continue
         if not ki_frei():
             return 0
         try:
             kurs_handbuch.einfuegen_vorbereiten(lead_id, uid, z["beginn"])
             kurs_handbuch.zuordnen(lead_id, uid)
+            _kurs_erfolg(uid)
         except kurs_handbuch.Veraltet:
             LOG.info("Kurs-Handbuch Zuordnung uid=%s lead=%s uebersprungen (Stand geaendert)",
                      _h(uid), kurs_handbuch._lead8(lead_id))
@@ -796,8 +826,14 @@ def _kurs_fortschreiben(jetzt: datetime, ki_frei) -> int:
         if lead_id in gesehen:
             continue
         gesehen.add(lead_id)
-        for uid, ziel in kurs_handbuch.offene_auftraege(lead_id):
-            if (lead_id, uid) in _kurs_pause:
+        try:
+            auftraege = kurs_handbuch.offene_auftraege(lead_id)
+        except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
+            LOG.warning("Kurs-Handbuch Auftraege lead=%s fehlgeschlagen (%s)",
+                        kurs_handbuch._lead8(lead_id), type(e).__name__)
+            continue
+        for uid, ziel in auftraege:
+            if _kurs_wartet(lead_id, uid, jetzt):
                 break                       # Reihenfolge der Sitzungen wahren
             if server._q("select 1 from termin_mitschriften where uid = %s "
                          "and kurs_status = 'fehler'", (uid,)):
@@ -806,6 +842,7 @@ def _kurs_fortschreiben(jetzt: datetime, ki_frei) -> int:
                 return 0
             try:
                 kurs_handbuch.fortschreiben(lead_id, uid, ziel)
+                _kurs_erfolg(uid)
             except kurs_handbuch.Veraltet:
                 LOG.info("Kurs-Handbuch Fortschreiben uid=%s lead=%s uebersprungen "
                          "(Stand geaendert)", _h(uid), kurs_handbuch._lead8(lead_id))
@@ -822,9 +859,11 @@ def _kurs_ausgabe(jetzt: datetime) -> int:
         "union select lead_id from kurs_handbuch_quelle order by lead_id")
     for z in lernende:
         lead_id = str(z["lead_id"])
-        if ("ausgabe", lead_id) in _kurs_pause or not kurs_handbuch.ausgabe_faellig(lead_id):
+        if ("ausgabe", lead_id) in _kurs_pause:
             continue
         try:
+            if not kurs_handbuch.ausgabe_faellig(lead_id):
+                continue
             kurs_handbuch.ausgeben(lead_id)
         except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
             _kurs_pause[("ausgabe", lead_id)] = jetzt

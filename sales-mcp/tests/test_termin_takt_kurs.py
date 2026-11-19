@@ -94,7 +94,8 @@ def _sitzung(uid, beginn=TAG, rubrik="Kurse", lead=None, kurs_json=False, **spal
              "geholt_am": beginn, **spalten}
     if kurs_json:
         werte["kurs_json"] = json.dumps({"ueberblick": "u", "offen": [], "abschnitte": [
-            {"titel": "Termin anlegen", "bilder": [], "merken": []}]})
+            {"titel": kurs_json if isinstance(kurs_json, str) else "Termin anlegen",
+             "bilder": [], "merken": []}]})
     namen = list(werte)
     marken = ["%s::jsonb" if n in ("segmente", "kurs_json") else "%s" for n in namen]
     server._q(f"insert into termin_mitschriften ({', '.join(namen)}) values "
@@ -171,8 +172,9 @@ def test_bestand_zwei_sitzungen_ein_handbuch(ki):
     assert all(q["eingearbeitet_am"] for q in quellen)
     assert set(ki.zeiten) == {600}
     h = server._q("select pfad, pdf from kurs_handbuch where lead_id = %s", (diana,))[0]
-    assert (kurs_pdf_pfad := os.path.join(os.environ["MITSCHRIFTEN_PFAD"], h["pfad"]))
-    assert os.path.exists(kurs_pdf_pfad)
+    ordner = os.environ["MITSCHRIFTEN_PFAD"]
+    assert os.path.isfile(os.path.join(ordner, h["pfad"]))
+    assert h["pdf"].endswith(".pdf") and os.path.isfile(os.path.join(ordner, h["pdf"]))
 
 
 def test_aelteste_sitzung_zuerst_zugeordnet(ki):
@@ -337,3 +339,118 @@ def test_logs_ohne_klartext(ki, caplog):
     _sitzung("k-1", lead=lead)
     _runden(15)
     assert "GEHEIMNAME" not in caplog.text and "Kalender" not in caplog.text
+
+
+def _zwei_sitzungen(lead):
+    _sitzung("k-s1", beginn=TAG, lead=lead, kurs_json="Kapitel-Eins", kurs_status="fertig")
+    _sitzung("k-s2", beginn=TAG + timedelta(days=1), lead=lead, kurs_json="Kapitel-Zwei",
+             kurs_status="fertig")
+    termin_takt._kurs(JETZT)                                  # Zuordnung S1
+    termin_takt._kurs(JETZT + timedelta(minutes=1))           # Zuordnung S2
+    assert len(server._q("select 1 from kurs_handbuch_quelle")) == 2
+
+
+def test_fortschreiben_fehler_pause_zaehlung_reihenfolge(ki, monkeypatch):
+    lead = _lead()
+    _zwei_sitzungen(lead)
+    echt = kh.fortschreiben
+    aufrufe = []
+
+    def kaputt(lead_id, uid, ziel):
+        aufrufe.append(uid)
+        if uid == "k-s1":
+            raise ValueError("kaputt")
+        return echt(lead_id, uid, ziel)
+
+    monkeypatch.setattr(kh, "fortschreiben", kaputt)
+    t = JETZT + timedelta(minutes=10)
+    termin_takt._kurs(t)
+    termin_takt._kurs(t + timedelta(minutes=5))               # pausiert: S2 nicht vorgezogen
+    assert aufrufe == ["k-s1"]
+    assert _z("k-s1")["kurs_versuche"] == 1 and _z("k-s1")["kurs_status"] == "fertig"
+    assert (str(lead), "k-s1") in termin_takt._kurs_pause
+
+
+def test_fortschreiben_dreimal_fehler_handbuch_geht_ohne_sitzung_weiter(ki, monkeypatch):
+    lead = _lead()
+    _zwei_sitzungen(lead)
+    echt = kh.fortschreiben
+
+    def kaputt(lead_id, uid, ziel):
+        if uid == "k-s1":
+            raise ValueError("kaputt")
+        return echt(lead_id, uid, ziel)
+
+    monkeypatch.setattr(kh, "fortschreiben", kaputt)
+    for i in range(3):
+        termin_takt._kurs(JETZT + timedelta(hours=2 * (i + 1)))
+    assert _z("k-s1")["kurs_status"] == "fehler"
+    assert not server._q("select 1 from kurs_handbuch_quelle where uid = 'k-s1'")
+    _runden(30, start=JETZT + timedelta(hours=10))
+    h = server._q("select pfad, pdf from kurs_handbuch where lead_id = %s", (lead,))
+    assert len(h) == 1
+    text = open(os.path.join(os.environ["MITSCHRIFTEN_PFAD"], h[0]["pfad"]),
+                encoding="utf-8").read()
+    assert "Kapitel-Zwei" in text and "Kapitel-Eins" not in text
+    assert not server._q("select 1 from kurs_handbuch_fassung where 'k-s1' = any(quellen)")
+    assert _z("k-s2")["kurs_status"] == "fertig"
+
+
+def test_fortschreiben_ueberspringt_fehler_sitzung(ki, monkeypatch):
+    lead = _lead()
+    _zwei_sitzungen(lead)
+    server._q("update termin_mitschriften set kurs_status = 'fehler' where uid = 'k-s1' "
+              "returning id")
+    echt = kh.fortschreiben
+    aufrufe = []
+    monkeypatch.setattr(kh, "fortschreiben",
+                        lambda l, u, z: aufrufe.append(u) or echt(l, u, z))
+    termin_takt._kurs(JETZT + timedelta(minutes=10))
+    assert aufrufe == ["k-s2"]
+
+
+def test_erfolg_setzt_versuche_zurueck(ki):
+    lead = _lead()
+    _sitzung("k-1", lead=lead, kurs_json=True, kurs_status="fertig", kurs_versuche=2,
+             kurs_am=JETZT - timedelta(hours=2))
+    termin_takt._kurs(JETZT)
+    z = _z("k-1")
+    assert server._q("select 1 from kurs_handbuch_quelle")
+    assert z["kurs_versuche"] == 0 and z["kurs_am"] is None
+
+
+def test_gespeicherter_fehlversuch_wartet_auch_ohne_pause(ki):
+    lead = _lead()
+    _sitzung("k-1", lead=lead, kurs_json=True, kurs_status="fertig", kurs_versuche=1,
+             kurs_am=JETZT - timedelta(minutes=5))
+    termin_takt._kurs(JETZT)                        # nach "Neustart": keine In-Memory-Pause
+    assert ki.n == 0
+    termin_takt._kurs(JETZT + timedelta(hours=2))
+    assert ki.n == 1
+
+
+def test_zuordnen_wartende_aeltere_sitzung_zieht_keine_juengere_vor(ki):
+    lead = _lead()
+    _sitzung("k-alt", beginn=TAG, lead=lead, kurs_json=True, kurs_status="fertig",
+             kurs_versuche=1, kurs_am=JETZT - timedelta(minutes=5))
+    _sitzung("k-neu", beginn=TAG + timedelta(days=1), lead=lead, kurs_json=True,
+             kurs_status="fertig")
+    termin_takt._kurs(JETZT)
+    assert ki.n == 0 and not server._q("select 1 from kurs_handbuch_quelle")
+
+
+def test_ausgabe_faellig_fehler_stoppt_andere_lernende_nicht(ki, monkeypatch):
+    a, b = sorted([_lead("A-fixture"), _lead("B-fixture")])
+    _sitzung("k-a", lead=a)
+    _sitzung("k-b", beginn=TAG + timedelta(hours=3), lead=b)
+    echt = kh.ausgabe_faellig
+
+    def kaputt(lead_id):
+        if lead_id == a:
+            raise RuntimeError("kaputt")
+        return echt(lead_id)
+
+    monkeypatch.setattr(kh, "ausgabe_faellig", kaputt)
+    _runden(40)
+    assert server._q("select 1 from kurs_handbuch where lead_id = %s", (b,))
+    assert not server._q("select 1 from kurs_handbuch where lead_id = %s", (a,))
