@@ -302,6 +302,13 @@ def zuordnen(lead_id: str, uid: str) -> dict:
                            "and uid = %s for update", (lead_id, uid)).fetchone()
         if alt and any(e.get("erledigt") for e in _json(alt["zuordnung"])):
             raise ValueError("Sitzung ist schon eingearbeitet")
+        # zugeordnete Kapitel muessen noch bestehen (ein Rueckbau kann sie waehrend des
+        # KI-Auftrags geloescht haben); gesperrt nach der Quelle, wie beim Rueckbau
+        ziele = sorted({e["kapitel_id"] for e in eintraege if e.get("kapitel_id")})
+        if ziele and len(conn.execute(
+                "select id from kurs_handbuch_kapitel where lead_id = %s "
+                "and id = any(%s::uuid[]) for update", (lead_id, ziele)).fetchall()) != len(ziele):
+            raise Veraltet("zugeordnetes Kapitel inzwischen geloescht")
         conn.execute(
             "insert into kurs_handbuch_quelle (lead_id, uid, beginn, stand, zuordnung, "
             "eingearbeitet_am) values (%s, %s, %s, %s, %s::jsonb, null) "
@@ -385,15 +392,18 @@ def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:
                    and not e.get("erledigt") and not e.get("kapitel_id")]
         titel, alter_text, alt_bilder, alt_quellen = (auswahl[0]["titel"] if auswahl else ""), \
             "", [], []
+        gelesen = None
     else:
         kid = _id(ziel)
         z = server._q(
-            "select k.id, k.titel, f.text_md, f.bild_ids, f.quellen from kurs_handbuch_kapitel k "
+            "select k.id, k.titel, k.aktuelle_fassung, f.text_md, f.bild_ids, f.quellen "
+            "from kurs_handbuch_kapitel k "
             "left join kurs_handbuch_fassung f on f.id = k.aktuelle_fassung "
             "where k.id = %s and k.lead_id = %s", (kid, lead_id)) if kid else []
         if not z:
             raise ValueError("Kapitel gehoert nicht zum Lernenden")
         kapitel = str(z[0]["id"])
+        gelesen = z[0]["aktuelle_fassung"]          # Grundlage des KI-Auftrags
         auswahl = [e for e in eintraege if e.get("kapitel_id") == kapitel
                    and not e.get("erledigt")]
         titel, alter_text = z[0]["titel"], z[0]["text_md"] or ""
@@ -429,11 +439,13 @@ def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:
             raise Veraltet("Stand geaendert")
         eintraege = _json(zeile["zuordnung"])
         if kapitel is None:
+            # Quelle ist gesperrt: wer das Kapitel inzwischen angelegt hat, hat kapitel_id
+            # gesetzt, dann ist hier nichts mehr offen
             nr = int(ziel[4:])
             offen = [e for e in eintraege if e["abschnitt"] == nr and e["entscheidung"] == "neu"
                      and not e.get("erledigt") and not e.get("kapitel_id")]
             if not offen:
-                raise ValueError("kein offener Auftrag")
+                raise Veraltet("kein offener Auftrag mehr")
             kapitel = str(conn.execute(
                 "insert into kurs_handbuch_kapitel (lead_id, titel, reihenfolge) values "
                 "(%s, %s, (select coalesce(max(reihenfolge), 0) + 1 from "
@@ -441,10 +453,18 @@ def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:
                 (lead_id, titel, lead_id)).fetchone()["id"])
             offen[0]["kapitel_id"] = kapitel
         else:
+            # Kapitel nach der Quelle sperren (Reihenfolge wie beim Rueckbau). Hat ein
+            # Rueckbau es waehrend des KI-Auftrags zurueckgesetzt oder geloescht, enthielte
+            # der neue Text Inhalt einer entfernten Sitzung: dann nichts schreiben.
+            k = conn.execute("select aktuelle_fassung from kurs_handbuch_kapitel "
+                             "where id = %s and lead_id = %s for update",
+                             (kapitel, lead_id)).fetchone()
+            if not k or k["aktuelle_fassung"] != gelesen:
+                raise Veraltet("Kapitel inzwischen geaendert")
             offen = [e for e in eintraege if e.get("kapitel_id") == kapitel
                      and not e.get("erledigt")]
-            if not offen:
-                raise ValueError("kein offener Auftrag")
+            if sorted(e["abschnitt"] for e in offen) != sorted(e["abschnitt"] for e in auswahl):
+                raise Veraltet("Auftrag inzwischen geaendert")
         fassung = conn.execute(
             "insert into kurs_handbuch_fassung (kapitel_id, text_md, bild_ids, quellen, "
             "erstellt_am) values (%s, %s, %s, %s, clock_timestamp()) returning id",

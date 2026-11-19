@@ -697,6 +697,38 @@ def test_lernenden_wechsel_waehrend_fortschreiben_bucht_nichts(lernender, lernen
     assert not server._q("select 1 from kurs_handbuch_quelle where lead_id = %s", (lernender,))
 
 
+def test_quelle_entfernen_waehrend_fortschreiben_bringt_sie_nicht_zurueck(lernender,
+                                                                         handbuch_1_und_2, ki):
+    # Kapitel "Termin anlegen": Fassungen aus [1] und [1, 2]; Sitzung 3 soll ergaenzen
+    _sitzung(UID3, TAG3, ["Termin verschieben"])
+    ki.ziele = {"Termin verschieben": "Termin anlegen"}
+    _zuordnen(lernender, UID3)
+    ((uid, kid),) = kh.offene_auftraege(lernender)
+    ki.waehrend[kh.KAPITEL_SYSTEM] = lambda: kh.quelle_entfernen(lernender, UID2)
+    with pytest.raises(kh.Veraltet):
+        kh.fortschreiben(lernender, UID3, kid)       # KI-Text beruht auf Fassung [1, 2]
+    assert not _fassungen_mit(UID2) and not _fassungen_mit(UID3)
+    assert _aktuell(lernender, "Termin anlegen")["quellen"] == [UID1]
+    assert kh.offene_auftraege(lernender) == [(UID3, kid)]     # naechste Runde, neue Grundlage
+    _einarbeiten(lernender)
+    f = _aktuell(lernender, "Termin anlegen")
+    assert f["quellen"] == [UID1, UID3] and "Serie" not in f["text_md"]
+
+
+def test_quelle_entfernen_waehrend_zuordnung_loescht_ziel(lernender, ki):
+    _sitzung(UID2, TAG2, ["Serien"])
+    _rein(lernender, UID2)                            # Kapitel "Serien" aus Sitzung 2
+    _sitzung(UID3, TAG3, ["Serien bearbeiten"])
+    ki.ziele = {"Serien bearbeiten": "Serien"}
+    ki.waehrend[kh.ZUORDNUNG_SYSTEM] = lambda: kh.quelle_entfernen(lernender, UID2)
+    with pytest.raises(kh.Veraltet):
+        _zuordnen(lernender, UID3)
+    assert _quelle(lernender, UID3) is None and _titel(lernender) == []
+    _zuordnen(lernender, UID3)                        # naechste Runde: eigenes Kapitel
+    _einarbeiten(lernender)
+    assert _titel(lernender) == ["Serien bearbeiten"]
+
+
 @pytest.mark.parametrize("schon_ausgegeben", [True, False])
 def test_quelle_entfernen_waehrend_ausgabe_bucht_nichts_veraltetes(
         lernender, handbuch_1_2_3, ablage, auge, monkeypatch, schon_ausgegeben):

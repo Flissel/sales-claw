@@ -579,11 +579,14 @@ def test_keine_entwuerfe_und_keine_kundentexte_im_log(lernender, sitzung1, ki, a
         assert geheim not in log
 
 
-def test_quelle_ohne_kurs_json_wird_abgewiesen(lernender):
+def test_sitzung_ohne_kurs_json_ist_veraltet(lernender):
+    """Ohne Kursmitschrift (noch nicht erzeugt oder entfernt) gehoert die Sitzung nicht ins
+    Handbuch: Veraltet vor jedem KI-Auftrag (ollama ist hier nicht ersetzt), nichts gebucht."""
     server._q("insert into termin_akten (uid, herkunft, beginn, ende, titel, status) "
               "values (%s, 'sales-claw', %s, %s, 'Kurs', 'fertig') returning uid",
               (UID1, TAG1, TAG1 + timedelta(hours=1)))
     server._q("insert into termin_mitschriften (uid, segmente, rubrik) "
               "values (%s, '[]'::jsonb, 'Kurse') returning id", (UID1,))
-    with pytest.raises(ValueError):
+    with pytest.raises(kh.Veraltet):
         _zuordnen(lernender, UID1)
+    assert not server._q("select 1 from kurs_handbuch_quelle where uid = %s", (UID1,))
