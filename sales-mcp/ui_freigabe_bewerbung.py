@@ -162,10 +162,16 @@ _HINWEISE = {
     "weg_portal": ("hinweis", "Versandweg auf Portal gestellt – nach der Freigabe ist "
                               "Handarbeit nötig."),
     "nicht_beworben": ("hinweis", "Nicht bewerben – die Zentrale hat die Entscheidung verbucht."),
-    "feedback": ("hinweis", "Feedback erfasst. Die Durchsicht setzt es um."),
+    "feedback": ("hinweis", "Feedback erfasst – Hermes überarbeitet die Fassung, in ein paar Minuten "
+                            "liegt die neue hier."),
     "kein_feedback": ("warnung", "Kein Feedback eingegeben – weder ein Kommentar noch ein "
                                  "geändertes Anschreiben. Nichts wurde gesendet."),
     "fassung_veraltet": ("warnung", "Diese Fassung ist veraltet – Seite neu laden"),
+    # Anschreiben-Feedback-Schleife: Hermes ueberarbeitet schon / die Karte ist nicht mehr offen.
+    "ueberarbeitung_laeuft": ("warnung", "Hermes überarbeitet diese Fassung schon – erst die neue "
+                                         "Fassung abwarten."),
+    "nicht_mehr_offen": ("warnung", "Nicht mehr möglich – schon entschieden oder abgeschickt. "
+                                    "Seite neu laden."),
     "schon_entschieden": ("warnung", "Schon entschieden – Seite neu laden."),
     "wartet_auf_durchsicht": ("warnung", "Wartet auf Durchsicht – entscheiden geht erst "
                                          "nach dem GO der Durchsicht."),
@@ -212,7 +218,8 @@ _ABLEHNUNGEN = ("fassung_veraltet", "schon_entschieden", "wartet_auf_durchsicht"
                 "versandziel_geaendert", "lauf_laeuft", "lauf_unbekannt", "lauf_nicht_offen",
                 "antwort_ungueltig", "frage_unbekannt", "fenster_belegt", "feldtabelle_veraltet",
                 "zustand_veraltet", "not_aus", "portal_aus", "nicht_offen",
-                "fuellen_laeuft", "schon_gefuellt", "kein_selbst_fenster")
+                "fuellen_laeuft", "schon_gefuellt", "kein_selbst_fenster",
+                "ueberarbeitung_laeuft", "nicht_mehr_offen")
 
 # Portal-Abgabe (Plan 2026-11-09, Task 12): die Portal-Karte. Die Zentrale liefert `portal` (Lauf, Zustand,
 # Feldtabelle, Fragen); Felix macht im Fenster oder von Hand weiter. Ins Protokoll kommen nur Bewerbung, Lauf
@@ -551,6 +558,73 @@ def _weg(ui, k: dict, basis: str, nr, felder: str) -> tuple[str, str, str]:
     return zeile, feld, knopf
 
 
+_UEBERARBEITUNG_STAENDE = ("wartet", "laeuft", "gescheitert", "abgelehnt")
+
+
+def _ueberarbeitung(k: dict) -> str | None:
+    """Der Stand der Überarbeitung durch Hermes (`k["ueberarbeitung"]["stand"]`), sonst None. Fehlt das Feld
+    (ältere Zentrale), ist es null oder hat einen unbekannten Stand, ist die Karte wie ohne Überarbeitung."""
+    u = k.get("ueberarbeitung")
+    stand = u.get("stand") if isinstance(u, dict) else None
+    return stand if stand in _UEBERARBEITUNG_STAENDE else None
+
+
+def _abweichungen(ui, k: dict) -> str:
+    """"Abweichungen von deinem Text": wo die neue Fassung vom Text abweicht, den Felix geschickt hat. Eine Liste
+    (auch leer: "keine") wird gezeigt, null oder kein Feld: nichts."""
+    liste = k.get("abweichungen")
+    if not isinstance(liste, list):
+        return ""
+    texte = _texte(liste)
+    if not texte:
+        return '<div><b>Abweichungen von deinem Text</b>: keine</div>'
+    return (f'<div><b>Abweichungen von deinem Text</b><ul>{"".join(f"<li>{ui._e(x)}</li>" for x in texte)}'
+            f'</ul></div>')
+
+
+def _feedback_formular(ui, k: dict, basis: str, nr) -> str:
+    """Der Feedback-Block beider Karten: bei offenem Feedback die Zeile "erfasst am", dann je nach Stand der
+    Überarbeitung der Stand-Text (wartet, läuft: statt des Formulars) oder das Formular (sonst; bei gescheitert
+    und abgelehnt mit dem Grund davor). Alles aus der Zentrale maskiert."""
+    e = ui._e
+    teile = []
+    if (am := _erfasst_am(ui, k.get("feedback_offen_seit"))):
+        # Angekommen, aber noch nicht umgesetzt (offenes Feedback der Zentrale).
+        teile.append(f'<p class="meta">Feedback zu Fassung {nr if nr else "?"} erfasst am {am}</p>')
+    stand = _ueberarbeitung(k)
+    u = k["ueberarbeitung"] if stand else {}
+    grund = u.get("grund") if isinstance(u.get("grund"), str) else ""
+    if stand in ("wartet", "laeuft"):
+        n = _nr(u.get("fassung"))
+        teile.append(f'<div class="hinweis">Hermes überarbeitet Fassung {n if n else "?"} …</div>')
+        if stand == "wartet":
+            teile.append('<div class="meta">' + ("Hermes pausiert (Kontingent)" if grund == "hermes_pausiert"
+                                                   else "wartet auf Hermes") + "</div>")
+        teile.append('<p class="meta">Freigeben beendet die Überarbeitung</p>')
+        return "".join(teile)
+    if stand == "gescheitert":
+        teile.append('<div class="warnung">Überarbeitung gescheitert</div>')
+    elif stand == "abgelehnt":
+        teile.append(f'<div class="warnung">Hermes kann das so nicht umsetzen: {e(grund)}</div>')
+    if nr:
+        felder = (f'<input type="hidden" name="csrf" value="{ui.CSRF_TOKEN}">'
+                  f'<input type="hidden" name="fassung" value="{nr}">')
+        brief = k.get("anschreiben")
+        if isinstance(brief, str) and brief.strip():
+            aendern = (f'<input type="hidden" name="original" value="{_fingerabdruck(brief)}">'
+                       f'<details class="bearbeiten"><summary>Anschreiben selbst ändern</summary>'
+                       f'<textarea name="text" rows="14" maxlength="{TEXT_MAX}">{e(brief)}</textarea>'
+                       f'</details>')
+        else:
+            aendern = '<p class="meta">Anschreiben nicht lesbar</p>'
+        teile.append(f'<form method="post" action="{basis}/feedback">{felder}'
+                     f'<label class="feld">Feedback zu Fassung {nr}'
+                     f'<textarea name="kommentar" maxlength="{KOMMENTAR_MAX}" rows="3" '
+                     f'placeholder="Was soll anders werden?"></textarea></label>'
+                     f'{aendern}<button>Feedback senden</button></form>')
+    return "".join(teile)
+
+
 def _autonom(ui, k: dict, not_aus: bool = False) -> tuple[str, str | None]:
     """Autonomie-Zeile der Karte und ihr Stand: (Zeile, Stand). Autonom ist eine Karte genau dann, wenn die
     Zentrale `autonom` als Objekt liefert; sonst ("", None) und die Karte bleibt, wie sie war. Der Stand ist
@@ -577,7 +651,11 @@ def _autonom(ui, k: dict, not_aus: bool = False) -> tuple[str, str | None]:
         text = f"Empfänger prüfen: {ui._e(wort)}" if wort else "Empfänger prüfen"
         return f'<div class="warnung">{text}</div>', "empfaenger_pruefen"
     if stand == "feedback_offen":
+        if _ueberarbeitung(k) in ("wartet", "laeuft"):
+            return "", "feedback_offen"        # den Stand sagt schon die Zeile des Feedback-Blocks
         return '<div class="hinweis">Überarbeitung läuft</div>', "feedback_offen"
+    if stand == "nach_feedback":
+        return '<div class="hinweis">Nach deinem Feedback – bitte selbst freigeben</div>', None
     return f'<div class="hinweis">{AUTONOM_UNBEKANNT}</div>', ""
 
 
@@ -785,6 +863,10 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
     return '<p class="meta">Stand unbekannt – Seite neu laden.</p>'
 
 
+# Nur in diesen Zuständen ist sicher, dass noch nichts abgeschickt ist: nur dann nimmt die Portal-Karte Feedback an.
+_PORTAL_FEEDBACK_ZUSTAENDE = ("selbst_bewerben", "bereit", "frage_offen", "wartet_auf_worker", "offline")
+
+
 def _portal_karte(ui, k: dict, not_aus: bool = False) -> str:
     """Die Karte einer Portal-Bewerbung (`k["portal"]` ist ein dict): Kopf wie bei den Unterlagen, darunter je
     nach Zustand des Laufs Feldtabelle, Fragen, Bild und Knoepfe. Kein Freigeben der Unterlagen."""
@@ -803,9 +885,11 @@ def _portal_karte(ui, k: dict, not_aus: bool = False) -> str:
         inhalt = _portal_inhalt(ui, k, p, basis, nr, lauf_id, not_aus)
     else:
         inhalt = '<p class="meta">Lauf unbekannt – Seite neu laden.</p>'
+    if p.get("zustand") in _PORTAL_FEEDBACK_ZUSTAENDE and not inhalt.startswith('<p class="meta">Lauf unbekannt'):
+        inhalt += _feedback_formular(ui, k, basis, nr)
     return (f'<details class="karte" open><summary><span class="badge">Portal</span>'
             f'<b>{e(k.get("firma"))} – {e(k.get("rolle"))}</b></summary>'
-            f'<div class="meta">{" · ".join(angaben)}</div>{verweise}{inhalt}</details>')
+            f'<div class="meta">{" · ".join(angaben)}</div>{verweise}{_abweichungen(ui, k)}{inhalt}</details>')
 
 
 def _portal_kopf(ui, karten: list[dict]) -> str:
@@ -893,24 +977,7 @@ def _karte(ui, k: dict, not_aus: bool = False) -> str:
             f'Fassung {nr} freigeben bestätigen</label>'
             f'<button class="primaer">{freigeben}</button></form>'
             f'{ablehnen}</div>')
-    feedback = ""
-    if (am := _erfasst_am(ui, k.get("feedback_offen_seit"))):
-        # Angekommen, aber noch nicht umgesetzt (offenes Feedback der Zentrale).
-        feedback = f'<p class="meta">Feedback zu Fassung {nr if nr else "?"} erfasst am {am}</p>'
-    if nr:
-        brief = k.get("anschreiben")
-        if isinstance(brief, str) and brief.strip():
-            aendern = (f'<input type="hidden" name="original" value="{_fingerabdruck(brief)}">'
-                       f'<details class="bearbeiten"><summary>Anschreiben selbst ändern</summary>'
-                       f'<textarea name="text" rows="14" maxlength="{TEXT_MAX}">{e(brief)}</textarea>'
-                       f'</details>')
-        else:
-            aendern = '<p class="meta">Anschreiben nicht lesbar</p>'
-        feedback += (f'<form method="post" action="{basis}/feedback">{felder}'
-                    f'<label class="feld">Feedback zu Fassung {nr}'
-                    f'<textarea name="kommentar" maxlength="{KOMMENTAR_MAX}" rows="3" '
-                    f'placeholder="Was soll anders werden?"></textarea></label>'
-                    f'{aendern}<button>Feedback senden</button></form>')
+    feedback = _feedback_formular(ui, k, basis, nr)
     # Das Etikett folgt dem Versandweg wie die Versandzeile; ohne `versand` (Zentrale vor H4)
     # der Kanal der Aufnahme.
     weg = k.get("versand") if isinstance(k.get("versand"), dict) else {}
@@ -919,7 +986,7 @@ def _karte(ui, k: dict, not_aus: bool = False) -> str:
     return (f'<details class="karte" open><summary>{etikett}'
             f'<b>{e(k.get("firma"))} – {e(k.get("rolle"))}</b></summary>'
             f'<div class="meta">{" · ".join(angaben)}</div>{autonom_zeile}{luecke}'
-            f'{verweise}{pruef}{was_neu}{pruefnotiz}{versand}{entscheiden}{feedback}</details>')
+            f'{verweise}{pruef}{was_neu}{_abweichungen(ui, k)}{pruefnotiz}{versand}{entscheiden}{feedback}</details>')
 
 
 def _von_hand_links(ui, v: dict, nr) -> str:

@@ -2868,7 +2868,7 @@ def test_portal_karte_bereit_zeigt_tabelle_bild_und_knoepfe(client, falsch):
     assert "Bereit" in k and "kein Hindernis erkannt" in k
     assert (f'<img src="/freigaben/bewerbung/{BID}/portal/bild.png?lauf={LAUF_P}&v=3"') in k
     assert "<td>Vorname</td>" in k and "<td>Felix</td>" in k and "aus deiner Antwort" in k
-    assert "Freigeben und senden" not in k and "Anschreiben selbst ändern" not in k   # keine Unterlagen-Formulare
+    assert "Freigeben und senden" not in k   # keine Unterlagen-Formulare
     assert 'class="nur-pc"' in k and "Am PC im Fenster erledigen" in k
     assert 'class="nur-handy"' in k and "Am PC erledigen" in k
     assert "Selbst bewerben" in k and "Nicht bewerben" in k
@@ -3461,3 +3461,155 @@ def test_portal_karte_ohne_dict_bleibt_unterlagen_karte(client, falsch):
 def test_portal_karte_mit_kaputtem_lauf_id_hat_keine_formulare(client, falsch):
     k = _pkarte(client, falsch, lauf_id='"><script>')
     assert "<script>" not in k and "<form" not in k
+
+
+# --- Anschreiben-Feedback-Schleife (Plan 2026-11-15, Task 10) ---------------------------------------------
+#
+# Die Zentrale meldet `ueberarbeitung` (Stand der Ueberarbeitung durch Hermes) und `abweichungen` (wo der
+# Text von Felix von der neuen Fassung abweicht); `feedback_offen_seit` steht jetzt auch auf Portal-Karten.
+
+UE_AM = "2026-11-15T08:00:00+00:00"
+FEEDBACK_ZUSTAENDE = ["selbst_bewerben", "bereit", "frage_offen", "wartet_auf_worker", "offline"]
+
+
+def ueberarbeitung(stand, fassung=2, grund=None):
+    return {"stand": stand, "fassung": fassung, "seit": UE_AM, "grund": grund}
+
+
+@pytest.mark.parametrize("zustand", FEEDBACK_ZUSTAENDE)
+def test_portal_karte_hat_feedback_formular(client, falsch, zustand):
+    k = _pkarte(client, falsch, zustand=zustand)
+    f = _form(k, "feedback")
+    assert '<textarea name="kommentar"' in f and 'name="text"' in f and BRIEF.split("\n")[0] in f
+    assert f'name="csrf" value="{ui.CSRF_TOKEN}"' in f and 'name="fassung" value="1"' in f
+    assert f'action="/freigaben/bewerbung/{BID}/feedback"' in f
+
+
+@pytest.mark.parametrize("zustand", ["unklar", "fenster_angefragt", "im_fenster"])
+def test_portal_karte_ohne_feedback_wenn_vielleicht_abgeschickt(client, falsch, zustand):
+    k = _pkarte(client, falsch, zustand=zustand)
+    assert _ohne_form(k, "feedback") and "Feedback" not in k
+
+
+def test_portal_karte_zeigt_feedback_offen_seit(client, falsch):
+    falsch.karten = [pkarte()]
+    falsch.karten[0]["feedback_offen_seit"] = "2026-10-21T08:00:00+00:00"
+    k, = _karten(_abschnitt(client))
+    assert "Feedback zu Fassung 1 erfasst am" in k
+
+
+def test_ueberarbeitung_laeuft_zeigt_text_statt_formular(client, falsch):
+    falsch.karten = [karte(fassung=2, ueberarbeitung=ueberarbeitung("laeuft"), application_id="bw-1")]
+    s = _abschnitt(client)
+    assert "Hermes überarbeitet Fassung 2 …" in s and 'action="/freigaben/bewerbung/bw-1/feedback"' not in s
+    assert "Freigeben beendet die Überarbeitung" in s
+    assert "wartet auf Hermes" not in s and "Hermes pausiert" not in s
+    assert "Fassung 2 freigeben bestätigen" in s                  # die Knoepfe bleiben
+
+
+def test_ueberarbeitung_wartet_und_pausiert(client, falsch):
+    falsch.karten = [karte(ueberarbeitung=ueberarbeitung("wartet", fassung=3), fassung=3)]
+    k, = _karten(_abschnitt(client))
+    assert "Hermes überarbeitet Fassung 3 …" in k and "wartet auf Hermes" in k
+    assert "Hermes pausiert (Kontingent)" not in k and _ohne_form(k, "feedback")
+    assert "Freigeben beendet die Überarbeitung" in k
+    falsch.karten = [karte(ueberarbeitung=ueberarbeitung("wartet", fassung=3, grund="hermes_pausiert"),
+                           fassung=3)]
+    k, = _karten(_abschnitt(client))
+    assert "Hermes überarbeitet Fassung 3 …" in k and "Hermes pausiert (Kontingent)" in k
+    assert "wartet auf Hermes" not in k and "Freigeben beendet die Überarbeitung" in k
+
+
+def test_ueberarbeitung_gescheitert_formular_wieder_da(client, falsch):
+    falsch.karten = [karte(ueberarbeitung=ueberarbeitung("gescheitert", grund="hermes_fehlversuche"))]
+    k, = _karten(_abschnitt(client))
+    assert "Überarbeitung gescheitert" in k and "hermes_fehlversuche" not in k
+    assert '<textarea name="kommentar"' in _form(k, "feedback")
+    assert "Hermes überarbeitet" not in k and "Freigeben beendet" not in k
+
+
+def test_ueberarbeitung_abgelehnt_zeigt_begruendung_maskiert(client, falsch):
+    falsch.karten = [karte(ueberarbeitung=ueberarbeitung("abgelehnt", grund=BOESE))]
+    k, = _karten(_abschnitt(client))
+    assert "Hermes kann das so nicht umsetzen: " + ui._e(BOESE) in k and BOESE not in k
+    assert '<textarea name="kommentar"' in _form(k, "feedback")
+    falsch.karten = [karte(ueberarbeitung=ueberarbeitung("abgelehnt", grund=None))]
+    k, = _karten(_abschnitt(client))
+    assert "Hermes kann das so nicht umsetzen" in k and "None" not in k
+
+
+@pytest.mark.parametrize("stand", ["wartet", "laeuft"])
+def test_ueberarbeitung_auf_portal_karte(client, falsch, stand):
+    falsch.karten = [karte(kanal="portal", portal=portal(), ueberarbeitung=ueberarbeitung(stand, fassung=2))]
+    k, = _karten(_abschnitt(client))
+    assert "Hermes überarbeitet Fassung 2 …" in k and _ohne_form(k, "feedback")
+    assert "Freigeben beendet die Überarbeitung" in k
+
+
+def test_ueberarbeitung_unbekannter_stand_oder_form_wie_ohne(client, falsch):
+    falsch.karten = [karte(ueberarbeitung=ueberarbeitung("irgendwas")),
+                     karte(application_id=BID2, ueberarbeitung="laeuft")]
+    for k in _karten(_abschnitt(client)):
+        assert "Hermes" not in k and '<textarea name="kommentar"' in _form(k, "feedback")
+
+
+def test_abweichungen_von_deinem_text(client, falsch):
+    falsch.karten = [karte(abweichungen=["Absatz 2 gekürzt", BOESE, 7])]
+    k, = _karten(_abschnitt(client))
+    assert "Abweichungen von deinem Text" in k and "<li>Absatz 2 gekürzt</li>" in k
+    assert BOESE not in k and f"<li>{ui._e(BOESE)}</li>" in k
+    falsch.karten = [karte(abweichungen=[])]
+    k, = _karten(_abschnitt(client))
+    assert "Abweichungen von deinem Text" in k and "keine" in k.split("Abweichungen von deinem Text")[1]
+    falsch.karten = [karte(abweichungen=None), karte(application_id=BID2)]       # None und fehlender Schluessel
+    assert "Abweichungen" not in _abschnitt(client)
+
+
+def test_abweichungen_auf_portal_karte(client, falsch):
+    falsch.karten = [pkarte()]
+    falsch.karten[0]["abweichungen"] = ["Gehalt geändert"]
+    k, = _karten(_abschnitt(client))
+    assert "Abweichungen von deinem Text" in k and "<li>Gehalt geändert</li>" in k
+
+
+def test_autonom_nach_feedback(client, falsch):
+    falsch.karten = [karte(autonom=autonom_stand("nach_feedback"))]
+    k, = _karten(_abschnitt(client))
+    assert '<div class="hinweis">Nach deinem Feedback – bitte selbst freigeben</div>' in k
+    assert "Nicht bewerben" in k and "Stoppen" not in k and "Geht automatisch" not in k
+
+
+@pytest.mark.parametrize("stand", ["wartet", "laeuft"])
+def test_autonom_feedback_offen_mit_ueberarbeitung_nur_eine_zeile(client, falsch, stand):
+    falsch.karten = [karte(autonom=autonom_stand("feedback_offen"), ueberarbeitung=ueberarbeitung(stand))]
+    k, = _karten(_abschnitt(client))
+    assert "Überarbeitung läuft" not in k and "Hermes überarbeitet Fassung 2 …" in k
+
+
+def test_autonom_feedback_offen_ohne_ueberarbeitung_bleibt(client, falsch):
+    falsch.karten = [karte(autonom=autonom_stand("feedback_offen"), ueberarbeitung=None)]
+    assert '<div class="hinweis">Überarbeitung läuft</div>' in _abschnitt(client)
+
+
+@pytest.mark.parametrize("code", ["ueberarbeitung_laeuft", "nicht_mehr_offen"])
+def test_neue_ablehnungscodes_haben_hinweis(client, falsch, code):
+    assert code in ui_freigabe_bewerbung._ABLEHNUNGEN
+    assert ui_freigabe_bewerbung._HINWEISE[code][0] == "warnung"
+    falsch.fehler_post = PultFehler("abgelehnt", code)
+    r = _post(client, "feedback", fassung="1", kommentar="x")
+    assert r.status_code == 303 and r.headers["location"] == f"/freigaben?bw_hinweis={code}#bewerbungen"
+    assert ui_freigabe_bewerbung._HINWEISE[code][1] in _abschnitt(client, r.headers["location"])
+
+
+def test_hinweistexte_ueberarbeitung_wortlaut():
+    h = ui_freigabe_bewerbung._HINWEISE
+    assert h["ueberarbeitung_laeuft"] == ("warnung", "Hermes überarbeitet diese Fassung schon – "
+                                                     "erst die neue Fassung abwarten.")
+    assert h["nicht_mehr_offen"] == ("warnung", "Nicht mehr möglich – schon entschieden oder abgeschickt. "
+                                                "Seite neu laden.")
+
+
+def test_feedback_hinweis_nennt_hermes(client, falsch):
+    art, text = ui_freigabe_bewerbung._HINWEISE["feedback"]
+    assert art == "hinweis" and "Durchsicht" not in text
+    assert text == "Feedback erfasst – Hermes überarbeitet die Fassung, in ein paar Minuten liegt die neue hier."
