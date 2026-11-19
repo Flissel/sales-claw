@@ -445,12 +445,15 @@ def aufnahme_beenden(uid: str, grund: str) -> None:
 def mitschrift_entfernen(uid: str) -> None:
     """Einen noch offenen Zusammenfassungs-Entwurf ablehnen (er darf nicht
     verwaisen) und die lokale Mitschrift der Akte loeschen (Vorschlaege gehen
-    per Kaskade mit). Die Bericht-Datei der Mitschriften-Ablage geht mit."""
+    per Kaskade mit). Die Bericht-Datei der Mitschriften-Ablage geht mit, die
+    Kursmitschrift samt Handbuch-Quelle vor dem Loeschen der Zeile."""
+    import kurs_mitschrift  # zirkulaer: ueber mitschrift_bericht -> ui_termin -> termin_akte
     for m in server._q("select entwurf_id from termin_mitschriften where uid = %s", (uid,)):
         if m["entwurf_id"] and server._q(
                 "select 1 from drafts where id = %s and status = 'pending'",
                 (str(m["entwurf_id"]),)):
             server.entwurf_ablehnen(str(m["entwurf_id"]))
+    kurs_mitschrift.entfernen(uid)
     weg = server._q("delete from termin_mitschriften where uid = %s returning bericht_pfad",
                     (uid,))
     bilder_entfernen(uid)  # Bilder entstehen live, auch ohne Mitschrift

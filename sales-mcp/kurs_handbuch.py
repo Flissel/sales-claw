@@ -4,7 +4,11 @@ waechst.
 Ablauf je Sitzung: `zuordnen` (ein KI-Auftrag: Abschnitte -> Kapitel, ergaenzen/neu/ersetzen),
 dann je betroffenem Kapitel `fortschreiben` (ein KI-Auftrag: neue Fassung des Kapitels),
 zum Schluss `ausgeben` (HTML + PDF im Ordner `_handbuecher`). Nichts wird verschickt, es gibt
-keine Entwuerfe. Wiederholungen und Rueckrollen (Quelle entfernen) liegen beim Aufrufer.
+keine Entwuerfe. Wiederholungen liegen beim Aufrufer (Taktgeber).
+
+Rueckbau: `quelle_entfernen` (Sitzung geht aus dem Handbuch), `einfuegen_vorbereiten` (aeltere
+Sitzung kommt nachtraeglich dazu) und `alles_entfernen` (Loeschantrag). Zurueckgerollte spaetere
+Sitzungen arbeitet der Taktgeber ueber `offene_auftraege` in Datumsfolge neu ein.
 
 Logs: nur Anzahlen, Typnamen und gekuerzte Ids, nie Titel, Namen oder Kapiteltext.
 """
@@ -23,7 +27,7 @@ import server
 import ui_termin
 
 MAX_BILDER_KAPITEL = 3
-ORDNER_NAME = "_handbuecher"
+ORDNER_NAME = mitschrift_bericht.HANDBUCH_ORDNER
 KURZ_ZEICHEN = 400
 TITEL_MAX = 200
 ENTSCHEIDUNGEN = ("ergaenzen", "neu", "ersetzen")
@@ -272,7 +276,8 @@ def zuordnen(lead_id: str, uid: str) -> dict:
 
 def offene_auftraege(lead_id: str) -> list[tuple[str, str]]:
     """(uid, ziel) fuer zugeordnete, noch nicht eingearbeitete Quellen in Datumsfolge.
-    ziel = kapitel_id oder "neu:<abschnitt>"; je Kapitel ein Auftrag je Sitzung."""
+    ziel = kapitel_id oder "neu:<abschnitt>"; je Kapitel ein Auftrag je Sitzung. Ein "neu" mit
+    kapitel_id fuellt eine leere Huelle (siehe `einfuegen_vorbereiten`)."""
     aus: list[tuple[str, str]] = []
     for q in server._q("select uid, zuordnung from kurs_handbuch_quelle "
                        "where lead_id = %s and eingearbeitet_am is null "
@@ -281,7 +286,7 @@ def offene_auftraege(lead_id: str) -> list[tuple[str, str]]:
         for e in _json(q["zuordnung"]):
             if e.get("erledigt"):
                 continue
-            ziel = f"neu:{e['abschnitt']}" if e["entscheidung"] == "neu" else e["kapitel_id"]
+            ziel = e["kapitel_id"] if e.get("kapitel_id") else f"neu:{e['abschnitt']}"
             if ziel not in gesehen:
                 gesehen.add(ziel)
                 aus.append((q["uid"], ziel))
@@ -337,7 +342,7 @@ def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:
         except ValueError:
             raise ValueError("ungueltiges Ziel") from None
         auswahl = [e for e in eintraege if e["abschnitt"] == nr and e["entscheidung"] == "neu"
-                   and not e.get("erledigt")]
+                   and not e.get("erledigt") and not e.get("kapitel_id")]
         titel, alter_text, alt_bilder, alt_quellen = (auswahl[0]["titel"] if auswahl else ""), \
             "", [], []
     else:
@@ -358,9 +363,12 @@ def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:
 
     eingabe = {"kapitel_titel": titel, "alter_text": alter_text, "bild_ids_alt": alt_bilder,
                "datum": _iso_tag(beginn),
+               # "neu" in eine Huelle, die inzwischen Text hat: ergaenzen
                "neue_abschnitte": [dict(_abschnitt_eingabe(e["abschnitt"],
                                                            abschnitte[e["abschnitt"]]),
-                                        entscheidung=e["entscheidung"]) for e in auswahl]}
+                                        entscheidung="ergaenzen"
+                                        if e["entscheidung"] == "neu" and alter_text
+                                        else e["entscheidung"]) for e in auswahl]}
     antwort = ollama.chat(KAPITEL_SYSTEM, json.dumps(eingabe, ensure_ascii=False),
                           als_json=True)
     text_md, vorschlag = _kapitel_pruefen(_antwort(antwort))
@@ -380,7 +388,7 @@ def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:
         if kapitel is None:
             nr = int(ziel[4:])
             offen = [e for e in eintraege if e["abschnitt"] == nr and e["entscheidung"] == "neu"
-                     and not e.get("erledigt")]
+                     and not e.get("erledigt") and not e.get("kapitel_id")]
             if not offen:
                 raise ValueError("kein offener Auftrag")
             kapitel = str(conn.execute(
@@ -578,11 +586,214 @@ def ausgeben(lead_id: str) -> None:
 
 def ausgabe_faellig(lead_id: str) -> bool:
     """Keine offenen Auftraege und die Ausgabe ist nicht auf dem Stand der juengsten Fassung
-    (`fassungen_stand` leer = Kapitel umbenannt oder umsortiert)."""
-    if offene_auftraege(lead_id):
+    (`fassungen_stand` leer = Kapitel umbenannt, umsortiert oder zurueckgerollt). Wurde die
+    Ausgabe nach dem Entfernen einer Quelle zurueckgenommen (`pfad` leer), ist sie sofort
+    faellig, auch mit offenen Auftraegen: ein Zwischenstand ohne die entfernte Sitzung."""
+    z = server._q("select pfad, fassungen_stand from kurs_handbuch where lead_id = %s",
+                  (lead_id,))
+    zurueckgenommen = bool(z) and z[0]["pfad"] is None
+    if not zurueckgenommen and offene_auftraege(lead_id):
         return False
-    z = server._q("select fassungen_stand from kurs_handbuch where lead_id = %s", (lead_id,))
     if not _kapitel_zeilen(lead_id):
         return bool(z)
     return not z or z[0]["fassungen_stand"] is None \
         or z[0]["fassungen_stand"] != _juengste_fassung(lead_id)
+
+
+# ---------- Rueckbau: Quelle entfernen, aeltere Sitzung einfuegen, Loeschantrag ----------
+
+def lernende_mit_quelle(uid: str) -> list[str]:
+    """Lernende, in deren Handbuch die Sitzung `uid` gebucht ist oder Inhalt traegt."""
+    z = server._q(
+        "select lead_id from kurs_handbuch_quelle where uid = %s union "
+        "select k.lead_id from kurs_handbuch_fassung f join kurs_handbuch_kapitel k "
+        "on k.id = f.kapitel_id where %s = any(f.quellen)", (uid, uid))
+    return sorted(str(r["lead_id"]) for r in z)
+
+
+def _abschnitt_titel(conn, uid: str, nr: object) -> str:
+    """Eigener Abschnittstitel der Sitzung `uid` (Titel, wenn ihr Abschnitt ein neues Kapitel
+    bekommt, weil sein Kapitel geloescht wurde)."""
+    z = conn.execute("select kurs_json from termin_mitschriften where uid = %s",
+                     (uid,)).fetchone()
+    try:
+        titel = _text(_json(z["kurs_json"])["abschnitte"][nr]["titel"])
+    except (TypeError, KeyError, IndexError, ValueError):
+        titel = ""
+    return (titel or "Kapitel")[:TITEL_MAX]
+
+
+def _zuordnungen_oeffnen(conn, lead_id: str, geloescht: set[str],
+                         verloren: dict[str, set[str]]) -> None:
+    """Gespeicherte Zuordnungen nach einem Rueckbau nachziehen: Eintraege einer Quelle, deren
+    Beitrag zu Kapitel K zurueckgerollt wurde, sind wieder offen; Verweise auf geloeschte
+    Kapitel werden "neu" mit dem eigenen Abschnittstitel. Die Quelle gilt dann als nicht
+    eingearbeitet (der Taktgeber arbeitet sie in Datumsfolge neu ein)."""
+    for q in conn.execute("select uid, zuordnung from kurs_handbuch_quelle where lead_id = %s "
+                          "order by beginn, uid", (lead_id,)).fetchall():
+        eintraege = _json(q["zuordnung"])
+        geaendert = False
+        for e in eintraege:
+            kid = e.get("kapitel_id")
+            if kid in geloescht:
+                e.update(entscheidung="neu", kapitel_id=None, erledigt=False,
+                         titel=_abschnitt_titel(conn, q["uid"], e.get("abschnitt")))
+                geaendert = True
+            elif e.get("erledigt") and q["uid"] in verloren.get(kid, ()):
+                e["erledigt"] = False
+                geaendert = True
+        if geaendert:
+            conn.execute("update kurs_handbuch_quelle set zuordnung = %s::jsonb, "
+                         "eingearbeitet_am = null where lead_id = %s and uid = %s",
+                         (json.dumps(eintraege), lead_id, q["uid"]))
+
+
+def _zurueckrollen(conn, lead_id: str, weg: set[str], loeschen: set[str],
+                   huelle: bool) -> int:
+    """In der Transaktion des Aufrufers: jedes Kapitel des Lernenden, dessen Fassungen eine
+    Quelle aus `weg` tragen, auf die juengste Fassung ohne diese Quellen zuruecksetzen; alle
+    Fassungen mit ihnen loeschen. Bleibt keine Fassung, wird das Kapitel geloescht - mit
+    `huelle` (die Quellen werden nur neu eingearbeitet) bleibt es als leere Huelle stehen
+    (Titel, Reihenfolge), die sein Schoepfer wieder fuellt. Kapitel in `loeschen` gehen ganz.
+    Rueckgabe: Anzahl betroffener Kapitel."""
+    fassungen = conn.execute(
+        "select f.id, f.kapitel_id, f.quellen from kurs_handbuch_fassung f "
+        "join kurs_handbuch_kapitel k on k.id = f.kapitel_id where k.lead_id = %s "
+        "order by f.kapitel_id, f.erstellt_am, f.id", (lead_id,)).fetchall()
+    je_kapitel: dict[str, list[dict]] = {str(k): [] for k in loeschen}
+    for f in fassungen:
+        je_kapitel.setdefault(str(f["kapitel_id"]), []).append(f)
+    geloescht: set[str] = set()
+    verloren: dict[str, set[str]] = {}
+    for kid, liste in je_kapitel.items():
+        ab = 0 if kid in loeschen else next(
+            (i for i, f in enumerate(liste) if weg & set(f["quellen"])), None)
+        if ab is None:
+            continue
+        # Fassungen sammeln Quellen auf: ab der ersten mit einer entfernten Quelle tragen alle
+        # spaeteren sie auch. Wessen Beitrag dabei wegfaellt, wird fuer K wieder offen.
+        bleibt = set(liste[ab - 1]["quellen"]) if ab else set()
+        verloren[kid] = {u for f in liste[ab:] for u in f["quellen"]} - bleibt
+        if liste[ab:]:
+            conn.execute("delete from kurs_handbuch_fassung where id = any(%s)",
+                         ([f["id"] for f in liste[ab:]],))
+        if ab:
+            conn.execute("update kurs_handbuch_kapitel set aktuelle_fassung = %s where id = %s",
+                         (liste[ab - 1]["id"], kid))
+        elif huelle and kid not in loeschen:
+            conn.execute("update kurs_handbuch_kapitel set aktuelle_fassung = null "
+                         "where id = %s", (kid,))
+        else:
+            conn.execute("delete from kurs_handbuch_kapitel where id = %s and lead_id = %s",
+                         (kid, lead_id))
+            geloescht.add(kid)
+    if verloren:
+        _zuordnungen_oeffnen(conn, lead_id, geloescht, verloren)
+    return len(verloren)
+
+
+def _ausgabe_zuruecknehmen(conn, lead_id: str, inhalt_weg: bool) -> list[str]:
+    """Nach einem Rueckbau (in dessen Transaktion): die Ausgabe wird faellig
+    (`fassungen_stand` leer). Ohne sichtbares Kapitel geht die Zeile; mit `inhalt_weg` (eine
+    Sitzung wurde entfernt) werden die Pfade geleert, weil die Dateien ihren Inhalt tragen.
+    Rueckgabe: Dateien, die der Aufrufer nach dem Commit loescht."""
+    z = conn.execute("select pfad, pdf from kurs_handbuch where lead_id = %s for update",
+                     (lead_id,)).fetchone()
+    if not z:
+        return []
+    sichtbar = conn.execute("select 1 from kurs_handbuch_kapitel where lead_id = %s "
+                            "and aktuelle_fassung is not null limit 1", (lead_id,)).fetchone()
+    if not sichtbar:
+        conn.execute("delete from kurs_handbuch where lead_id = %s", (lead_id,))
+    elif inhalt_weg:
+        conn.execute("update kurs_handbuch set pfad = null, pdf = null, "
+                     "fassungen_stand = null where lead_id = %s", (lead_id,))
+    else:
+        conn.execute("update kurs_handbuch set fassungen_stand = null where lead_id = %s",
+                     (lead_id,))
+        return []
+    return [p for p in (z["pfad"], z["pdf"]) if p]
+
+
+def _gueltig(lead_id: str) -> str:
+    lid = _id(lead_id)
+    if lid is None:
+        raise ValueError("Lernender ungueltig")
+    return lid
+
+
+def quelle_entfernen(lead_id: str, uid: str) -> int:
+    """Sitzung `uid` aus dem Handbuch nehmen (Verschieben aus "Kurse", Loeschen, Neu-Auswertung,
+    Lernenden-Wechsel). Jedes Kapitel mit einer Fassung, die `uid` traegt, geht auf die
+    juengste Fassung ohne `uid` zurueck (gibt es keine, wird es geloescht, ebenso jedes von
+    `uid` angelegte Kapitel); alle Fassungen mit `uid` und die Quelle werden geloescht.
+    Spaetere Quellen dieser Kapitel sind wieder offen (gespeicherte Zuordnung bleibt, Verweise
+    auf geloeschte Kapitel werden "neu"). Alles in einer Transaktion. Die ausgegebenen Dateien
+    tragen den Inhalt und werden sofort geloescht; die Ausgabe ist faellig.
+    Rueckgabe: Anzahl betroffener Kapitel."""
+    lid = _gueltig(lead_id)
+    with server.pool.connection() as conn:
+        conn.execute("select uid from kurs_handbuch_quelle where lead_id = %s for update",
+                     (lid,)).fetchall()
+        zeile = conn.execute("delete from kurs_handbuch_quelle where lead_id = %s and uid = %s "
+                             "returning zuordnung", (lid, uid)).fetchone()
+        # von `uid` angelegte Kapitel (auch Huellen, die eine aeltere Sitzung schon fuellt):
+        # ihr Titel stammt aus der entfernten Sitzung
+        angelegt = {e["kapitel_id"] for e in (_json(zeile["zuordnung"]) if zeile else [])
+                    if e.get("entscheidung") == "neu" and e.get("kapitel_id")}
+        angelegt = {str(r["id"]) for r in conn.execute(
+            "select id from kurs_handbuch_kapitel where lead_id = %s and id = any(%s::uuid[])",
+            (lid, sorted(angelegt))).fetchall()} if angelegt else set()
+        betroffen = _zurueckrollen(conn, lid, {uid}, angelegt, huelle=False)
+        dateien = _ausgabe_zuruecknehmen(conn, lid, inhalt_weg=True) if betroffen else []
+    for pfad in dateien:
+        mitschrift_bericht.datei_entfernen(pfad)
+    if zeile or betroffen:
+        log.info("Handbuch-Quelle entfernt lead=%s uid=%s kapitel=%d dateien=%d",
+                 _lead8(lid), mitschrift_bericht.uid8(uid), betroffen, len(dateien))
+    return betroffen
+
+
+def einfuegen_vorbereiten(lead_id: str, uid: str, beginn: datetime) -> None:
+    """Vor der Zuordnung einer Sitzung: sind juengere Quellen (nach Termin-Beginn) schon
+    eingearbeitet, werden sie zurueckgerollt und wieder offen, damit `uid` an ihrer
+    Datumsstelle eingearbeitet wird. Kapitel, die nur aus juengeren Quellen bestehen, bleiben
+    als leere Huelle (Titel, Reihenfolge) und werden beim Neu-Einarbeiten wieder gefuellt."""
+    lid = _gueltig(lead_id)
+    with server.pool.connection() as conn:
+        quellen = conn.execute("select uid, beginn from kurs_handbuch_quelle "
+                               "where lead_id = %s for update", (lid,)).fetchall()
+        juenger = {q["uid"] for q in quellen
+                   if q["uid"] != uid and (q["beginn"], q["uid"]) > (beginn, uid)}
+        betroffen = _zurueckrollen(conn, lid, juenger, set(), huelle=True) if juenger else 0
+        dateien = _ausgabe_zuruecknehmen(conn, lid, inhalt_weg=False) if betroffen else []
+    for pfad in dateien:
+        mitschrift_bericht.datei_entfernen(pfad)
+    if betroffen:
+        log.info("Handbuch fuer aeltere Sitzung zurueckgerollt lead=%s uid=%s quellen=%d "
+                 "kapitel=%d", _lead8(lid), mitschrift_bericht.uid8(uid), len(juenger),
+                 betroffen)
+
+
+def alles_entfernen(lead_id: str) -> None:
+    """Loeschantrag: Handbuch des Lernenden ganz entfernen - Kapitel, Fassungen, Quellen,
+    `kurs_handbuch` und die Dateien. Die Wahl als Lernender wird an allen Mitschriften
+    geloest, sonst baute der Taktgeber das Handbuch wieder auf. Ungueltige Id: nichts zu tun."""
+    lid = _id(lead_id)
+    if lid is None:
+        return
+    with server.pool.connection() as conn:
+        zeilen = conn.execute("delete from kurs_handbuch where lead_id = %s returning pfad, pdf",
+                              (lid,)).fetchall()
+        kapitel = conn.execute("delete from kurs_handbuch_kapitel where lead_id = %s "
+                               "returning id", (lid,)).fetchall()
+        quellen = conn.execute("delete from kurs_handbuch_quelle where lead_id = %s "
+                               "returning uid", (lid,)).fetchall()
+        conn.execute("update termin_mitschriften set kurs_lead_id = null "
+                     "where kurs_lead_id = %s", (lid,))
+    for z in zeilen:
+        mitschrift_bericht.datei_entfernen(z["pfad"])
+        mitschrift_bericht.datei_entfernen(z["pdf"])
+    if zeilen or kapitel or quellen:
+        log.info("Handbuch ganz entfernt lead=%s kapitel=%d quellen=%d", _lead8(lid),
+                 len(kapitel), len(quellen))

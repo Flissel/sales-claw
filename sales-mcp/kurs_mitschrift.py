@@ -73,7 +73,10 @@ def vorschlaege(uid: str) -> list[dict]:
 
 
 def lernender_setzen(uid: str, lead_id: str | None) -> bool:
-    """Lernenden einer Kurs-Mitschrift setzen (None = entfernen). Sonst False."""
+    """Lernenden einer Kurs-Mitschrift setzen (None = entfernen). Sonst False. Bei einem
+    Wechsel geht die Sitzung zuerst aus dem Handbuch des alten Lernenden (Rueckbau); ins neue
+    arbeitet sie der Taktgeber ein."""
+    import kurs_handbuch  # zirkulaer: kurs_handbuch importiert kurs_mitschrift
     z = server._q("select rubrik from termin_mitschriften where uid = %s", (uid,))
     if not z or not ist_kurs(z[0]["rubrik"]):
         return False
@@ -83,6 +86,9 @@ def lernender_setzen(uid: str, lead_id: str | None) -> bool:
         neu = _uuid(lead_id)
         if neu is None or not server._q("select 1 from leads where id = %s", (neu,)):
             return False
+    for alt in kurs_handbuch.lernende_mit_quelle(uid):
+        if alt != neu:
+            kurs_handbuch.quelle_entfernen(alt, uid)
     server._q("update termin_mitschriften set kurs_lead_id = %s where uid = %s returning uid",
               (neu, uid))
     return True
@@ -360,3 +366,13 @@ def entfernen_dateien(uid: str) -> None:
     server._q("update termin_mitschriften set kurs_pfad = null, kurs_pfad_lernend = null, "
               "kurs_pdf = null, kurs_json = null, kurs_stand = null, kurs_status = null "
               "where uid = %s returning id", (uid,))
+
+
+def entfernen(uid: str) -> None:
+    """Kursmitschrift einer Sitzung ganz entfernen (Loeschen, Verschieben aus "Kurse",
+    Neu-Auswertung): erst aus jedem Handbuch nehmen (Rueckbau; die Ausgabe erneuert der
+    Taktgeber), dann Dateien und Buchung. Ohne Kursmitschrift: nichts zu tun."""
+    import kurs_handbuch  # zirkulaer: kurs_handbuch importiert kurs_mitschrift
+    for lead_id in kurs_handbuch.lernende_mit_quelle(uid):
+        kurs_handbuch.quelle_entfernen(lead_id, uid)
+    entfernen_dateien(uid)

@@ -25,6 +25,9 @@ import ui_termin
 log = logging.getLogger("mitschrift_bericht")
 
 UNSORTIERT = "Unsortiert"
+# Kurs-Handbuecher (kurs_handbuch): kein Rubrikordner. Eine Rubrik kann nie so heissen,
+# rubrik_normalisieren macht aus "_" ein Leerzeichen.
+HANDBUCH_ORDNER = "_handbuecher"
 TZ = ZoneInfo("Europe/Berlin")
 MAX_JE_THEMA = 6
 RUBRIK_MAX = 40
@@ -275,7 +278,9 @@ def verschieben(uid: str, rubrik: str) -> str | None:
     an vorhandene angeglichenen Namen (der Taktgeber vergleicht den Ordnernamen mit
     der gespeicherten Rubrik), setzt rubrik_manuell und legt die Datei neu ab.
     None bei ungueltigem Namen oder fehlender Mitschrift. Ein Fehler beim Ablegen
-    wird weitergereicht; die Rubrik bleibt dann gespeichert (der Takt baut neu)."""
+    wird weitergereicht; die Rubrik bleibt dann gespeichert (der Takt baut neu).
+    Aus "Kurse" heraus: Kursmitschrift und Handbuch-Quelle gehen (vor dem Ablegen)."""
+    import kurs_mitschrift  # zirkulaer: kurs_mitschrift importiert mitschrift_bericht
     name = rubrik_normalisieren(rubrik)
     if name is None:
         return None
@@ -283,9 +288,14 @@ def verschieben(uid: str, rubrik: str) -> str | None:
         "select distinct rubrik from termin_mitschriften where rubrik is not null "
         "order by rubrik")]
     name = rubrik_angleichen(name, [UNSORTIERT] + vorhandene)
-    if not server._q("update termin_mitschriften set rubrik = %s, rubrik_manuell = true "
-                     "where uid = %s returning id", (name, uid)):
+    vorher = server._q(
+        "update termin_mitschriften m set rubrik = %s, rubrik_manuell = true "
+        "from (select uid, rubrik from termin_mitschriften where uid = %s for update) alt "
+        "where m.uid = alt.uid returning alt.rubrik", (name, uid))
+    if not vorher:
         return None
+    if kurs_mitschrift.ist_kurs(vorher[0]["rubrik"]) and not kurs_mitschrift.ist_kurs(name):
+        kurs_mitschrift.entfernen(uid)
     ablegen(uid)
     return name
 
@@ -295,6 +305,15 @@ def verschieben(uid: str, rubrik: str) -> str | None:
 BERICHT_MUSTER = re.compile(r"^.+_[0-9a-f]{8}\.html$")
 # Rest eines abgebrochenen ablegen() (Absturz zwischen Schreiben und os.replace)
 TMP_MUSTER = re.compile(r"^.+_[0-9a-f]{8}\.html\.tmp$")
+# Kursmitschrift im Rubrikordner (kurs_pfad / kurs_pfad_lernend / kurs_pdf)
+_KURS = r".+_[0-9a-f]{8}_kurs(?:-intern\.html|\.html|\.pdf)"
+KURS_MUSTER = re.compile(rf"^{_KURS}$")
+# Handbuch in HANDBUCH_ORDNER (kurs_handbuch.pfad / pdf)
+_HANDBUCH = r"handbuch-[0-9a-f]{8}\.(?:html|pdf)"
+HANDBUCH_MUSTER = re.compile(rf"^{_HANDBUCH}$")
+# Rest eines abgebrochenen kurs_pdf.schreiben() (".<name>.<pid>.tmp")
+KURS_TMP_MUSTER = re.compile(rf"^\.{_KURS}\.\d+\.tmp$")
+HANDBUCH_TMP_MUSTER = re.compile(rf"^\.{_HANDBUCH}\.\d+\.tmp$")
 # Eben geschriebene Dateien bleiben: ablegen() schreibt erst die Datei, dann die Buchung.
 SCHONFRIST_S = 600
 
@@ -304,8 +323,15 @@ def _beschreibbar(basis: Path) -> bool:
 
 
 def _unterordner(basis: Path) -> list[Path]:
+    """Rubrikordner (ohne HANDBUCH_ORDNER)."""
     return [d for d in basis.iterdir()
-            if d.is_dir() and not d.is_symlink() and not d.name.startswith(".")]
+            if d.is_dir() and not d.is_symlink() and not d.name.startswith(".")
+            and d.name != HANDBUCH_ORDNER]
+
+
+def _dateien(ordner: Path, muster: re.Pattern) -> list[Path]:
+    return [f for f in ordner.iterdir()
+            if muster.match(f.name) and f.is_file() and not f.is_symlink()]
 
 
 def abgleichen() -> dict:
@@ -313,7 +339,8 @@ def abgleichen() -> dict:
     entfernen. Neu erzeugt der Taktgeber die zurueckgesetzten einzeln (einer je Runde),
     damit der Abgleich die Runde nicht aufhaelt.
 
-    Vorsichtig: nur Dateien nach BERICHT_MUSTER in direkten Unterordnern; laeuft
+    Vorsichtig: nur Dateien nach BERICHT_MUSTER/KURS_MUSTER in direkten Rubrikordnern
+    und nach HANDBUCH_MUSTER in HANDBUCH_ORDNER (gebucht nur ueber kurs_handbuch); laeuft
     nicht, wenn der Ordner fehlt, nicht beschreibbar ist oder keine einzige
     erwartete Datei enthaelt (Zeichen fuer einen falsch eingehaengten Ordner).
     """
@@ -323,15 +350,23 @@ def abgleichen() -> dict:
         return {"uebersprungen": "ordner"}
     gebucht = server._q("select uid, bericht_pfad from termin_mitschriften "
                         "where bericht_pfad is not null order by uid")
-    erwartet = {z["bericht_pfad"] for z in gebucht}
+    erwartet = {z["bericht_pfad"] for z in gebucht} | {z["p"] for z in server._q(
+        "select p from (select kurs_pfad p from termin_mitschriften "
+        "union all select kurs_pfad_lernend from termin_mitschriften "
+        "union all select kurs_pdf from termin_mitschriften "
+        "union all select pfad from kurs_handbuch "
+        "union all select pdf from kurs_handbuch) x where p is not null")}
     dateien: dict[str, Path] = {}
     tmps: list[Path] = []
     for unter in _unterordner(basis):
-        for f in unter.iterdir():
-            if BERICHT_MUSTER.match(f.name) and f.is_file() and not f.is_symlink():
-                dateien[f"{unter.name}/{f.name}"] = f
-            elif TMP_MUSTER.match(f.name) and f.is_file() and not f.is_symlink():
-                tmps.append(f)
+        for f in _dateien(unter, BERICHT_MUSTER) + _dateien(unter, KURS_MUSTER):
+            dateien[f"{unter.name}/{f.name}"] = f
+        tmps += _dateien(unter, TMP_MUSTER) + _dateien(unter, KURS_TMP_MUSTER)
+    hb = basis / HANDBUCH_ORDNER
+    if hb.is_dir() and not hb.is_symlink():
+        for f in _dateien(hb, HANDBUCH_MUSTER):
+            dateien[f"{HANDBUCH_ORDNER}/{f.name}"] = f
+        tmps += _dateien(hb, HANDBUCH_TMP_MUSTER)
     if not erwartet & dateien.keys():
         # ohne jede Buchung ist das normal (noch kein Bericht), sonst ein Warnzeichen
         (log.warning if erwartet else log.info)(

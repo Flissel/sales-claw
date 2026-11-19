@@ -8889,8 +8889,13 @@ def _mitschriften_abraeumen(lead_id: str) -> None:
     Steht ein Bot an oder laeuft er, wird nur der Status 'ohne_aufnahme'
     gesetzt (bedingt, I2); Bot stoppen und Vexa-Meeting loeschen macht der
     Taktgeber (C1, `termin_takt._nachloeschen`) - nur er hat VEXA_API_KEY.
-    Das Briefing nennt Namen, Kontakte und Painpoints und wird geleert."""
+    Das Briefing nennt Namen, Kontakte und Painpoints und wird geleert.
+    Das Kurs-Handbuch des Kontakts geht ganz (samt Dateien); Kursmitschriften
+    seiner Termine gehen mit der Mitschrift (auch aus fremden Handbuechern)."""
     import termin_akte  # R4: termin_akte importiert server
+    import kurs_handbuch  # zirkulaer: kurs_handbuch importiert server
+    import kurs_mitschrift
+    kurs_handbuch.alles_entfernen(lead_id)
     for uid in termin_akte.akten_eines_leads(lead_id, mit_adresse=True):
         termin_akte.status_wechseln(
             uid, ("geplant", "wartet_auf_einlass", "laeuft"), "ohne_aufnahme",
@@ -8901,6 +8906,9 @@ def _mitschriften_abraeumen(lead_id: str) -> None:
            "where uid = %s returning uid", (uid,))
     # Sicherheitsnetz nach dem Abraeumen je Akte (Wortlaut des Briefs): fiele
     # eine Akte durch akten_eines_leads, geht die Mitschrift hier trotzdem.
+    for z in _q("select uid from termin_mitschriften where uid in (select uid from "
+                f"termin_teilnehmer where {_TEILNAHME_DES_LEADS})", (lead_id, lead_id)):
+        kurs_mitschrift.entfernen(z["uid"])
     termin_akte.berichte_entfernen(_q(
         "delete from termin_mitschriften where uid in (select uid from "
         f"termin_teilnehmer where {_TEILNAHME_DES_LEADS}) returning bericht_pfad",
