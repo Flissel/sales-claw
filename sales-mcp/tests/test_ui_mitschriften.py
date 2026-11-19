@@ -280,3 +280,46 @@ def test_menue():
     assert "Mitschriften" in t and 'href="/mitschriften"' in t
     namen = [g for g, _ in ui._GRUPPEN]
     assert namen.index("Analyse") < namen.index("Mitschriften") < namen.index("Daten")
+
+
+def _reiter(t):
+    r = t[t.index('class="reiter"'):]
+    return r[:r.index("</nav>")]
+
+
+def test_kurse_immer_als_reiter():
+    _mit("c@x", titel="Kunde", rubrik="Kundentermine")
+    t = _get("/mitschriften").text
+    reiter = _reiter(t)
+    assert "?rubrik=Kurse" in reiter and '<span class="zahl">0</span>' in reiter
+    assert "Kunde" in t.split("</nav>", 1)[1]          # Vorgabe bleibt erster nicht leerer Reiter
+    k = _get("/mitschriften?rubrik=Kurse")
+    assert k.status_code == 200 and "Keine Mitschriften in dieser Rubrik." in k.text
+
+
+def test_kurse_klein_kein_doppelter_reiter():
+    _mit("c@x", rubrik="kurse")
+    reiter = _reiter(_get("/mitschriften").text)
+    assert reiter.casefold().count("?rubrik=kurse") == 1
+
+
+def test_ziehen_fuer_schreibende():
+    _mit("a@x", rubrik="Kundentermine")
+    r = _get("/mitschriften?rubrik=Kundentermine")
+    t = r.text
+    assert '<article class="karte" draggable="true" data-uid="a@x"' in t
+    assert 'id="dnd-verschieben"' in t and f'name="csrf" value="{ui.CSRF_TOKEN}"' in t
+    assert t.lower().count("<script") == 1
+    assert '<script src="/mitschriften/ziehen.js" defer></script>' in t
+    assert "script-src 'self'" in r.headers["content-security-policy"]
+    assert "<details" in t and 'name="neue_rubrik"' in t      # Formular bleibt, eingeklappt
+    s = _get("/mitschriften/ziehen.js")
+    assert s.status_code == 200 and s.headers["content-type"].startswith("text/javascript")
+    assert "dnd-verschieben" in s.text and "console.log" not in s.text
+
+
+def test_ziehen_nicht_fuer_lesen(scharf):
+    _mit("a@x", rubrik="Kundentermine")
+    t = _get("/mitschriften?rubrik=Kundentermine", _anmelden("lena", "lesen")).text
+    assert "Bericht öffnen" in t
+    assert 'class="karte" draggable' not in t and "<script" not in t.lower() and "dnd-verschieben" not in t

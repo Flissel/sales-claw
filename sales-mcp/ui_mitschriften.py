@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 
 from starlette.responses import RedirectResponse, Response
@@ -19,6 +20,7 @@ from starlette.routing import Route
 import kurs_mitschrift
 import mitschrift_bericht as mb
 import server
+import ui_kalender
 import ui_kurs
 from ui_termin import _e
 
@@ -28,6 +30,8 @@ MAX_JE_REITER = 200
 KURZ_MAX = 240
 # Der Bericht ist ein eigenes Dokument: Bilder nur als data:-URI, kein Skript.
 BERICHT_CSP = ui_kurs.DATEI_CSP
+# Karten per Ziehen auf einen Reiter verschieben (19.11.2026); ohne Skript bleibt das Formular.
+ZIEHEN_JS = Path(__file__).resolve().parent / "static" / "mitschriften" / "ziehen.js"
 
 
 def _json(wert) -> dict:
@@ -60,6 +64,13 @@ def _zahlen() -> dict[str, int]:
         "where m.auswertung_status = 'fertig' and m.rubrik is not null group by m.rubrik")}
 
 
+def _mit_kursen(zahlen: dict[str, int]) -> dict[str, int]:
+    """„Kurse“ steht immer als Reiter (Ablageziel), sobald es Mitschriften gibt."""
+    if zahlen and not any(kurs_mitschrift.ist_kurs(n) for n in zahlen):
+        return {**zahlen, kurs_mitschrift.RUBRIK_KURSE: 0}
+    return zahlen
+
+
 HANDBUECHER = "::handbuecher"      # Reiter-Schluessel; Rubriknamen enthalten nie ':'
 
 
@@ -67,7 +78,8 @@ def _leiste(aktiv: str) -> str:
     """Reiterleiste: Rubriken, dazu „Handbücher“ (sobald es Kurse oder Handbücher gibt)."""
     import ui_muster
     zahlen = _zahlen()
-    eintraege = [(n, n, zahlen[n]) for n in _reiter_sortiert(zahlen)]
+    mit_kursen = _mit_kursen(zahlen)
+    eintraege = [(n, n, mit_kursen[n]) for n in _reiter_sortiert(mit_kursen)]
     hb = ui_kurs.handbuch_zahl()
     if hb or any(kurs_mitschrift.ist_kurs(n) for n in zahlen):
         eintraege.append((HANDBUECHER, "Handbücher", hb))
@@ -103,19 +115,24 @@ def _karte(z: dict, rubriken: list[str], csrf: str | None) -> str:
         aktionen = '<span class="meta">Bericht wird erstellt …</span> '
     aktionen += f'<a href="/termine/{q}">Akte</a>'
     verschieben = ""
+    ziehen = griff = ""
     if csrf:
         optionen = "".join(
             f'<option value="{_e(r)}"{" selected" if r == z["rubrik"] else ""}>{_e(r)}</option>'
             for r in rubriken)
         verschieben = (
-            '<form method="post" action="/mitschriften/verschieben" class="verschieben">'
+            '<details class="verschieben"><summary>Verschieben …</summary>'
+            '<form method="post" action="/mitschriften/verschieben">'
             f'<input type="hidden" name="csrf" value="{csrf}">'
             f'<input type="hidden" name="uid" value="{_e(uid)}">'
             f'<label>Verschieben nach <select name="rubrik">{optionen}</select></label> '
             '<label>oder neue Rubrik <input type="text" name="neue_rubrik" maxlength="40"></label> '
-            '<button type="submit">Verschieben</button></form>')
+            '<button type="submit">Verschieben</button></form></details>')
+        ziehen = f' draggable="true" data-uid="{_e(uid)}"'
+        griff = ('<span class="griff" aria-hidden="true" '
+                 'title="Auf einen Reiter ziehen, um zu verschieben">⠿</span> ')
     kurs = ui_kurs.kurs_block(z, csrf) if kurs_mitschrift.ist_kurs(z["rubrik"]) else ""
-    return (f'<article class="karte"><h3>{_e(titel)}</h3>'
+    return (f'<article class="karte"{ziehen}><h3>{griff}{_e(titel)}</h3>'
             f'<p class="meta">{_e(datum)}{" · " + _e(wer) if wer else ""}</p>'
             + (f'<p>{_e(kurz)}</p>' if kurz else "")
             + f'<p>{aktionen}</p>{kurs}{verschieben}</article>')
@@ -128,7 +145,7 @@ def routen(ui) -> list:
 
     @ui._gesichert_seite
     async def seite(request):
-        zahlen = _zahlen()
+        zahlen = _mit_kursen(_zahlen())
         namen = _reiter_sortiert(zahlen)
         if not namen:
             rumpf = ('<p class="meta">Noch keine Mitschriften. Berichte entstehen, sobald '
@@ -136,13 +153,29 @@ def routen(ui) -> list:
             return _kopfzeilen(ui._seite("Mitschriften", rumpf))
         aktiv = str(request.query_params.get("rubrik") or "")
         if aktiv not in zahlen:
-            aktiv = namen[0]
+            aktiv = next((n for n in namen if zahlen[n] > 0), namen[0])
         reiter = _leiste(aktiv)
-        karten = "".join(_karte(z, namen, ui.CSRF_TOKEN if _schreiben() else None) for z in _eintraege(aktiv))
+        schreiben = _schreiben()
+        karten = "".join(_karte(z, namen, ui.CSRF_TOKEN if schreiben else None) for z in _eintraege(aktiv))
         rumpf = (reiter + (karten or '<p class="meta">Keine Mitschriften in dieser Rubrik.</p>')
                  + ('<p class="meta">Berichte sind intern und enthalten Kundendaten. '
                     'Als PDF: Bericht aufrufen und im Browser drucken.</p>'))
-        return _kopfzeilen(ui._seite("Mitschriften", rumpf))
+        if not schreiben:
+            return _kopfzeilen(ui._seite("Mitschriften", rumpf))
+        # Verstecktes Formular fuer das Ziehen (ziehen.js fuellt uid und rubrik).
+        rumpf += ('<form method="post" action="/mitschriften/verschieben" id="dnd-verschieben" hidden>'
+                  f'<input type="hidden" name="csrf" value="{_e(ui.CSRF_TOKEN)}">'
+                  '<input type="hidden" name="uid"><input type="hidden" name="rubrik"></form>'
+                  '<script src="/mitschriften/ziehen.js" defer></script>')
+        antwort = ui._seite("Mitschriften", rumpf)
+        antwort.headers["Content-Security-Policy"] = ui_kalender.csp_kalender(ui)
+        return _kopfzeilen(antwort)
+
+    @ui._gesichert_seite
+    async def skript(request):
+        return Response(ZIEHEN_JS.read_bytes(), media_type="text/javascript",
+                        headers={"cache-control": "no-cache",
+                                 "X-Content-Type-Options": "nosniff"})
 
     @ui._gesichert_seite
     async def bericht(request):
@@ -201,4 +234,5 @@ def routen(ui) -> list:
     return [Route("/mitschriften", seite, methods=["GET"]),
             Route("/mitschriften/bericht", bericht, methods=["GET"]),
             Route("/mitschriften/verschieben", verschieben, methods=["POST"]),
+            Route("/mitschriften/ziehen.js", skript, methods=["GET"]),
             *ui_kurs.routen(ui, _leiste)]
