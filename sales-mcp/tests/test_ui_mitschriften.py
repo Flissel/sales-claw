@@ -307,7 +307,8 @@ def test_ziehen_fuer_schreibende():
     _mit("a@x", rubrik="Kundentermine")
     r = _get("/mitschriften?rubrik=Kundentermine")
     t = r.text
-    assert '<article class="karte" draggable="true" data-uid="a@x"' in t
+    assert '<span class="griff" draggable="true" data-uid="a@x"' in t
+    assert '<article class="karte" draggable' not in t          # nur der Griff zieht (Text bleibt markierbar)
     assert 'id="dnd-verschieben"' in t and f'name="csrf" value="{ui.CSRF_TOKEN}"' in t
     assert t.lower().count("<script") == 1
     assert '<script src="/mitschriften/ziehen.js" defer></script>' in t
@@ -322,4 +323,15 @@ def test_ziehen_nicht_fuer_lesen(scharf):
     _mit("a@x", rubrik="Kundentermine")
     t = _get("/mitschriften?rubrik=Kundentermine", _anmelden("lena", "lesen")).text
     assert "Bericht öffnen" in t
-    assert 'class="karte" draggable' not in t and "<script" not in t.lower() and "dnd-verschieben" not in t
+    assert 'class="griff" draggable' not in t and "<script" not in t.lower() and "dnd-verschieben" not in t
+
+
+def test_kurs_karte_fragt_vor_dem_herausziehen():
+    """Herausziehen aus „Kurse“ loescht Kursmitschrift und PDF - nur dort fragt das Skript nach."""
+    _mit("a@x", rubrik="Kurse")
+    _mit("c@x", rubrik="Kundentermine")
+    assert 'data-uid="a@x" data-kurs="1"' in _get("/mitschriften?rubrik=Kurse").text
+    t = _get("/mitschriften?rubrik=Kundentermine").text
+    assert 'data-uid="c@x"' in t and "data-kurs" not in t
+    js = _get("/mitschriften/ziehen.js").text
+    assert "data-kurs" in js and "window.confirm(" in js

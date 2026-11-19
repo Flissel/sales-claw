@@ -2,22 +2,30 @@
 // Ohne Skript bleibt das eingeklappte Formular je Karte der Weg; dieses Skript
 // fuellt nur das versteckte Formular #dnd-verschieben und schickt es ab. Pruefung
 // (CSRF, Rolle, Rubrik) macht derselbe Server-Weg wie beim Formular.
+// Gezogen wird nur am Griff ⠿, damit der Text der Karte markierbar bleibt.
 (function () {
   "use strict";
   var formular = document.getElementById("dnd-verschieben");
   if (!formular) { return; }
   var gezogen = null;
+  var ausKurse = false;
 
-  document.querySelectorAll('article.karte[draggable="true"]').forEach(function (karte) {
-    karte.addEventListener("dragstart", function (ev) {
-      gezogen = karte.getAttribute("data-uid");
+  document.querySelectorAll('.griff[draggable="true"]').forEach(function (griff) {
+    var karte = griff.closest("article.karte");
+    griff.addEventListener("dragstart", function (ev) {
+      gezogen = griff.getAttribute("data-uid");
+      ausKurse = griff.getAttribute("data-kurs") === "1";
       ev.dataTransfer.effectAllowed = "move";
       ev.dataTransfer.setData("text/plain", gezogen || "");
-      karte.classList.add("wird-gezogen");
+      if (karte) {
+        ev.dataTransfer.setDragImage(karte, 16, 16);
+        karte.classList.add("wird-gezogen");
+      }
     });
-    karte.addEventListener("dragend", function () {
-      karte.classList.remove("wird-gezogen");
+    griff.addEventListener("dragend", function () {
+      if (karte) { karte.classList.remove("wird-gezogen"); }
       gezogen = null;
+      ausKurse = false;
     });
   });
 
@@ -44,6 +52,11 @@
       ev.preventDefault();
       a.classList.remove("ablage");
       if (gezogen === null) { return; }
+      // data-kurs: Herausziehen aus „Kurse“ loescht Kursmitschrift und PDF.
+      if (ausKurse && !window.confirm("Aus „Kurse“ nach „" + rubrik + "“ verschieben? "
+          + "Kursmitschrift und PDF werden dabei gelöscht und erst beim Zurückschieben neu erzeugt.")) {
+        return;
+      }
       formular.elements.uid.value = gezogen;
       formular.elements.rubrik.value = rubrik;
       formular.submit();

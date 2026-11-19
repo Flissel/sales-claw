@@ -1651,7 +1651,7 @@ nav.reiter.unter a { padding: 0 .6rem; font-size: .92rem; }
 .struktur-liste .wird-gezogen { opacity: .5; }
 .ablage { outline: 2px dashed var(--akzent); outline-offset: 2px; }
 /* Mitschriften per Ziehen auf einen Reiter verschieben (19.11.2026). */
-.karte[draggable="true"] .griff { cursor: grab; }
+.griff[draggable="true"] { cursor: grab; user-select: none; padding: 0 .25rem; }
 .karte.wird-gezogen { opacity: .5; }
 /* Einordnung: Bild und Abschrift unbekannter Absender (28.10.2026). */
 .eingang-bild { max-width: 14rem; max-height: 14rem; border-radius: 6px;

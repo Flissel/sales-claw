@@ -114,8 +114,7 @@ def _karte(z: dict, rubriken: list[str], csrf: str | None) -> str:
     else:
         aktionen = '<span class="meta">Bericht wird erstellt …</span> '
     aktionen += f'<a href="/termine/{q}">Akte</a>'
-    verschieben = ""
-    ziehen = griff = ""
+    verschieben = griff = ""
     if csrf:
         optionen = "".join(
             f'<option value="{_e(r)}"{" selected" if r == z["rubrik"] else ""}>{_e(r)}</option>'
@@ -128,11 +127,13 @@ def _karte(z: dict, rubriken: list[str], csrf: str | None) -> str:
             f'<label>Verschieben nach <select name="rubrik">{optionen}</select></label> '
             '<label>oder neue Rubrik <input type="text" name="neue_rubrik" maxlength="40"></label> '
             '<button type="submit">Verschieben</button></form></details>')
-        ziehen = f' draggable="true" data-uid="{_e(uid)}"'
-        griff = ('<span class="griff" aria-hidden="true" '
-                 'title="Auf einen Reiter ziehen, um zu verschieben">⠿</span> ')
+        # Nur der Griff zieht (Text der Karte bleibt markierbar). data-kurs: Herausziehen
+        # aus „Kurse“ loescht Kursmitschrift und PDF, das Skript fragt dann nach.
+        ist_kurs = ' data-kurs="1"' if kurs_mitschrift.ist_kurs(z["rubrik"]) else ""
+        griff = (f'<span class="griff" draggable="true" data-uid="{_e(uid)}"{ist_kurs} '
+                 'aria-hidden="true" title="Auf einen Reiter ziehen, um zu verschieben">⠿</span> ')
     kurs = ui_kurs.kurs_block(z, csrf) if kurs_mitschrift.ist_kurs(z["rubrik"]) else ""
-    return (f'<article class="karte"{ziehen}><h3>{griff}{_e(titel)}</h3>'
+    return (f'<article class="karte"><h3>{griff}{_e(titel)}</h3>'
             f'<p class="meta">{_e(datum)}{" · " + _e(wer) if wer else ""}</p>'
             + (f'<p>{_e(kurz)}</p>' if kurz else "")
             + f'<p>{aktionen}</p>{kurs}{verschieben}</article>')
