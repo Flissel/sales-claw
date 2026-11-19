@@ -4541,3 +4541,59 @@ Verträge der Logik: `sales-mcp/tests/test_warteliste_bestaetigung.py` (ohne Dat
 `test_warteliste_bestaetigung_mail.py` (fertige Mail, Verbotsliste).
 
 **Datenschutz.** Siehe `docs/06_DSGVO.md`, Abschnitt „Bestätigungsmails der Warteliste“.
+
+## Meeting-Mittelpunkt: Kursmitschrift und Kurs-Handbuch (seit 16.11.2026)
+
+Für Mitschriften der Rubrik „Kurse“ erzeugt der Taktgeber `sales-termine` eine Kursmitschrift (Schritt `kurs`,
+`termin_takt._kurs`, nach `ablage`) und – sobald Felix einen Lernenden gewählt hat – ein Handbuch je Lernendem, das mit
+jeder Sitzung wächst. **sales-claw versendet nichts und legt keine Entwürfe an**: Felix lädt die PDFs in der
+Oberfläche herunter und schickt sie selbst.
+
+**Voraussetzung.** Mitschriften-Ablage wie oben (der Schritt ruht, solange `MITSCHRIFTEN_ORDNER` fehlt oder nicht
+beschreibbar ist: Log `Kurs-Ablage bereit` bzw. `... - Kurse warten`). Dazu `AUGE_URL` in `sales-termine`, `sales-ui` und
+`sales-mcp` (`http://<LADEN_PRAEFIX>-auge:8790`, im Compose gesetzt).
+
+**PDF.** `kurs_pdf.pdf_aus_html` schickt HTML per `POST /pdf` an `sales-auge` (Chromium, A4, nur im Compose-Netz). Grenzen
+in `auge.py`: HTML höchstens 20 MB (`PDF_MAX_BYTES`), Wartezeit des HTTP-Threads 60 s, Rendern höchstens 30 s
+(`PDF_RENDER_TIMEOUT_MS`); der Aufrufer wartet höchstens 90 s. Fehlt `AUGE_URL` oder ist `sales-auge` nicht erreichbar,
+gibt es nur einen festen Fehlertext (kein Inhalt im Log).
+
+**Je Runde (Vorgabe 30 s)** höchstens **ein KI-Auftrag** (lokale KI, `OLLAMA_URL`, Zeitlimit 600 s,
+`KURS_KI_TIMEOUT_S`), dazu die KI-freien Teile (Ablegen, PDF-Ausgabe):
+
+1. Veraltetes entfernen (Rubrik gewechselt oder Stand der Auswertung neu: Kursmitschrift weg, Zähler zurück).
+2. Kursmitschrift ablegen (ohne KI) bzw. die älteste fällige Kursmitschrift erzeugen (ein KI-Auftrag).
+3. Sonst: Sitzung dem Handbuch zuordnen (ein KI-Auftrag) **oder** ein Kapitel fortschreiben (ein KI-Auftrag).
+4. Handbuch-HTML und -PDF ausgeben (ohne KI, höchstens eines je Runde).
+
+Die KI-Aufträge warten, wenn ein Termin mit Bot in 15 Minuten beginnt oder läuft und solange Ollama nicht erreichbar
+ist (die Arbeit bleibt fällig, nichts geht verloren).
+
+**Status `termin_mitschriften.kurs_status`.** `null` = wird erzeugt (Oberfläche: „wird erzeugt“), `fertig`, `fehler`.
+Je Sitzung höchstens **3 Versuche** (`MAX_VERSUCHE`), je **1 Stunde** Abstand (`NEUVERSUCH_NACH`); beim dritten Fehlschlag
+wird der Status `fehler`. Eine Sitzung mit `fehler` wird übersprungen und aus dem Handbuch genommen (das Handbuch läuft
+ohne sie weiter). Neu starten: eine neue Auswertung (neuer Stand) setzt Zähler und Status zurück.
+
+**Lernenden wählen.** `kurs_lead_id` setzt **nur Felix** in der Oberfläche (Reiter „Kurse“, Auswahl oder Kontaktsuche);
+vorgeschlagen werden die Teilnehmer ohne Organisator und die zuletzt Gewählten. Auch private Kontakte sind erlaubt. Ohne
+Lernenden entsteht nur die Kursmitschrift, kein Handbuch. Beim Wechsel geht die Sitzung zuerst aus dem Handbuch des
+alten Lernenden (Kapitel zurückgerollt); der Taktgeber arbeitet sie ins neue ein.
+
+**Dateien** (im Mitschriften-Ordner des Ladens):
+
+- Kursmitschrift im Rubrikordner: `JJJJ-MM-TT_HHMM_<titel-kurz>_<uid8>_kurs-intern.html` (Felix), `…_kurs.html`
+  (Lernende) und `…_kurs.pdf`.
+- Handbuch je Lernendem in `_handbuecher/handbuch-<lead8>.html` und `.pdf` (`_handbuecher` ist nie eine Rubrik).
+
+Der stündliche Abgleich (oben) kennt diese Dateien: Waisen älter als 10 Minuten (`SCHONFRIST_S` = 600) gehen weg.
+
+**Wenn etwas hakt**
+
+- Status bleibt „wird erzeugt“: `docker logs --since 1h sales-termine | grep -iE "Kurs"`; Ollama erreichbar? Termin in
+  15 Minuten? Nach 3 Fehlversuchen steht `fehler`; eine neue Auswertung (`scripts/neu_auswerten.py`) startet neu.
+- Kein PDF / „PDF-Erzeugung nicht erreichbar“: läuft `sales-auge`? Ist `AUGE_URL` im Container gesetzt
+  (`docker exec sales-termine printenv AUGE_URL`)?
+- Handbuch fehlt: Lernende/r gewählt? Sitzung `fertig`? Im Reiter „Handbücher“ „Handbuch neu ausgeben“.
+
+**Löschen:** siehe `docs/06_DSGVO.md`, Abschnitt „Kursmitschrift und Kurs-Handbuch“. Tests: `tests/test_kurs_*.py`,
+`tests/test_termin_takt_kurs.py`, `tests/test_ui_kurs.py`, `tests/test_auge_pdf.py` (auf der VM mit `vm_test.sh`).
