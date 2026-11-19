@@ -414,14 +414,58 @@ begin
     -- Ruling R16: Zeitpunkt des letzten Beschreib-Versuchs; der naechste wartet
     -- 30 s (nach Versuch 1) bzw. 5 min (nach Versuch 2), sales-mcp/bild_arbeit.py.
     execute format('alter table %I.termin_bilder add column if not exists versucht_am timestamptz null', s);
+    -- Kursmitschrift und Kurs-Handbuch (16.11.2026): je Kurs-Mitschrift eine Auswertung
+    -- (kurs_*), je Lernender ein Handbuch aus Kapiteln, Fassungen und Quellen.
+    -- kurs_pfad/kurs_pfad_lernend/kurs_pdf sind relativ zum Ablage-Ordner.
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_json jsonb', s);
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_stand text', s);
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_status text', s);
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_am timestamptz', s);
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_versuche integer not null default 0', s);
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_pfad text', s);
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_pfad_lernend text', s);
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_pdf text', s);
+    execute format('alter table %I.termin_mitschriften add column if not exists kurs_lead_id uuid references %I.leads(id) on delete set null', s, s);
+    execute format($ddl$
+      create table if not exists %I.kurs_handbuch_kapitel (
+        id uuid primary key default gen_random_uuid(),
+        lead_id uuid not null references %I.leads(id) on delete cascade,
+        titel text not null,
+        reihenfolge integer not null,
+        aktuelle_fassung uuid,
+        erstellt_am timestamptz not null default now())$ddl$, s, s);
+    execute format($ddl$
+      create table if not exists %I.kurs_handbuch_fassung (
+        id uuid primary key default gen_random_uuid(),
+        kapitel_id uuid not null references %I.kurs_handbuch_kapitel(id) on delete cascade,
+        text_md text not null,
+        bild_ids text[] not null default '{}',
+        quellen text[] not null,
+        erstellt_am timestamptz not null default now())$ddl$, s, s);
+    execute format($ddl$
+      create table if not exists %I.kurs_handbuch_quelle (
+        lead_id uuid not null references %I.leads(id) on delete cascade,
+        uid text not null,
+        beginn timestamptz not null,
+        stand text not null,
+        zuordnung jsonb not null,
+        eingearbeitet_am timestamptz,
+        primary key (lead_id, uid))$ddl$, s, s);
+    execute format($ddl$
+      create table if not exists %I.kurs_handbuch (
+        lead_id uuid primary key references %I.leads(id) on delete cascade,
+        pfad text,
+        pdf text,
+        stand_am timestamptz,
+        fassungen_stand timestamptz)$ddl$, s, s);
     -- Rechte: sales_test bekommt select/insert/update/delete/truncate ueber den
     -- Sammel-Grant nach der Schleife (er laeuft nach dieser Zeile).
     if s = 'sales' then
-      execute 'grant select, insert, update, delete on sales.termin_akten, sales.termin_teilnehmer, sales.termin_mitschriften, sales.termin_vorschlaege, sales.termin_bilder to sales_app';
+      execute 'grant select, insert, update, delete on sales.termin_akten, sales.termin_teilnehmer, sales.termin_mitschriften, sales.termin_vorschlaege, sales.termin_bilder, sales.kurs_handbuch_kapitel, sales.kurs_handbuch_fassung, sales.kurs_handbuch_quelle, sales.kurs_handbuch to sales_app';
     elsif s <> 'sales_test' and exists (
         select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
-      execute format('grant select, insert, update, delete on %I.termin_akten, %I.termin_teilnehmer, %I.termin_mitschriften, %I.termin_vorschlaege, %I.termin_bilder to %I',
-                     s, s, s, s, s, 'sales_app_' || substr(s, 7));
+      execute format('grant select, insert, update, delete on %I.termin_akten, %I.termin_teilnehmer, %I.termin_mitschriften, %I.termin_vorschlaege, %I.termin_bilder, %I.kurs_handbuch_kapitel, %I.kurs_handbuch_fassung, %I.kurs_handbuch_quelle, %I.kurs_handbuch to %I',
+                     s, s, s, s, s, s, s, s, s, 'sales_app_' || substr(s, 7));
     end if;
     -- Postfach aufraeumen + durchsuchen (28.10.2026, Sales-UI-Rundgang):
     -- je gesehene Mail eine Zeile. art: 'spam' (Betrug, sofort verschoben),

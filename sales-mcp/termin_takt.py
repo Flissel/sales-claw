@@ -52,6 +52,8 @@ import auswertung
 import bildschirm
 import betreiber_hinweis
 import briefing
+import kurs_handbuch
+import kurs_mitschrift
 import mitschrift_bereinigen
 import mitschrift_bericht
 import mitschrift_einordnung
@@ -549,6 +551,17 @@ def _termin_steht_an(jetzt: datetime) -> bool:
         (jetzt + AUSWERTUNG_PAUSE_VOR, jetzt)))
 
 
+def _uhr() -> datetime:
+    """Aktuelle Zeit (in Tests ersetzbar). Spaete Schritte einer Runde laufen u. U. Minuten
+    nach deren Beginn (`jetzt`), weil Briefing und Auswertung davor KI-Auftraege hatten."""
+    return datetime.now(timezone.utc)
+
+
+def _termin_naht(jetzt: datetime) -> bool:
+    """Wie `_termin_steht_an`, zusaetzlich mit frischer Uhrzeit (Final-Fix I2)."""
+    return _termin_steht_an(jetzt) or _termin_steht_an(_uhr())
+
+
 def _auswerten(jetzt: datetime) -> int:
     if _termin_steht_an(jetzt):
         return 0
@@ -666,21 +679,333 @@ def _ablage(jetzt: datetime) -> int:
             + _ablage_abgleich(jetzt))
 
 
+# ---------- 8. Kursmitschrift und Kurs-Handbuch ----------
+
+# (lead_id, uid) | ("ablage", uid) | ("ausgabe", lead_id) -> Zeit des letzten gescheiterten
+# Versuchs (In-Memory, wie _bericht_pause): ein kaputter Auftrag haelt die anderen nicht auf.
+_kurs_pause: dict[tuple[str, str], datetime] = {}
+
+_KURS_RUBRIK_SQL = "lower(coalesce(m.rubrik, '')) = lower(%s)"
+_KURS_DATEN_SQL = ("(m.kurs_json is not null or m.kurs_pfad is not null "
+                   "or m.kurs_pfad_lernend is not null or m.kurs_pdf is not null)")
+
+
+def _kurs_pause_pruefen(jetzt: datetime) -> None:
+    for schluessel, wann in list(_kurs_pause.items()):
+        if not timedelta(0) <= jetzt - wann < kurs_mitschrift.NEUVERSUCH_NACH:
+            del _kurs_pause[schluessel]
+
+
+def _kurs_veraltet() -> int:
+    """Ohne KI: Kursdaten, deren Stand nicht mehr passt oder deren Rubrik nicht mehr "Kurse"
+    ist, entfernen (die Sitzung laeuft dann wie neu, mit frischen Versuchen). Unberuehrt
+    bleibt, was nie verarbeitet wurde."""
+    kandidaten = server._q(
+        f"select m.uid from termin_mitschriften m where ({_KURS_DATEN_SQL} "
+        f"or (m.kurs_status = 'fehler' and m.kurs_stand is not null)) "
+        f"and (not ({_KURS_RUBRIK_SQL}) or m.kurs_stand is distinct from "
+        f"({kurs_mitschrift.KURS_STAND_SQL})) order by m.geholt_am, m.id",
+        (kurs_mitschrift.RUBRIK_KURSE,))
+    getan = 0
+    for z in kandidaten:
+        uid = z["uid"]
+
+        def entfernen(uid=uid):
+            kurs_mitschrift.entfernen(uid)
+            server._q("update termin_mitschriften set kurs_versuche = 0, kurs_am = null "
+                      "where uid = %s returning id", (uid,))
+
+        getan += int(_je_akte("Kurs veraltet", uid, entfernen))
+    return getan
+
+
+def _kurs_fehlversuch(lead_id: str, uid: str, jetzt: datetime, was: str, err: Exception) -> None:
+    """Zuordnung/Fortschreiben gescheitert: Pause fuer (lead, uid), Versuch zaehlen, nach
+    MAX_VERSUCHE gilt die Sitzung als 'fehler' und wird uebersprungen."""
+    _kurs_pause[(lead_id, uid)] = jetzt
+    z = server._q(
+        "update termin_mitschriften set kurs_versuche = kurs_versuche + 1, kurs_am = %s, "
+        "kurs_status = case when kurs_versuche + 1 >= %s then 'fehler' else kurs_status end "
+        "where uid = %s returning kurs_status", (jetzt, kurs_mitschrift.MAX_VERSUCHE, uid))
+    fehler = bool(z) and z[0]["kurs_status"] == "fehler"
+    LOG.warning("Kurs-Handbuch %s uid=%s lead=%s fehlgeschlagen (%s)%s", was, _h(uid),
+                kurs_handbuch._lead8(lead_id), type(err).__name__,
+                " - Sitzung auf fehler" if fehler else "")
+    if fehler:
+        # Teilinhalt zurueckrollen: das Handbuch geht ohne diese Sitzung weiter
+        try:
+            kurs_handbuch.quelle_entfernen(lead_id, uid)
+        except kurs_handbuch.Veraltet:
+            pass
+        except Exception as e2:  # noqa: BLE001 - nur der Typname ins Log
+            LOG.warning("Kurs-Handbuch Rueckbau uid=%s lead=%s fehlgeschlagen (%s)", _h(uid),
+                        kurs_handbuch._lead8(lead_id), type(e2).__name__)
+
+
+def _kurs_erfolg(uid: str) -> None:
+    """Ein Handbuch-Auftrag gelang: die naechsten bekommen wieder volle Versuche."""
+    server._q("update termin_mitschriften set kurs_versuche = 0, kurs_am = null "
+              "where uid = %s returning id", (uid,))
+
+
+def _kurs_wartet(lead_id: str, uid: str, jetzt: datetime) -> bool:
+    """Pause im Speicher oder (nach Neustart) gespeicherter Fehlversuch noch nicht lange her."""
+    if (lead_id, uid) in _kurs_pause:
+        return True
+    return bool(server._q(
+        "select 1 from termin_mitschriften where uid = %s and kurs_versuche > 0 "
+        "and kurs_am > %s", (uid, jetzt - kurs_mitschrift.NEUVERSUCH_NACH)))
+
+
+def _gesperrt_pruefer():
+    """Fuer einen Schritt `kurs`: hat der Lernende einen Loeschantrag oder eine Sperre
+    (`kurs_mitschrift.lernender_gesperrt`)? Dann weder zuordnen noch fortschreiben noch
+    ausgeben (Final-Fix I3, Verteidigung in der Tiefe: die Wahl selbst lehnt die Oberflaeche
+    schon ab). Ergebnis je Lernendem gemerkt; scheitert die Pruefung, gilt er als gesperrt
+    (lieber warten als einen Kontakt weiterverarbeiten, der um Loeschung bat)."""
+    gemerkt: dict[str, bool] = {}
+
+    def gesperrt(lead_id: str) -> bool:
+        if lead_id not in gemerkt:
+            try:
+                gemerkt[lead_id] = kurs_mitschrift.lernender_gesperrt(lead_id)
+            except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
+                LOG.warning("Kurs-Handbuch Sperrpruefung lead=%s fehlgeschlagen (%s)",
+                            kurs_handbuch._lead8(lead_id), type(e).__name__)
+                gemerkt[lead_id] = True
+            if gemerkt[lead_id] and lead_id not in _kurs_gesperrt_gemeldet:
+                _kurs_gesperrt_gemeldet.add(lead_id)
+                LOG.info("Kurs-Handbuch lead=%s ruht (Loeschantrag oder Sperre)",
+                         kurs_handbuch._lead8(lead_id))
+        return gemerkt[lead_id]
+
+    return gesperrt
+
+
+# Lernende, deren Ruhen (Loeschantrag/Sperre) schon geloggt wurde: einmal je Prozess.
+_kurs_gesperrt_gemeldet: set[str] = set()
+
+
+def _kurs_ablegen(uid: str, jetzt: datetime) -> bool:
+    ok = _je_akte("Kursmitschrift ablegen", uid, lambda: kurs_mitschrift.ablegen(uid))
+    if not ok:
+        _kurs_pause[("ablage", uid)] = jetzt
+    return ok
+
+
+def _kurs_mitschrift(jetzt: datetime, ki_frei) -> tuple[int, bool]:
+    """(Anzahl, KI benutzt). Erst ein Ablegen ohne KI (kurs_json da, noch nicht abgelegt),
+    dann - mit KI-Budget - die aelteste faellige Kursmitschrift. Ablegen druckt ein PDF in
+    sales-auge (Chromium im Prozess, der live den Bildschirm aufnimmt): nicht, wenn ein
+    Termin mit Bot ansteht oder laeuft (frische Uhrzeit, Final-Fix Minor 8); es bleibt
+    faellig."""
+    getan = 0
+    gesperrt = [u for (a, u) in _kurs_pause if a == "ablage"]
+    rest = server._q(
+        f"select m.uid from termin_mitschriften m where {_KURS_RUBRIK_SQL} "
+        "and m.auswertung_status = 'fertig' and m.bericht_pfad is not null "
+        "and m.kurs_json is not null and m.kurs_status is null "
+        "and not (m.uid = any(%s::text[])) order by m.geholt_am, m.id limit 1",
+        (kurs_mitschrift.RUBRIK_KURSE, gesperrt))
+    if rest and not _termin_naht(jetzt):
+        getan += int(_kurs_ablegen(rest[0]["uid"], jetzt))
+    faellig = server._q(
+        f"select m.uid from termin_mitschriften m where {_KURS_RUBRIK_SQL} "
+        "and m.auswertung_status = 'fertig' and m.bericht_pfad is not null "
+        "and m.kurs_json is null and coalesce(m.kurs_status, '') <> 'fehler' "
+        "and (m.kurs_am is null or m.kurs_am <= %s) "
+        "order by m.geholt_am, m.id limit 1",
+        (kurs_mitschrift.RUBRIK_KURSE, jetzt - kurs_mitschrift.NEUVERSUCH_NACH))
+    if not faellig or not ki_frei():
+        return getan, False
+    uid = faellig[0]["uid"]
+    if not _je_akte("Kursmitschrift", uid, lambda: kurs_mitschrift.erzeugen(uid, jetzt)):
+        return getan, True               # erzeugen zaehlt den Versuch selbst
+    getan += 1
+    if not _termin_naht(jetzt):              # der KI-Auftrag kann Minuten gedauert haben
+        _kurs_ablegen(uid, jetzt)
+    return getan, True
+
+
+def _kurs_zuordnen(jetzt: datetime, ki_frei, gesperrt=None) -> int:
+    """Hoechstens eine Zuordnung: aelteste Sitzung (nach Termin-Beginn) mit Lernendem und
+    ohne Quelle im Handbuch. Veraltet = Stand hat sich geaendert: liegen lassen.
+
+    Final-Fix I1: Hat der Lernende noch eine zugeordnete, nicht eingearbeitete Quelle, wartet
+    seine naechste Zuordnung, bis `_kurs_fortschreiben` sie eingearbeitet hat (das laeuft in
+    jeder Runde ohne Zuordnung). Sonst saehe die KI die Kapitel der vorigen Sitzung noch nicht
+    (nur "neu:<n>"-Eintraege) und legte bei gleichem Thema parallele Kapitel an. Andere
+    Lernende werden weiter zugeordnet. Quellen von Sitzungen auf 'fehler' halten nicht auf."""
+    gesperrt = gesperrt or _gesperrt_pruefer()
+    kandidaten = server._q(
+        f"select m.uid, m.kurs_lead_id, a.beginn from termin_mitschriften m "
+        "join termin_akten a on a.uid = m.uid "
+        f"where {_KURS_RUBRIK_SQL} and m.kurs_status = 'fertig' and m.kurs_lead_id is not null "
+        "and not exists (select 1 from kurs_handbuch_quelle q where q.lead_id = m.kurs_lead_id "
+        "and q.uid = m.uid) order by a.beginn, m.id", (kurs_mitschrift.RUBRIK_KURSE,))
+    if not kandidaten:
+        return 0
+    # Lernende mit wartender aelterer Sitzung oder offener Quelle
+    wartend: set[str] = {str(z["lead_id"]) for z in server._q(
+        "select distinct q.lead_id from kurs_handbuch_quelle q "
+        "join termin_mitschriften m on m.uid = q.uid "
+        "where q.eingearbeitet_am is null and coalesce(m.kurs_status, '') <> 'fehler'")}
+    for z in kandidaten:
+        uid, lead_id = z["uid"], str(z["kurs_lead_id"])
+        if lead_id in wartend:
+            continue
+        if gesperrt(lead_id):
+            wartend.add(lead_id)
+            continue
+        if _kurs_wartet(lead_id, uid, jetzt):
+            wartend.add(lead_id)            # keine juengere vorziehen (Rueckrollen)
+            continue
+        if not ki_frei():
+            return 0
+        try:
+            kurs_handbuch.einfuegen_vorbereiten(lead_id, uid, z["beginn"])
+            kurs_handbuch.zuordnen(lead_id, uid)
+            _kurs_erfolg(uid)
+        except kurs_handbuch.Veraltet:
+            LOG.info("Kurs-Handbuch Zuordnung uid=%s lead=%s uebersprungen (Stand geaendert)",
+                     _h(uid), kurs_handbuch._lead8(lead_id))
+        except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
+            _kurs_fehlversuch(lead_id, uid, jetzt, "Zuordnung", e)
+        return 1
+    return 0
+
+
+def _kurs_fortschreiben(jetzt: datetime, ki_frei, gesperrt=None) -> int:
+    """Hoechstens ein Fortschreiben: je Lernendem der aelteste offene Auftrag, der aelteste
+    Quelle zuerst ueber alle Lernenden. Nicht fuer Lernende mit Loeschantrag/Sperre."""
+    gesperrt = gesperrt or _gesperrt_pruefer()
+    quellen = server._q(
+        "select q.lead_id, q.uid from kurs_handbuch_quelle q "
+        "where q.eingearbeitet_am is null order by q.beginn, q.uid")
+    gesehen: set[str] = set()
+    for q in quellen:
+        lead_id = str(q["lead_id"])
+        if lead_id in gesehen:
+            continue
+        gesehen.add(lead_id)
+        if gesperrt(lead_id):
+            continue
+        try:
+            auftraege = kurs_handbuch.offene_auftraege(lead_id)
+        except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
+            LOG.warning("Kurs-Handbuch Auftraege lead=%s fehlgeschlagen (%s)",
+                        kurs_handbuch._lead8(lead_id), type(e).__name__)
+            continue
+        for uid, ziel in auftraege:
+            if _kurs_wartet(lead_id, uid, jetzt):
+                break                       # Reihenfolge der Sitzungen wahren
+            if server._q("select 1 from termin_mitschriften where uid = %s "
+                         "and kurs_status = 'fehler'", (uid,)):
+                continue
+            if not ki_frei():
+                return 0
+            try:
+                kurs_handbuch.fortschreiben(lead_id, uid, ziel)
+                _kurs_erfolg(uid)
+            except kurs_handbuch.Veraltet:
+                LOG.info("Kurs-Handbuch Fortschreiben uid=%s lead=%s uebersprungen "
+                         "(Stand geaendert)", _h(uid), kurs_handbuch._lead8(lead_id))
+            except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
+                _kurs_fehlversuch(lead_id, uid, jetzt, "Fortschreiben", e)
+            return 1
+    return 0
+
+
+def _kurs_ausgabe(jetzt: datetime, gesperrt=None) -> int:
+    """Ohne KI: hoechstens eine Ausgabe je Runde (HTML und PDF des Handbuchs). Nicht fuer
+    Lernende mit Loeschantrag/Sperre; nicht, wenn ein Termin mit Bot ansteht oder laeuft
+    (PDF in sales-auge, frische Uhrzeit) - die Ausgabe bleibt dann faellig."""
+    gesperrt = gesperrt or _gesperrt_pruefer()
+    lernende = server._q(
+        "select lead_id from kurs_handbuch union select lead_id from kurs_handbuch_kapitel "
+        "union select lead_id from kurs_handbuch_quelle order by lead_id")
+    for z in lernende:
+        lead_id = str(z["lead_id"])
+        if ("ausgabe", lead_id) in _kurs_pause or gesperrt(lead_id):
+            continue
+        try:
+            if not kurs_handbuch.ausgabe_faellig(lead_id):
+                continue
+        except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
+            _kurs_pause[("ausgabe", lead_id)] = jetzt
+            LOG.warning("Kurs-Handbuch Ausgabe lead=%s fehlgeschlagen (%s)",
+                        kurs_handbuch._lead8(lead_id), type(e).__name__)
+            continue
+        if _termin_naht(jetzt):
+            return 0
+        try:
+            kurs_handbuch.ausgeben(lead_id)
+        except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
+            _kurs_pause[("ausgabe", lead_id)] = jetzt
+            LOG.warning("Kurs-Handbuch Ausgabe lead=%s fehlgeschlagen (%s)",
+                        kurs_handbuch._lead8(lead_id), type(e).__name__)
+            continue
+        return 1
+    return 0
+
+
+def _kurs(jetzt: datetime) -> int:
+    ok = mitschrift_bericht._beschreibbar(mitschrift_bericht.ordner())
+    _wechsel("kurs_ablage", ok, "Kurs-Ablage bereit",
+             "Mitschriften-Ablage fehlt oder ist nicht beschreibbar - Kurse warten")
+    if not ok:
+        return 0
+    _kurs_pause_pruefen(jetzt)
+    getan = _kurs_veraltet()
+    erlaubt: list[bool] = []
+    gesperrt = _gesperrt_pruefer()
+
+    def ki_frei() -> bool:                  # erst gefragt, wenn es einen Auftrag gibt
+        # Final-Fix I2: nicht, wenn ein frueherer Schritt dieser Runde die KI schon benutzt
+        # hat, und die Termin-Sperre mit frischer Uhrzeit (die Runde kann Minuten alt sein)
+        if not erlaubt:
+            erlaubt.append(not _ki_in_runde_benutzt() and not _termin_naht(jetzt)
+                           and _ollama_da())
+        return erlaubt[0]
+
+    n, ki_benutzt = _kurs_mitschrift(jetzt, ki_frei)
+    getan += n
+    if not ki_benutzt:                      # hoechstens ein KI-Auftrag je Runde
+        getan += (_kurs_zuordnen(jetzt, ki_frei, gesperrt)
+                  or _kurs_fortschreiben(jetzt, ki_frei, gesperrt))
+    return getan + _kurs_ausgabe(jetzt, gesperrt)
+
+
 # ---------- Runde und Schleife ----------
 
 SCHRITTE = (("abgleich", _abgleichen), ("briefing", _briefing), ("bot", _bot),
             ("verfolgen", _verfolgen), ("nachloeschen", _nachloeschen),
-            ("auswerten", _auswerten), ("ablage", _ablage))
+            ("auswerten", _auswerten), ("ablage", _ablage), ("kurs", _kurs))
+
+
+# Stand von `ollama.auftraege()` zu Beginn der laufenden Runde (None ausserhalb einer Runde):
+# der Schritt `kurs` startet keinen eigenen KI-Auftrag, wenn ein frueherer Schritt die KI in
+# dieser Runde schon benutzt hat (Final-Fix I2).
+_KI_ZU_RUNDENBEGINN: int | None = None
+
+
+def _ki_in_runde_benutzt() -> bool:
+    return _KI_ZU_RUNDENBEGINN is not None and ollama.auftraege() != _KI_ZU_RUNDENBEGINN
 
 
 def runde(jetzt: datetime) -> dict:
+    global _KI_ZU_RUNDENBEGINN
     ergebnis: dict = {}
-    for name, schritt in SCHRITTE:
-        try:
-            ergebnis[name] = schritt(jetzt)
-        except Exception as e:  # noqa: BLE001 - Rest der Runde laeuft weiter
-            LOG.warning("Schritt %s fehlgeschlagen (%s)", name, type(e).__name__)
-            ergebnis[name] = "fehler"
+    _KI_ZU_RUNDENBEGINN = ollama.auftraege()
+    try:
+        for name, schritt in SCHRITTE:
+            try:
+                ergebnis[name] = schritt(jetzt)
+            except Exception as e:  # noqa: BLE001 - Rest der Runde laeuft weiter
+                LOG.warning("Schritt %s fehlgeschlagen (%s)", name, type(e).__name__)
+                ergebnis[name] = "fehler"
+    finally:
+        _KI_ZU_RUNDENBEGINN = None
     zaehler = {k: v for k, v in ergebnis.items()
                if k != "abgleich" and isinstance(v, int) and v}
     if zaehler:

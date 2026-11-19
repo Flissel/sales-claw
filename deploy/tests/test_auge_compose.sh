@@ -78,6 +78,9 @@ block sales-ui | grep -qE '^      - AUGE_URL=http://\$\{LADEN_PRAEFIX:-sales\}-a
   || fehler "sales-ui: AUGE_URL fehlt"
 block sales-mcp | grep -qE '^      AUGE_URL:[[:space:]]*http://\$\{LADEN_PRAEFIX:-sales\}-auge:8790[[:space:]]*$' \
   || fehler "sales-mcp: AUGE_URL fehlt"
+# sales-termine (Kursmitschrift/Handbuch) laesst PDFs ueber sales-auge drucken.
+block sales-termine | grep -qE '^      AUGE_URL:[[:space:]]*http://\$\{LADEN_PRAEFIX:-sales\}-auge:8790[[:space:]]*$' \
+  || fehler "sales-termine: AUGE_URL fehlt"
 # Der Taktgeber (Mitschrift-Bereinigung, Neu-Auswertung) kennt den Betreiber;
 # leer = Vorgabe im Code.
 block sales-termine | grep -qE '^      BETREIBER_NAME:[[:space:]]*\$\{BETREIBER_NAME:-\}[[:space:]]*$' \
@@ -165,7 +168,7 @@ assert set(e) == erlaubt, sorted(set(e) ^ erlaubt)
 for k in e:
     for muster in ("PASSWORT", "PASSWORD", "TOKEN", "SECRET", "API_KEY", "SMTP_", "SCHLUESSEL"):
         assert muster not in k, k
-for d in ("sales-ui", "sales-mcp"):
+for d in ("sales-ui", "sales-mcp", "sales-termine"):
     assert c[d]["environment"]["AUGE_URL"] == "http://sales-auge:8790", d
 ' || fehler "gerenderte Compose-Konfiguration passt nicht"
       break

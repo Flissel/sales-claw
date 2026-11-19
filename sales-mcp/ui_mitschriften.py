@@ -16,8 +16,10 @@ from urllib.parse import quote
 from starlette.responses import RedirectResponse, Response
 from starlette.routing import Route
 
+import kurs_mitschrift
 import mitschrift_bericht as mb
 import server
+import ui_kurs
 from ui_termin import _e
 
 log = logging.getLogger("ui_mitschriften")
@@ -25,8 +27,7 @@ log = logging.getLogger("ui_mitschriften")
 MAX_JE_REITER = 200
 KURZ_MAX = 240
 # Der Bericht ist ein eigenes Dokument: Bilder nur als data:-URI, kein Skript.
-BERICHT_CSP = ("default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
-               "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+BERICHT_CSP = ui_kurs.DATEI_CSP
 
 
 def _json(wert) -> dict:
@@ -59,9 +60,26 @@ def _zahlen() -> dict[str, int]:
         "where m.auswertung_status = 'fertig' and m.rubrik is not null group by m.rubrik")}
 
 
+HANDBUECHER = "::handbuecher"      # Reiter-Schluessel; Rubriknamen enthalten nie ':'
+
+
+def _leiste(aktiv: str) -> str:
+    """Reiterleiste: Rubriken, dazu „Handbücher“ (sobald es Kurse oder Handbücher gibt)."""
+    import ui_muster
+    zahlen = _zahlen()
+    eintraege = [(n, n, zahlen[n]) for n in _reiter_sortiert(zahlen)]
+    hb = ui_kurs.handbuch_zahl()
+    if hb or any(kurs_mitschrift.ist_kurs(n) for n in zahlen):
+        eintraege.append((HANDBUECHER, "Handbücher", hb))
+    return ui_muster.reiter(
+        eintraege, aktiv, lambda k: "/mitschriften/handbuecher" if k == HANDBUECHER else _url(k))
+
+
 def _eintraege(rubrik: str) -> list[dict]:
     return server._q(
-        "select m.uid, m.rubrik, m.bericht_pfad, m.auswertung_json, a.titel, a.thema, a.beginn "
+        "select m.uid, m.rubrik, m.bericht_pfad, m.auswertung_json, a.titel, a.thema, a.beginn, "
+        "m.kurs_status, m.kurs_pfad, m.kurs_pfad_lernend, m.kurs_pdf, m.kurs_lead_id, "
+        "(select l.name from leads l where l.id = m.kurs_lead_id) as kurs_lead_name "
         "from termin_mitschriften m join termin_akten a on a.uid = m.uid "
         "where m.auswertung_status = 'fertig' and m.rubrik = %s "
         "order by a.beginn desc nulls last, m.id desc limit %s", (rubrik, MAX_JE_REITER))
@@ -96,10 +114,11 @@ def _karte(z: dict, rubriken: list[str], csrf: str | None) -> str:
             f'<label>Verschieben nach <select name="rubrik">{optionen}</select></label> '
             '<label>oder neue Rubrik <input type="text" name="neue_rubrik" maxlength="40"></label> '
             '<button type="submit">Verschieben</button></form>')
+    kurs = ui_kurs.kurs_block(z, csrf) if kurs_mitschrift.ist_kurs(z["rubrik"]) else ""
     return (f'<article class="karte"><h3>{_e(titel)}</h3>'
             f'<p class="meta">{_e(datum)}{" · " + _e(wer) if wer else ""}</p>'
             + (f'<p>{_e(kurz)}</p>' if kurz else "")
-            + f'<p>{aktionen}</p>{verschieben}</article>')
+            + f'<p>{aktionen}</p>{kurs}{verschieben}</article>')
 
 
 def routen(ui) -> list:
@@ -109,7 +128,6 @@ def routen(ui) -> list:
 
     @ui._gesichert_seite
     async def seite(request):
-        import ui_muster
         zahlen = _zahlen()
         namen = _reiter_sortiert(zahlen)
         if not namen:
@@ -119,7 +137,7 @@ def routen(ui) -> list:
         aktiv = str(request.query_params.get("rubrik") or "")
         if aktiv not in zahlen:
             aktiv = namen[0]
-        reiter = ui_muster.reiter([(n, n, zahlen[n]) for n in namen], aktiv, _url)
+        reiter = _leiste(aktiv)
         karten = "".join(_karte(z, namen, ui.CSRF_TOKEN if _schreiben() else None) for z in _eintraege(aktiv))
         rumpf = (reiter + (karten or '<p class="meta">Keine Mitschriften in dieser Rubrik.</p>')
                  + ('<p class="meta">Berichte sind intern und enthalten Kundendaten. '
@@ -182,4 +200,5 @@ def routen(ui) -> list:
 
     return [Route("/mitschriften", seite, methods=["GET"]),
             Route("/mitschriften/bericht", bericht, methods=["GET"]),
-            Route("/mitschriften/verschieben", verschieben, methods=["POST"])]
+            Route("/mitschriften/verschieben", verschieben, methods=["POST"]),
+            *ui_kurs.routen(ui, _leiste)]

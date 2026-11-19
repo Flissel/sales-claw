@@ -812,6 +812,9 @@ services:
     environment:
       <<: *sales_mcp_umgebung
       TERMIN_TAKT_S: ${TERMIN_TAKT_S:-30}
+      # Kursmitschrift/Handbuch (19.11.2026): PDF-Druck ueber den Beobachter
+      # (POST /pdf, nur Compose-Netz).
+      AUGE_URL: http://${LADEN_PRAEFIX:-sales}-auge:8790
       VEXA_URL: ${VEXA_URL:-http://vexa-lite:8056}
       VEXA_API_KEY: ${VEXA_API_KEY:-}
       VEXA_TIMEOUT_S: ${VEXA_TIMEOUT_S:-20}

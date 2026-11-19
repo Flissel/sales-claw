@@ -389,6 +389,46 @@ Der Laden verschickt für die Website die Bestätigungsmail des Double-Opt-in
 - **Empfänger der Daten:** der Mailanbieter des Ladens (`SMTP_HOST`), wie bei
   jeder anderen ausgehenden Mail.
 
+## Kursmitschrift und Kurs-Handbuch (seit 16.11.2026)
+
+Checkliste für Kursmitschrift und Handbuch (Runbook: Abschnitt Kursmitschrift und Kurs-Handbuch):
+
+- [ ] **Was gespeichert wird:** je Mitschrift der Rubrik „Kurse“ eine Kursmitschrift (Datenbank: `kurs_json`, Pfade,
+      Status; Dateien `…_kurs-intern.html`, `…_kurs.html`, `…_kurs.pdf` im Rubrikordner) und je Lernendem ein Handbuch
+      (Kapitel, Fassungen, Quellen; Dateien `_handbuecher/handbuch-<lead8>.html|.pdf`).
+- [ ] **Gesprochene Inhalte ohne Maskierung (Felix-Entscheid A):** Kursmitschrift und Handbuch geben das Gesprochene
+      unmaskiert wieder, auch Namen und Angaben, die Teilnehmer nannten. Die KI dafür ist dieselbe wie bei der
+      Auswertung (Vorbehalt wie im Abschnitt Mitschriften).
+- [ ] **Zwei Fassungen:** die Felix-Fassung (`…_kurs-intern.html`) trägt oben „Intern – enthält Kundendaten, nicht
+      weitergeben“. Die Fassung für Lernende und das Handbuch enthalten **kein Roh-Transkript und keinen Teil „Offen“**.
+- [ ] **Kein Versand durch sales-claw:** keine Mail, kein Entwurf. Felix lädt die PDFs herunter und verschickt sie selbst;
+      damit entscheidet er bei jeder Weitergabe, ob sie zulässig ist.
+- [ ] **Lernende/r:** wählt nur Felix (Oberfläche), auch private Kontakte sind möglich. Die Wahl steht in
+      `termin_mitschriften.kurs_lead_id`. Ein Kontakt mit **Löschantrag** oder **Sperre** (gemeinsame Verbotsliste)
+      wird weder vorgeschlagen noch in der Suche gefunden und kann nicht gewählt werden (Antwort 400); das gilt auch für
+      eine nach dem Löschantrag stehengebliebene Teilnehmer-Adresse (`grund = 'gesperrt'`). Steht ein solcher Kontakt
+      noch als Lernender eingetragen, ruht sein Handbuch im Taktgeber (keine Zuordnung, kein Fortschreiben, keine
+      Ausgabe).
+- [ ] **Löschwege:**
+      1. *Mitschrift löschen* (Aufnahme verwerfen, `mitschrift_entfernen`, Löschantrag, Sicherheitsnetz): Kursmitschrift
+         samt Dateien und die Sitzung im Handbuch gehen mit.
+      2. *Aus „Kurse“ verschieben:* Kursmitschrift und Handbuch-Quelle gehen in derselben Transaktion weg.
+      3. *Lernenden wechseln oder entfernen:* die Sitzung geht aus dem Handbuch des alten Lernenden.
+      4. *Lead löschen / Löschantrag des Lernenden (`loeschantrag_vermerken`):* das **ganze Handbuch** (Kapitel, Fassungen,
+         Quellen, HTML und PDF) wird gelöscht und `kurs_lead_id` an allen Mitschriften geleert. Das gilt unmittelbar für den Löschantrag (`loeschantrag_vermerken` ruft `alles_entfernen`). Wird ein Lead nur in der Datenbank gelöscht, entfernt die Kaskade zwar die Zeilen (Kapitel, Fassungen, Quellen; `kurs_lead_id` wird leer), die **Dateien** (HTML, PDF) aber erst der stündliche Abgleich als Waisen, nach der Schonfrist von 10 Minuten – also bis zu gut einer Stunde später.
+- [ ] **Kapitelfassungen beim Entfernen einer Sitzung:** die Kapitel werden auf die Fassung **vor** dieser Sitzung
+      zurückgerollt, alle Fassungen, die sie enthalten, werden gelöscht, spätere Sitzungen arbeitet der Taktgeber in
+      Datumsfolge neu ein. Der Text der entfernten Sitzung bleibt so in keiner Fassung zurück.
+- [ ] **Kursmitschrift eines Termins mit anderem Kontakt (ausdrücklich):** hängt die Mitschrift an einem Termin, der einem
+      anderen Kontakt zugeordnet ist, und ist der Lernende nur als gewählter Lernender eingetragen, lebt die
+      Kursmitschrift so lange wie **diese Mitschrift**. Ein Löschantrag des Lernenden löscht sein Handbuch und leert
+      `kurs_lead_id`, **nicht** die Kursmitschrift eines fremden Termins.
+- [ ] **Waisen:** der stündliche Abgleich (Runbook, Mitschriften-Ablage) löscht Kurs- und Handbuch-Dateien ohne Buchung
+      nach einer Schonfrist von 10 Minuten.
+- [ ] **Auskunft:** `kontakt_auskunft` enthält diese Dateien nicht von selbst; bei einem Auskunftsersuchen prüft der
+      Betreiber das Handbuch des Lernenden und die Kursmitschriften seiner Termine von Hand (Rechte Dritter,
+      Art. 15 Abs. 4).
+
 ## Grenze
 
 Dieses Dokument ist Betriebsanleitung, keine Rechtsberatung. Bei

@@ -113,6 +113,9 @@ def leer(monkeypatch, tmp_path):
     monkeypatch.setenv("MITSCHRIFTEN_PFAD", str(tmp_path / "keine-ablage"))
     monkeypatch.setattr(termin_takt, "_LETZTER_ABGLEICH", None, raising=False)
     monkeypatch.setattr(termin_takt, "_bericht_pause", {}, raising=False)
+    # Schritt kurs hat eigene Tests (test_termin_takt_kurs.py); hier ruht er
+    monkeypatch.setattr(termin_takt, "SCHRITTE", tuple(
+        (n, (lambda j: 0) if n == "kurs" else f) for n, f in termin_takt.SCHRITTE))
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.termin_akten, sales_test.activities, "
                      "sales_test.drafts, sales_test.leads cascade")

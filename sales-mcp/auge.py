@@ -6,7 +6,7 @@ Seiten-Skript `auge_jitsi.js` liest ausschliesslich entfernte Tracks mit
 videoType 'desktop', nie Kameras) und legt sie bei spuerbarer Aenderung in
 `termin_bilder` ab. Ein eigener Thread beschreibt und bettet die Bilder ein,
 eines nach dem anderen, und loescht ungepruefte nach 24 h (R11). Ein kleiner
-HTTP-Dienst (nur im Compose-Netz) bietet `GET /gesund` und `POST /suche`.
+HTTP-Dienst (nur im Compose-Netz) bietet `GET /gesund`, `POST /suche` und `POST /pdf` (HTML -> A4-PDF, im Hauptthread ueber eine Warteschlange).
 
 Jede Runde (`AUGE_RUNDE_S`, Vorgabe 2 s):
   1. Soll-Abgleich aus der DB (`bildschirm.beobachtung_soll`): neue Termine
@@ -35,6 +35,7 @@ import json
 import logging
 import math
 import os
+import queue
 import signal
 import sys
 import threading
@@ -78,6 +79,11 @@ SUCHE_MAX_BYTES = 16 * 1024
 BEITRITT_TIMEOUT_MS = 15_000
 # Lese-Timeout je HTTP-Verbindung: ein langsamer Client haelt keinen Thread (T6b).
 HTTP_LESE_TIMEOUT_S = 10
+# PDF-Druck (POST /pdf): HTML hoechstens 20 MB, Wartezeit des HTTP-Threads 60 s.
+PDF_MAX_BYTES = 20 * 1024 * 1024
+PDF_ZEIT_S = 60.0
+PDF_RAND = "15mm"
+PDF_RENDER_TIMEOUT_MS = 30_000   # set_content und pdf() im Hauptthread
 
 CHROMIUM_ARGS = (
     "--mute-audio",
@@ -466,9 +472,95 @@ def _suchanfrage(roh: bytes) -> tuple[str, str | None, int]:
     return text.strip(), uid, max(1, min(SUCHE_MAX_LIMIT, limit))
 
 
+class PdfAuftrag:
+    """Ein PDF-Druck: der HTTP-Thread reicht ihn ein und wartet, der Hauptthread
+    (dem der Browser gehoert) fuehrt ihn aus. Nie loggen: `html`."""
+
+    def __init__(self, html: str) -> None:
+        self.html = html
+        self.fertig = threading.Event()
+        self.eingereicht = time.monotonic()
+        self.abgebrochen = False      # HTTP-Thread hat aufgegeben (504)
+        self.status = 500
+        self.pdf = b""
+
+
+def _pdf_ausfuehren(browser: Any, auftrag: PdfAuftrag) -> None:
+    """Hauptthread. Eigener Kontext ohne JavaScript und ohne Netz; Seite und
+    Kontext werden immer geschlossen."""
+    t0 = time.monotonic()
+    kontext = None
+    seite = None
+    try:
+        kontext = browser.new_context(java_script_enabled=False)
+        kontext.route("**/*", lambda route: route.abort())   # nur eingebettete Daten
+        seite = kontext.new_page()
+        seite.set_default_timeout(PDF_RENDER_TIMEOUT_MS)   # Druck blockiert den Takt
+        seite.set_content(auftrag.html, wait_until="load")
+        auftrag.pdf = seite.pdf(
+            format="A4", print_background=True,
+            margin={"top": PDF_RAND, "right": PDF_RAND,
+                    "bottom": PDF_RAND, "left": PDF_RAND})
+        auftrag.status = 200
+        LOG.info("PDF erzeugt (%d Bytes, %.1f s)", len(auftrag.pdf), time.monotonic() - t0)
+    except Exception as e:  # noqa: BLE001
+        auftrag.status = 500
+        LOG.warning("PDF fehlgeschlagen (%s)", _typ(e))
+    finally:
+        for teil in (seite, kontext):
+            if teil is not None:
+                try:
+                    teil.close()
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("PDF-Aufraeumen fehlgeschlagen (%s)", _typ(e))
+        auftrag.fertig.set()
+
+
+def _pdf_erledigen(browser: Any, auftrag: PdfAuftrag) -> int:
+    # Anfrager wartet nicht mehr (504 gesendet oder Wartezeit schon abgelaufen):
+    # nicht mehr drucken.
+    if auftrag.abgebrochen or time.monotonic() - auftrag.eingereicht > PDF_ZEIT_S:
+        auftrag.abgebrochen = True
+        return 0
+    _pdf_ausfuehren(browser, auftrag)
+    return 1
+
+
+def pdf_warten_und_arbeiten(auftraege: "queue.Queue[PdfAuftrag]", browser: Any,
+                            warte_s: float) -> int:
+    """Statt fester Pause zwischen den Takt-Schritten: bis zu `warte_s` auf einen
+    PDF-Auftrag warten und HOECHSTENS EINEN drucken (veraltete Auftraege werden
+    ohne Druck uebersprungen), damit die Takt-Schritte (Bildschirmaufnahme) nie
+    laenger als ein Druck warten. Gibt die Zahl der gedruckten PDFs zurueck."""
+    try:
+        auftrag = auftraege.get(timeout=max(0.0, warte_s))
+    except queue.Empty:
+        return 0
+    while True:
+        if _pdf_erledigen(browser, auftrag):
+            return 1
+        try:
+            auftrag = auftraege.get_nowait()
+        except queue.Empty:
+            return 0
+
+
+def pdf_abweisen(auftraege: "queue.Queue[PdfAuftrag]") -> None:
+    """Browser weg oder Ende: wartende Auftraege sofort mit 503 beantworten."""
+    while True:
+        try:
+            auftrag = auftraege.get_nowait()
+        except queue.Empty:
+            return
+        auftrag.status = 503
+        auftrag.fertig.set()
+
+
 def http_dienst(einbetter: bild_arbeit.Einbetter, host: str, port: int,
-                stand: Callable[[], dict]) -> ThreadingHTTPServer:
-    """HTTP nur im Compose-Netz: GET /gesund, POST /suche."""
+                stand: Callable[[], dict],
+                pdf_auftraege: "queue.Queue[PdfAuftrag] | None" = None
+                ) -> ThreadingHTTPServer:
+    """HTTP nur im Compose-Netz: GET /gesund, POST /suche, POST /pdf."""
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "sales-auge"
@@ -497,7 +589,48 @@ def http_dienst(einbetter: bild_arbeit.Einbetter, host: str, port: int,
             ok = info.pop("ok", True) is not False
             self._antwort(200 if ok else 503, {"ok": ok, **info})
 
+        def _pdf(self) -> None:
+            try:
+                laenge = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                laenge = -1
+            if laenge > PDF_MAX_BYTES:
+                self._antwort(413, {"fehler": "zu gross"})
+                return
+            if laenge <= 0:
+                self._antwort(400, {"fehler": "ungueltige Anfrage"})
+                return
+            try:
+                ok = dict(stand()).get("ok", True) is not False
+            except Exception:  # noqa: BLE001
+                ok = False
+            if pdf_auftraege is None or not ok:
+                self._antwort(503, {"fehler": "Browser nicht verfuegbar"})
+                return
+            try:
+                html = self.rfile.read(laenge).decode("utf-8")
+            except (UnicodeDecodeError, OSError):
+                self._antwort(400, {"fehler": "ungueltige Anfrage"})
+                return
+            auftrag = PdfAuftrag(html)
+            pdf_auftraege.put(auftrag)
+            if not auftrag.fertig.wait(PDF_ZEIT_S):
+                auftrag.abgebrochen = True
+                self._antwort(504, {"fehler": "Zeitlimit"})
+                return
+            if auftrag.status != 200:
+                self._antwort(auftrag.status, {"fehler": "PDF nicht erzeugt"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(auftrag.pdf)))
+            self.end_headers()
+            self.wfile.write(auftrag.pdf)
+
         def do_POST(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0] == "/pdf":
+                self._pdf()
+                return
             if self.path.split("?", 1)[0] != "/suche":
                 self._antwort(404, {"fehler": "unbekannt"})
                 return
@@ -646,9 +779,11 @@ def main() -> int:
 
     sitzungen: dict[str, Sitzung] = {}
     zustand = {"browser": True}
+    pdf_auftraege: "queue.Queue[PdfAuftrag]" = queue.Queue()
     srv = http_dienst(einbetter, "0.0.0.0", _port(),
                       lambda: {"ok": zustand["browser"], "browser": zustand["browser"],
-                               "sitzungen": len(sitzungen)})
+                               "sitzungen": len(sitzungen)},
+                      pdf_auftraege=pdf_auftraege)
     threading.Thread(target=srv.serve_forever, name="http", daemon=True).start()
     arbeit = threading.Thread(target=beschreib_schleife, args=(einbetter, _STOPP),
                               name="beschreiben", daemon=True)
@@ -665,8 +800,11 @@ def main() -> int:
                                 datetime.now(timezone.utc)):
                 rc = 1          # Browser weg: Prozess endet, Docker startet ihn neu
                 break
-            _STOPP.wait(takt)
+            # Pause zwischen den Runden: ein PDF-Auftrag weckt sie sofort.
+            pdf_warten_und_arbeiten(pdf_auftraege, browser, takt)
     finally:
+        zustand["browser"] = False      # /pdf und /gesund: ab jetzt 503
+        pdf_abweisen(pdf_auftraege)
         alle_beenden(sitzungen, datetime.now(timezone.utc))
         for schritt in (browser.close, pw.stop, srv.shutdown, srv.server_close):
             try:

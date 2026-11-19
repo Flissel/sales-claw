@@ -39,3 +39,13 @@ Unter *Mitschriften* (Seitenleiste) liegen die Berichte der ausgewerteten Kunden
 - **Verschieben nach …** legt den Bericht in eine andere Rubrik; im Feld „neue Rubrik“ kannst du jederzeit eine neue anlegen (Buchstaben, Ziffern, Leerzeichen, Bindestrich, höchstens 40 Zeichen).
 - Was du von Hand verschoben hast, überschreibt die KI nie wieder.
 - Die Berichte sind intern und enthalten Kundendaten – nicht weitergeben.
+
+## Kurse und Handbücher
+
+In der Rubrik **Kurse** (Reiter unter *Mitschriften*) zeigt jede Karte zusätzlich den Stand der **Kursmitschrift**: „wird erzeugt“, „fertig“ oder „Fehler“ (nach drei Versuchen im Stundenabstand; eine neue Auswertung mit geändertem Stand – oder Herausschieben aus „Kurse“ und zurück – startet sie neu, sonst bleibt es bei „Fehler“). Steht dort „Lernenden wählen“, fehlt noch die Zuordnung.
+
+- **Lernende/r wählen:** Auswahlfeld (Teilnehmer und zuletzt Gewählte) oder *Kontakt suchen*, dann *Speichern*. Das darf nur du; auch private Kontakte gehen. Kontakte mit Löschantrag oder Sperre erscheinen nicht und lassen sich nicht wählen. Wechselst du die Person, geht die Sitzung aus dem alten Handbuch.
+- **Kursmitschrift (Felix)** öffnet die interne Fassung („Intern – enthält Kundendaten, nicht weitergeben“). **Kursmitschrift (Lernende)** ist die Fassung zum Weitergeben (ohne Roh-Transkript, ohne „Offen“), **herunterladen** speichert sie. **Kursmitschrift PDF** lädt das PDF.
+- Unter **Handbücher** (eigener Reiter) steht je Lernendem ein Handbuch aus Kapiteln, die mit jeder Sitzung wachsen. Dort kannst du Kapitel **umbenennen**, **hoch/runter** schieben, das Handbuch öffnen, als **PDF** laden oder **neu ausgeben**.
+- sales-claw **verschickt nichts** und legt keine Entwürfe an: lade die PDFs herunter und schicke sie selbst.
+- Verschiebst du eine Mitschrift aus „Kurse“ oder löschst sie, verschwinden Kursmitschrift und ihr Anteil im Handbuch.

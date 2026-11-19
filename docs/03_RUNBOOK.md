@@ -4220,6 +4220,8 @@ abgelehnt oder nachträglich verworfen, Löschantrag) und das Sicherheitsnetz `s
 Datenbank-Kaskade (Akte gelöscht) räumt der nächste Abgleich ab. Fehlt einem dieser Dienste die Einhängung, steht im
 Log `Bericht-Dateien nicht entfernt: Mitschriften-Ablage fehlt (anzahl=N)` – dann bleibt die Datei bis zum Abgleich.
 
+**Kurse:** Kursmitschrift und Handbuch legen weitere Dateien in diesen Ordner, siehe Abschnitt „Meeting-Mittelpunkt: Kursmitschrift und Kurs-Handbuch“.
+
 **Sicherung.** `deploy/sicherung.sh` sichert den Ordner je Laden als `mitschriften.tar.gz` (`docs/04_BACKUP_RESTORE.md`).
 
 **Logs:** `docker logs --since 1h sales-termine | grep -iE "Mitschriften-Ablage|Abgleich|Bericht|einordnung"`. Sie
@@ -4541,3 +4543,72 @@ Verträge der Logik: `sales-mcp/tests/test_warteliste_bestaetigung.py` (ohne Dat
 `test_warteliste_bestaetigung_mail.py` (fertige Mail, Verbotsliste).
 
 **Datenschutz.** Siehe `docs/06_DSGVO.md`, Abschnitt „Bestätigungsmails der Warteliste“.
+
+## Meeting-Mittelpunkt: Kursmitschrift und Kurs-Handbuch (seit 16.11.2026)
+
+Für Mitschriften der Rubrik „Kurse“ erzeugt der Taktgeber `sales-termine` eine Kursmitschrift (Schritt `kurs`,
+`termin_takt._kurs`, nach `ablage`) und – sobald Felix einen Lernenden gewählt hat – ein Handbuch je Lernendem, das mit
+jeder Sitzung wächst. **sales-claw versendet nichts und legt keine Entwürfe an**: Felix lädt die PDFs in der
+Oberfläche herunter und schickt sie selbst.
+
+**Voraussetzung.** Mitschriften-Ablage wie oben (der Schritt ruht, solange `MITSCHRIFTEN_ORDNER` fehlt oder nicht
+beschreibbar ist: Log `Kurs-Ablage bereit` bzw. `... - Kurse warten`). Dazu `AUGE_URL` in `sales-termine`, `sales-ui` und
+`sales-mcp` (`http://<LADEN_PRAEFIX>-auge:8790`, im Compose gesetzt).
+
+**PDF.** `kurs_pdf.pdf_aus_html` schickt HTML per `POST /pdf` an `sales-auge` (Chromium, A4, nur im Compose-Netz). Grenzen
+in `auge.py`: HTML höchstens 20 MB (`PDF_MAX_BYTES`), Wartezeit des HTTP-Threads 60 s, Rendern höchstens 30 s
+(`PDF_RENDER_TIMEOUT_MS`); der Aufrufer wartet höchstens 90 s. Fehlt `AUGE_URL` oder ist `sales-auge` nicht erreichbar,
+gibt es nur einen festen Fehlertext (kein Inhalt im Log).
+
+**Je Runde (Vorgabe 30 s)** höchstens **ein KI-Auftrag** über `OLLAMA_URL`, dazu die KI-freien Teile (Ablegen,
+PDF-Ausgabe). **Zeitlimit:** sales-mcp wartet höchstens 600 s (`KURS_KI_TIMEOUT_S`). Im Betrieb zeigt `OLLAMA_URL` auf das
+KI-Tor `sales-ki` (Abschnitt oben); dessen `KI_TIMEOUT_S` (Vorgabe **280 s**) beendet den Aufruf vorher – ein Kurs, dessen
+Kursmitschrift länger braucht, scheitert dann mit Zeitüberschreitung (zählt als Fehlversuch). Für lange Kurse
+`KI_TIMEOUT_S` in `sales-ki` anheben, aber unter 600 s lassen. **Länge:** Die Kursmitschrift schickt das **ganze
+Transkript in einem Aufruf** (keine Stückelung wie bei der Auswertung). Mit `sales-ki` ist das unkritisch; mit einem
+lokalen Ollama als Rückfall (`OLLAMA_NUM_CTX`, Vorgabe 8192) werden lange Kurse abgeschnitten oder scheitern – dann
+`OLLAMA_NUM_CTX` passend anheben oder beim KI-Tor bleiben.
+
+1. Veraltetes entfernen (Rubrik gewechselt oder Stand der Auswertung neu: Kursmitschrift weg, Zähler zurück).
+2. Kursmitschrift ablegen (ohne KI) bzw. die älteste fällige Kursmitschrift erzeugen (ein KI-Auftrag).
+3. Sonst: Sitzung dem Handbuch zuordnen (ein KI-Auftrag) **oder** ein Kapitel fortschreiben (ein KI-Auftrag).
+4. Handbuch-HTML und -PDF ausgeben (ohne KI, höchstens eines je Runde).
+
+Die KI-Aufträge warten, wenn ein Termin mit Bot in 15 Minuten beginnt oder läuft und solange Ollama nicht erreichbar
+ist (die Arbeit bleibt fällig, nichts geht verloren). Geprüft wird auch mit der **aktuellen Uhrzeit**, nicht nur mit dem
+Rundenbeginn (Briefing und Auswertung davor können Minuten dauern). Hat ein früherer Schritt derselben Runde die KI
+schon benutzt (Briefing, Auswertung, Einordnung), wartet der Kurs-Auftrag bis zur nächsten Runde. Ebenso warten
+Ablegen und Handbuch-Ausgabe (PDF in `sales-auge`, der live den Bildschirm aufnimmt), solange ein Termin mit Bot ansteht
+oder läuft. Eine weitere Sitzung desselben Lernenden wird erst zugeordnet, wenn die vorige ganz eingearbeitet ist (sonst
+sähe die KI deren Kapitel nicht und legte doppelte an). Lernende mit **Löschantrag oder Sperre** ruhen: keine Zuordnung,
+kein Fortschreiben, keine Ausgabe (Log einmal `... ruht (Loeschantrag oder Sperre)`).
+
+**Status `termin_mitschriften.kurs_status`.** `null` = wird erzeugt (Oberfläche: „wird erzeugt“), `fertig`, `fehler`.
+Je Sitzung höchstens **3 Versuche** (`MAX_VERSUCHE`), je **1 Stunde** Abstand (`NEUVERSUCH_NACH`); beim dritten Fehlschlag
+wird der Status `fehler`. Eine Sitzung mit `fehler` wird übersprungen und aus dem Handbuch genommen (das Handbuch läuft
+ohne sie weiter). Neu starten: eine neue Auswertung (geändertes Transkript, geänderte Auswertung oder Bilder = neuer Stand) setzt Zähler und Status in der nächsten Runde zurück (auch bei `fehler` der Kursmitschrift selbst; die Sitzung wird dann neu erzeugt). Ebenso: aus „Kurse“ heraus- und wieder hineinverschieben.
+
+**Lernenden wählen.** `kurs_lead_id` setzt **nur Felix** in der Oberfläche (Reiter „Kurse“, Auswahl oder Kontaktsuche);
+vorgeschlagen werden die Teilnehmer ohne Organisator und die zuletzt Gewählten. Auch private Kontakte sind erlaubt;
+Kontakte mit Löschantrag oder Sperre nicht (nicht vorgeschlagen, nicht gefunden, Wahl abgelehnt mit 400). Ohne
+Lernenden entsteht nur die Kursmitschrift, kein Handbuch. Beim Wechsel geht die Sitzung zuerst aus dem Handbuch des
+alten Lernenden (Kapitel zurückgerollt); der Taktgeber arbeitet sie ins neue ein.
+
+**Dateien** (im Mitschriften-Ordner des Ladens):
+
+- Kursmitschrift im Rubrikordner: `JJJJ-MM-TT_HHMM_<titel-kurz>_<uid8>_kurs-intern.html` (Felix), `…_kurs.html`
+  (Lernende) und `…_kurs.pdf`.
+- Handbuch je Lernendem in `_handbuecher/handbuch-<lead8>.html` und `.pdf` (`_handbuecher` ist nie eine Rubrik).
+
+Der stündliche Abgleich (oben) kennt diese Dateien: Waisen älter als 10 Minuten (`SCHONFRIST_S` = 600) gehen weg.
+
+**Wenn etwas hakt**
+
+- Status bleibt „wird erzeugt“: `docker logs --since 1h sales-termine | grep -iE "Kurs"`; Ollama erreichbar? Termin in
+  15 Minuten? Nach 3 Fehlversuchen steht `fehler`; eine neue Auswertung mit neuem Stand (`scripts/neu_auswerten.py`) oder Herausschieben aus „Kurse“ und zurück startet neu; ohne neuen Stand bleibt `fehler` bestehen.
+- Kein PDF / „PDF-Erzeugung nicht erreichbar“: läuft `sales-auge`? Ist `AUGE_URL` im Container gesetzt
+  (`docker exec sales-termine printenv AUGE_URL`)?
+- Handbuch fehlt: Lernende/r gewählt? Sitzung `fertig`? Im Reiter „Handbücher“ „Handbuch neu ausgeben“.
+
+**Löschen:** siehe `docs/06_DSGVO.md`, Abschnitt „Kursmitschrift und Kurs-Handbuch“. Tests: `tests/test_kurs_*.py`,
+`tests/test_termin_takt_kurs.py`, `tests/test_ui_kurs.py`, `tests/test_auge_pdf.py` (auf der VM mit `vm_test.sh`).
