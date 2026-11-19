@@ -20,6 +20,7 @@ import ui_termin
 
 RUBRIK_KURSE = "Kurse"
 MAX_VERSUCHE = 3
+KURS_KI_TIMEOUT_S = 600
 NEUVERSUCH_NACH = timedelta(hours=1)
 MAX_BILDER_ABSCHNITT = 6
 BILD_KANTE = 800
@@ -212,7 +213,7 @@ def erzeugen(uid: str, jetzt: datetime) -> dict:
         stand = kurs_stand(uid)
         eingabe = kurs_eingabe(uid)
         antwort = ollama.chat(KURS_SYSTEM, json.dumps(eingabe, ensure_ascii=False),
-                              als_json=True)
+                              als_json=True, timeout_s=KURS_KI_TIMEOUT_S)
         ergebnis = pruefen(json.loads(antwort), {b["bild_id"] for b in eingabe["bilder"]})
     except Exception as err:
         server._q("update termin_mitschriften set kurs_versuche = kurs_versuche + 1, "

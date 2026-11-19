@@ -285,7 +285,7 @@ def zuordnen(lead_id: str, uid: str) -> dict:
     eingabe = {"kapitel": kapitel, "datum": _iso_tag(beginn),
                "abschnitte": [_abschnitt_eingabe(i, a) for i, a in enumerate(abschnitte)]}
     antwort = ollama.chat(ZUORDNUNG_SYSTEM, json.dumps(eingabe, ensure_ascii=False),
-                          als_json=True)
+                          als_json=True, timeout_s=kurs_mitschrift.KURS_KI_TIMEOUT_S)
     eintraege = _zuordnung_pruefen(_antwort(antwort), abschnitte,
                                    {k["kapitel_id"] for k in kapitel})
     for e in eintraege:
@@ -420,7 +420,7 @@ def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:
                                         if e["entscheidung"] == "neu" and alter_text
                                         else e["entscheidung"]) for e in auswahl]}
     antwort = ollama.chat(KAPITEL_SYSTEM, json.dumps(eingabe, ensure_ascii=False),
-                          als_json=True)
+                          als_json=True, timeout_s=kurs_mitschrift.KURS_KI_TIMEOUT_S)
     text_md, vorschlag = _kapitel_pruefen(_antwort(antwort))
     quellen = sorted(set(alt_quellen) | {uid})
     beginne = _beginne(quellen)
