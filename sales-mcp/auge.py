@@ -83,6 +83,7 @@ HTTP_LESE_TIMEOUT_S = 10
 PDF_MAX_BYTES = 20 * 1024 * 1024
 PDF_ZEIT_S = 60.0
 PDF_RAND = "15mm"
+PDF_RENDER_TIMEOUT_MS = 30_000   # set_content und pdf() im Hauptthread
 
 CHROMIUM_ARGS = (
     "--mute-audio",
@@ -478,6 +479,7 @@ class PdfAuftrag:
     def __init__(self, html: str) -> None:
         self.html = html
         self.fertig = threading.Event()
+        self.eingereicht = time.monotonic()
         self.abgebrochen = False      # HTTP-Thread hat aufgegeben (504)
         self.status = 500
         self.pdf = b""
@@ -493,6 +495,7 @@ def _pdf_ausfuehren(browser: Any, auftrag: PdfAuftrag) -> None:
         kontext = browser.new_context(java_script_enabled=False)
         kontext.route("**/*", lambda route: route.abort())   # nur eingebettete Daten
         seite = kontext.new_page()
+        seite.set_default_timeout(PDF_RENDER_TIMEOUT_MS)   # Druck blockiert den Takt
         seite.set_content(auftrag.html, wait_until="load")
         auftrag.pdf = seite.pdf(
             format="A4", print_background=True,
@@ -514,7 +517,10 @@ def _pdf_ausfuehren(browser: Any, auftrag: PdfAuftrag) -> None:
 
 
 def _pdf_erledigen(browser: Any, auftrag: PdfAuftrag) -> int:
-    if auftrag.abgebrochen:          # Anfrager wartet nicht mehr: nicht mehr drucken
+    # Anfrager wartet nicht mehr (504 gesendet oder Wartezeit schon abgelaufen):
+    # nicht mehr drucken.
+    if auftrag.abgebrochen or time.monotonic() - auftrag.eingereicht > PDF_ZEIT_S:
+        auftrag.abgebrochen = True
         return 0
     _pdf_ausfuehren(browser, auftrag)
     return 1
@@ -523,19 +529,20 @@ def _pdf_erledigen(browser: Any, auftrag: PdfAuftrag) -> int:
 def pdf_warten_und_arbeiten(auftraege: "queue.Queue[PdfAuftrag]", browser: Any,
                             warte_s: float) -> int:
     """Statt fester Pause zwischen den Takt-Schritten: bis zu `warte_s` auf einen
-    PDF-Auftrag warten, dann alle wartenden abarbeiten. Gibt die Zahl der
-    gedruckten PDFs zurueck."""
+    PDF-Auftrag warten und HOECHSTENS EINEN drucken (veraltete Auftraege werden
+    ohne Druck uebersprungen), damit die Takt-Schritte (Bildschirmaufnahme) nie
+    laenger als ein Druck warten. Gibt die Zahl der gedruckten PDFs zurueck."""
     try:
         auftrag = auftraege.get(timeout=max(0.0, warte_s))
     except queue.Empty:
         return 0
-    n = _pdf_erledigen(browser, auftrag)
     while True:
+        if _pdf_erledigen(browser, auftrag):
+            return 1
         try:
             auftrag = auftraege.get_nowait()
         except queue.Empty:
-            return n
-        n += _pdf_erledigen(browser, auftrag)
+            return 0
 
 
 def pdf_abweisen(auftraege: "queue.Queue[PdfAuftrag]") -> None:

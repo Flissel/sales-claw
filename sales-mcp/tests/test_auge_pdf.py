@@ -6,6 +6,7 @@ muss nicht installiert sein.
 import http.client
 import queue
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -17,6 +18,9 @@ import auge
 class Seite:
     def __init__(self, browser):
         self.b = browser
+
+    def set_default_timeout(self, ms):
+        self.b.timeout_ms = ms
 
     def set_content(self, html, **kw):
         self.b.html = html
@@ -53,6 +57,7 @@ class FakeBrowser:
         self.pdf_args = None
         self.html = None
         self.thread = None
+        self.timeout_ms = None
         self.zu = []
         self.routen = []
 
@@ -114,8 +119,9 @@ def test_auftrag_wird_im_hauptthread_erledigt(dienst):
     assert browser.pdf_args["format"] == "A4" and browser.pdf_args["print_background"] is True
     assert browser.pdf_args["margin"] == {"top": "15mm", "right": "15mm",
                                           "bottom": "15mm", "left": "15mm"}
+    assert browser.timeout_ms == auge.PDF_RENDER_TIMEOUT_MS == 30_000
     assert browser.zu == ["seite", "kontext"]
-    assert browser.routen                                   # keine Netzzugriffe aus dem HTML
+    assert browser.routen                                 # keine Netzzugriffe aus dem HTML
 
 
 def test_seite_wird_auch_bei_fehler_geschlossen_und_gibt_500(dienst):
@@ -191,7 +197,9 @@ def test_leer_gibt_400(dienst):
 def test_abweisen_beantwortet_wartende_mit_503(dienst):
     url, q, _ = dienst
     t, erg = _im_hintergrund(url)
+    frist = time.monotonic() + 10
     while q.empty():
+        assert time.monotonic() < frist, "Auftrag wurde nicht eingereiht"
         threading.Event().wait(0.01)
     auge.pdf_abweisen(q)
     t.join()
@@ -201,3 +209,39 @@ def test_abweisen_beantwortet_wartende_mit_503(dienst):
 def test_warten_ohne_auftrag_kehrt_nach_takt_zurueck():
     q = queue.Queue()
     assert auge.pdf_warten_und_arbeiten(q, FakeBrowser(), 0.05) == 0
+
+
+def test_hoechstens_ein_auftrag_je_aufruf():
+    q = queue.Queue()
+    a1, a2 = auge.PdfAuftrag("<p>1</p>"), auge.PdfAuftrag("<p>2</p>")
+    q.put(a1)
+    q.put(a2)
+    browser = FakeBrowser()
+    assert auge.pdf_warten_und_arbeiten(q, browser, 0.05) == 1
+    assert a1.fertig.is_set() and not a2.fertig.is_set()
+    assert q.qsize() == 1                               # zweiter wartet auf die naechste Runde
+    assert auge.pdf_warten_und_arbeiten(q, browser, 0.05) == 1
+    assert a2.fertig.is_set()
+
+
+def test_veralteter_auftrag_wird_uebersprungen_der_naechste_gedruckt():
+    q = queue.Queue()
+    alt, neu = auge.PdfAuftrag("<p>alt</p>"), auge.PdfAuftrag("<p>neu</p>")
+    alt.eingereicht = time.monotonic() - auge.PDF_ZEIT_S - 1
+    q.put(alt)
+    q.put(neu)
+    browser = FakeBrowser()
+    assert auge.pdf_warten_und_arbeiten(q, browser, 0.05) == 1
+    assert not alt.fertig.is_set() and alt.abgebrochen   # nicht gerendert
+    assert neu.fertig.is_set() and neu.status == 200
+    assert browser.html == "<p>neu</p>"
+
+
+def test_nur_veralteter_auftrag_wird_nicht_gerendert():
+    q = queue.Queue()
+    alt = auge.PdfAuftrag("<p>alt</p>")
+    alt.eingereicht = time.monotonic() - auge.PDF_ZEIT_S - 1
+    q.put(alt)
+    browser = FakeBrowser()
+    assert auge.pdf_warten_und_arbeiten(q, browser, 0.05) == 0
+    assert browser.kontext_args is None
