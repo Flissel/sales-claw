@@ -345,7 +345,9 @@ def offene_auftraege(lead_id: str) -> list[tuple[str, str]]:
 def _auswahl_bild_ids(vorschlag: object, quellen: list[str],
                       beginne: dict[str, datetime]) -> list[str]:
     """Nur geprueft vorhandene Bilder der Quell-Sitzungen, die juengsten, hoechstens
-    MAX_BILDER_KAPITEL, in zeitlicher Folge."""
+    MAX_BILDER_KAPITEL, in zeitlicher Folge. `None` (Modell schreibt null) = keine Bilder."""
+    if vorschlag is None:
+        return []
     if not isinstance(vorschlag, list):
         raise ValueError("bild_ids unbrauchbar")
     bekannt: dict[str, tuple] = {}
@@ -367,7 +369,8 @@ def _kapitel_pruefen(roh: object) -> tuple[str, object]:
     text = _text(roh.get("text_md"))
     if not text:
         raise ValueError("kein Kapiteltext")
-    return text, roh.get("bild_ids", [])
+    bild_ids = roh.get("bild_ids")
+    return text, [] if bild_ids is None else bild_ids
 
 
 def fortschreiben(lead_id: str, uid: str, ziel: str) -> str:

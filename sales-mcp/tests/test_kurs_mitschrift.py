@@ -190,6 +190,19 @@ def test_erfolg_setzt_versuche_zurueck(kurs_mitschrift, monkeypatch):
     assert _zeile()["kurs_versuche"] == 0
 
 
+def test_kurs_prompt_mit_echten_umlauten():
+    # Lernende lesen die Ausgabe: der Prompt schreibt Umlaute aus, Feldnamen bleiben
+    for ascii_form in ("koennen", "erklaeren", "waehrend", "vorgefuehrt", "beitraegt",
+                       "ausschliess", "Saetze", "haengen"):
+        assert ascii_form not in km.KURS_SYSTEM
+    for echt in ("können", "erklären", "während", "vorgeführt", "beiträgt",
+                 "ausschließlich", "Sätze", "hängen"):
+        assert echt in km.KURS_SYSTEM
+    for feld in ('"erklaert"', '"zu_sehen"', '"schritte"', '"merken"', '"offen"',
+                 '"ueberblick"', '"bild_id"'):
+        assert feld in km.KURS_SYSTEM
+
+
 def test_pruefen_ohne_abschnitte_oder_titel():
     for roh in (None, [], "x", {}, {"abschnitte": []}, {"abschnitte": "x"},
                 {"abschnitte": [{"titel": "  "}]}, {"abschnitte": [{"bilder": []}, 5]}):
@@ -319,10 +332,13 @@ def test_ablegen_zweimal_gleicher_pfad_behaelt_dateien(kurs_fertig, ablage, auge
     assert len([p for p in ablage.rglob("*") if p.is_file()]) == 3
 
 
-def test_entfernen_dateien(kurs_fertig, ablage, auge_liefert_pdf):
+def test_entfernen_raeumt_dateien_und_buchung(kurs_fertig, ablage, auge_liefert_pdf):
+    # Minor 2: das tote entfernen_dateien (ohne Handbuch-Rueckbau) ist weg; entfernen ist
+    # der einzige Weg
+    assert not hasattr(km, "entfernen_dateien")
     km.ablegen(UID)
     z = _zeile()
-    km.entfernen_dateien(UID)
+    km.entfernen(UID)
     assert [p for p in ablage.rglob("*") if p.is_file()] == []
     n = _zeile()
     for k in ("kurs_pfad", "kurs_pfad_lernend", "kurs_pdf", "kurs_json", "kurs_stand",

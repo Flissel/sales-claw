@@ -311,6 +311,68 @@ def test_suche_findet_private_und_escaped(ablage):
                  q="Zora").status_code == 403
 
 
+def _loeschantrag(lid):
+    server._q("update leads set enrichment = jsonb_set(coalesce(enrichment, '{}'::jsonb), "
+              "%s, %s::jsonb, true) where id = %s returning id",
+              ([server.LOESCH_SCHLUESSEL], json.dumps({"am": "2026-11-19", "quelle": "test"}),
+               lid))
+
+
+def test_lernender_mit_loeschantrag_400(ablage):
+    # I3: ein Kontakt mit Loeschantrag wird nicht (wieder) Lernender
+    _kurs(ablage)
+    lead = _lead("Geloescht Werden")
+    _loeschantrag(lead)
+    r = _post("/mitschriften/kurs/lernender", uid=UID, lead_id=lead)
+    assert r.status_code == 400 and "Löschantrag" in r.text
+    assert _z()["kurs_lead_id"] is None
+
+
+def test_lernender_gesperrt_400(ablage, monkeypatch):
+    import sperrliste
+    _kurs(ablage)
+    lead = _lead("Gesperrt Person")
+    email = server._q("select email from leads where id = %s", (lead,))[0]["email"]
+    monkeypatch.setattr(sperrliste, "gesperrt", lambda q, email="", phone="", z=email:
+                        "marketing: abgemeldet" if email == z else None)
+    r = _post("/mitschriften/kurs/lernender", uid=UID, lead_id=lead)
+    assert r.status_code == 400 and "Sperre" in r.text
+    assert _z()["kurs_lead_id"] is None
+
+
+def test_suche_ohne_loeschantrag_und_gesperrte(ablage, monkeypatch):
+    import sperrliste
+    _kurs(ablage)
+    da = _lead("Yvo Suchbar")
+    weg = _lead("Yvo Loeschantrag")
+    _loeschantrag(weg)
+    gesperrt = _lead("Yvo Gesperrt")
+    email = server._q("select email from leads where id = %s", (gesperrt,))[0]["email"]
+    monkeypatch.setattr(sperrliste, "gesperrt", lambda q, email="", phone="", z=email:
+                        "marketing: abgemeldet" if email == z else None)
+    t = _post("/mitschriften/kurs/suche", uid=UID, q="Yvo").text
+    assert da in t and weg not in t and gesperrt not in t
+
+
+def test_lernender_setzen_laeuft_im_thread(ablage, monkeypatch):
+    # Minor 10: DB-Arbeit (Sperren, Rueckbau) nicht auf der Ereignisschleife
+    import asyncio
+    import kurs_mitschrift
+    _kurs(ablage)
+    lead = _lead()
+    echt = asyncio.to_thread
+    gerufen = []
+
+    async def to_thread(fn, *a, **kw):
+        gerufen.append(getattr(fn, "__name__", ""))
+        return await echt(fn, *a, **kw)
+
+    monkeypatch.setattr(asyncio, "to_thread", to_thread)
+    assert _post("/mitschriften/kurs/lernender", uid=UID, lead_id=lead).status_code == 303
+    assert kurs_mitschrift.lernender_setzen.__name__ in gerufen
+    assert str(_z()["kurs_lead_id"]) == lead
+
+
 def test_vorschlaege_im_auswahlfeld(ablage):
     _kurs(ablage)
     lead = _lead("Vorschlag Vera")

@@ -135,6 +135,67 @@ def test_nur_fuer_kurse(lead):
     assert not km.lernender_setzen("gibt-es-nicht@sales-claw", lead)
 
 
+def _loeschantrag(lid):
+    server._q("update leads set enrichment = jsonb_set(coalesce(enrichment, '{}'::jsonb), "
+              "%s, %s::jsonb, true) where id = %s returning id",
+              ([server.LOESCH_SCHLUESSEL], json.dumps({"am": "2026-11-19", "quelle": "test"}),
+               lid))
+
+
+def _sperre_fuer(monkeypatch, email):
+    import sperrliste
+    monkeypatch.setattr(sperrliste, "gesperrt",
+                        lambda q, email="", phone="", ziel=email.lower():
+                        "marketing: abgemeldet" if (email or "").lower() == ziel else None)
+
+
+def test_lead_mit_loeschantrag_nicht_waehlbar(lead):
+    _mitschrift()
+    _loeschantrag(lead)
+    assert km.lernender_gesperrt(lead)
+    assert not km.lernender_setzen(UID, lead)
+    assert _gewaehlt(UID) is None
+
+
+def test_gesperrter_lead_nicht_waehlbar(lead, monkeypatch):
+    _mitschrift()
+    _sperre_fuer(monkeypatch, "anna.lernend@kurs-test.example")
+    assert km.lernender_gesperrt(lead)
+    assert not km.lernender_setzen(UID, lead)
+    assert _gewaehlt(UID) is None
+    assert km.lernender_setzen(UID, None)        # entfernen bleibt moeglich
+
+
+def test_loeschantrag_nicht_vorgeschlagen_auch_nicht_ueber_adresse(sauber, lead):
+    # so laesst der Loeschantrag die Teilnehmer-Zeile zurueck: lead_id null, Adresse bleibt
+    _mitschrift()
+    _loeschantrag(lead)
+    server._q("insert into termin_teilnehmer (uid, adresse, rolle, lead_id, grund) "
+              "values (%s, 'anna.lernend@kurs-test.example', 'gast', null, 'gesperrt') "
+              "returning uid", (UID,))
+    zweite = _lead(sauber, "Zweite Lernend", "zweite@kurs-test.example")
+    _loeschantrag(zweite)
+    _teilnehmer(UID, "z@kurs-test.example", lead_id=zweite)
+    assert km.vorschlaege(UID) == []
+
+
+def test_gesperrt_ueber_adresse_ohne_loeschantrag_nicht_vorgeschlagen(lead):
+    # Teilnehmer-Zeile "gesperrt" (lead_id null) wird nicht ueber die Adresse aufgeloest
+    _mitschrift()
+    server._q("insert into termin_teilnehmer (uid, adresse, rolle, lead_id, grund) "
+              "values (%s, 'anna.lernend@kurs-test.example', 'gast', null, 'gesperrt') "
+              "returning uid", (UID,))
+    assert km.vorschlaege(UID) == []
+
+
+def test_gesperrte_zuletzt_gewaehlte_nicht_vorgeschlagen(sauber, lead, monkeypatch):
+    diana = _lead(sauber, "Diana Lernend", "diana@kurs-test.example")
+    _mitschrift(UID, lernender=diana, am=0)
+    _mitschrift(UID2, lernender=lead, am=1)
+    _sperre_fuer(monkeypatch, "diana@kurs-test.example")
+    assert [x["lead_id"] for x in km.vorschlaege("kurs-andere@sales-claw")] == [lead]
+
+
 def test_ist_kurs():
     assert km.ist_kurs("kurse") and km.ist_kurs("Kurse")
     assert not km.ist_kurs("Notizen") and not km.ist_kurs(None)

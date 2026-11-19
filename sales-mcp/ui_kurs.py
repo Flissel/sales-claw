@@ -260,12 +260,19 @@ def routen(ui, leiste) -> list:
         if not z or not kurs_mitschrift.ist_kurs(z[0]["rubrik"]):
             return _nicht_gefunden("Diese Kurs-Mitschrift gibt es nicht (mehr).")
         roh = str(form.get("lead_id") or "").strip()
-        if not kurs_mitschrift.lernender_setzen(uid, roh or None):
+        # Sperren und Rueckbau des alten Handbuchs: nicht auf der Ereignisschleife
+        if not await asyncio.to_thread(kurs_mitschrift.lernender_setzen, uid, roh or None):
             lid = kurs_handbuch.gueltige_id(roh) if roh else None
             if roh and (lid is None or not server._q("select 1 from leads where id = %s",
                                                       (lid,))):
                 return ui._fehlerseite(400, "Lernende/r ungültig",
                                        "Diesen Kontakt gibt es nicht. Nichts geändert.")
+            if lid and kurs_mitschrift.lernender_gesperrt(lid):
+                return ui._fehlerseite(400, "Kontakt gesperrt",
+                                       "Für diesen Kontakt liegt ein Löschantrag oder eine "
+                                       "Sperre (Verbotsliste) vor; er wird nicht mehr "
+                                       "verarbeitet und kann nicht Lernende/r sein. "
+                                       "Nichts geändert.")
             return ui._fehlerseite(409, "Nicht mehr in „Kurse“",
                                    "Diese Mitschrift gehört nicht mehr zur Rubrik Kurse. "
                                    "Nichts geändert.")
@@ -291,8 +298,15 @@ def routen(ui, leiste) -> list:
             return _seite_kurs("Mitschriften",
                                '<p class="meta">Bitte einen Namen eingeben.</p>' + zurueck)
         muster = "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        treffer = server._q("select id, name from leads where name ilike %s "
-                            "order by name, id limit %s", (muster, MAX_TREFFER))
+        # ohne Kontakte mit Loeschantrag (gleich in SQL, damit sie keine Treffer belegen) und
+        # ohne gesperrte (Verbotsliste); beides wie kurs_mitschrift.lernender_gesperrt
+        treffer = server._q(
+            "select id, name from leads where name ilike %s "
+            "and jsonb_typeof(coalesce(enrichment, '{}'::jsonb) -> %s::text) is distinct from "
+            "'object' order by name, id limit %s",
+            (muster, server.LOESCH_SCHLUESSEL, MAX_TREFFER))
+        treffer = [t for t in treffer
+                   if not kurs_mitschrift.lernender_gesperrt(str(t["id"]))]
         log.info("Lernenden-Suche uid=%s treffer=%d", mb.uid8(uid), len(treffer))
         zeilen = "".join(
             '<li><form method="post" action="/mitschriften/kurs/lernender" class="verschieben">'

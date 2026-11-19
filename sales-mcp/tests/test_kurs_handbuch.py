@@ -426,6 +426,17 @@ def test_bild_ids_aus_alter_sitzung_bleiben_moeglich(lernender, ki):
     assert _aktuell(lernender, "Termin anlegen")["bild_ids"] == [ids1[-1]] + ids2
 
 
+def test_bild_ids_null_heisst_keine_bilder(lernender, ki):
+    # Minor 1: "bild_ids": null ist kein Fehler (sonst geht die Sitzung nach 3 Versuchen
+    # auf 'fehler' und faellt aus dem Handbuch)
+    _sitzung(UID1, TAG1, [_abschnitt("Termin anlegen")], bilder=2)
+    ki.kapitel = lambda e: {"text_md": "Text", "bild_ids": None}
+    _zuordnen(lernender, UID1)
+    _einarbeiten(lernender)
+    assert _aktuell(lernender, "Termin anlegen")["bild_ids"] == []
+    assert not kh.offene_auftraege(lernender)
+
+
 def test_ungueltige_kapitel_antwort_speichert_nichts(lernender, handbuch_nach_sitzung1, ki):
     _sitzung(UID2, TAG2, [_abschnitt("Mehr")])
     kid = _kapitel_id(lernender, "Termin anlegen")

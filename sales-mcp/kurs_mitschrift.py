@@ -50,13 +50,27 @@ def _uuid(wert: object) -> str | None:
         return None
 
 
+def lernender_gesperrt(lead_id: str) -> bool:
+    """Loeschantrag (`server._loeschantrag`) oder Eintrag in der gemeinsamen Verbotsliste
+    (`server._sperre`): die Verarbeitung dieses Kontakts muss stoppen - er wird nicht
+    (wieder) Lernender, vorgeschlagen oder gefunden, und der Taktgeber baut kein Handbuch fuer
+    ihn. Unbekannter Kontakt: False (das pruefen die Aufrufer selbst)."""
+    z = server._q("select enrichment, email, phone from leads where id = %s", (lead_id,))
+    if not z:
+        return False
+    return bool(server._loeschantrag(z[0]["enrichment"])
+                or server._sperre(z[0]["email"] or "", z[0]["phone"] or ""))
+
+
 def vorschlaege(uid: str) -> list[dict]:
-    """Moegliche Lernende: Teilnehmer (ohne Organisator), danach zuletzt gewaehlte."""
+    """Moegliche Lernende: Teilnehmer (ohne Organisator), danach zuletzt gewaehlte. Ohne
+    Kontakte mit Loeschantrag oder Sperre; eine Teilnehmer-Zeile mit grund 'gesperrt' (so
+    bleibt sie nach einem Loeschantrag stehen) wird nicht ueber die Adresse aufgeloest."""
     teilnehmer = server._q(
         "select l.id, l.name from termin_teilnehmer t "
         "join leads l on l.id = coalesce(t.lead_id, "
         "  (select (array_agg(x.id))[1] from leads x where lower(x.email) = lower(t.adresse) "
-        "   having count(*) = 1)) "
+        "   and coalesce(t.grund, '') <> 'gesperrt' having count(*) = 1)) "
         "where t.uid = %s and coalesce(t.rolle, '') <> 'organisator' "
         "order by t.ctid", (uid,))
     zuletzt = server._q(
@@ -69,12 +83,14 @@ def vorschlaege(uid: str) -> list[dict]:
         lid = str(z["id"])
         if lid not in gesehen:
             gesehen.add(lid)
-            aus.append({"lead_id": lid, "name": z["name"]})
+            if not lernender_gesperrt(lid):
+                aus.append({"lead_id": lid, "name": z["name"]})
     return aus
 
 
 def lernender_setzen(uid: str, lead_id: str | None) -> bool:
-    """Lernenden einer Kurs-Mitschrift setzen (None = entfernen). Sonst False. Bei einem
+    """Lernenden einer Kurs-Mitschrift setzen (None = entfernen). Sonst False (auch fuer einen
+    Kontakt mit Loeschantrag oder Sperre, `lernender_gesperrt`). Bei einem
     Wechsel geht die Sitzung zuerst aus dem Handbuch des alten Lernenden (Rueckbau); ins neue
     arbeitet sie der Taktgeber ein. Alles in einer Transaktion unter der Sperre der
     Mitschrift-Zeile (wie zuordnen/fortschreiben): ein laufender KI-Auftrag bucht danach nichts
@@ -85,6 +101,10 @@ def lernender_setzen(uid: str, lead_id: str | None) -> bool:
     else:
         neu = _uuid(lead_id)
         if neu is None or not server._q("select 1 from leads where id = %s", (neu,)):
+            return False
+        if lernender_gesperrt(neu):
+            log.info("Lernende/r abgelehnt (Loeschantrag oder Sperre) uid=%s",
+                     mitschrift_bericht.uid8(uid))
             return False
     dateien: list[str] = []
     with server.pool.connection() as conn:
@@ -112,22 +132,22 @@ def kurs_stand(uid: str) -> str | None:
 
 KURS_SYSTEM = """Du bekommst das Transkript einer Online-Schulung (Segmente mit Zeit und Sprecher) und die \
 Bildschirmbilder dazu (bild_id, Zeitfenster von/bis, Beschreibung). Mache daraus eine Kursmitschrift, \
-mit der die Lernenden den Kurs allein nacharbeiten koennen.
+mit der die Lernenden den Kurs allein nacharbeiten können.
 
 Regeln:
-- Sprich die Lernenden direkt an (Du). Kein Fachjargon; schwierige Begriffe in einfachen Worten erklaeren.
+- Sprich die Lernenden direkt an (Du). Kein Fachjargon; schwierige Begriffe in einfachen Worten erklären.
 - Gliedere in Abschnitte mit sprechendem Titel (z. B. "Termin anlegen").
-- Fasse je Bild zusammen, was gesprochen wurde, waehrend das Bild zu sehen war (Feld "erklaert"); \
+- Fasse je Bild zusammen, was gesprochen wurde, während das Bild zu sehen war (Feld "erklaert"); \
 "zu_sehen" beschreibt in einem Satz, was auf dem Bild zu sehen ist.
-- "schritte" nur, wenn etwas vorgefuehrt wurde (z. B. "Oben rechts auf ... klicken"); sonst eine leere Liste.
-- Ein Bild darfst Du weglassen, wenn es nichts beitraegt. Verwende ausschliesslich bild_id-Werte aus der \
+- "schritte" nur, wenn etwas vorgeführt wurde (z. B. "Oben rechts auf ... klicken"); sonst eine leere Liste.
+- Ein Bild darfst Du weglassen, wenn es nichts beiträgt. Verwende ausschließlich bild_id-Werte aus der \
 Eingabe, erfinde keine.
-- "merken": je Abschnitt 1 bis 3 Saetze, die man sich merken soll.
-- "offen": Fragen der Lernenden, Stellen, an denen sie haengen blieb, und Nacharbeit fuer den Kursleiter.
+- "merken": je Abschnitt 1 bis 3 Sätze, die man sich merken soll.
+- "offen": Fragen der Lernenden, Stellen, an denen sie hängen blieb, und Nacharbeit für den Kursleiter.
 - Erfinde nichts, was im Transkript nicht vorkommt.
 
-Antworte ausschliesslich mit JSON in genau dieser Form:
-{"ueberblick": "3-5 Saetze",
+Antworte ausschließlich mit JSON in genau dieser Form:
+{"ueberblick": "3-5 Sätze",
  "abschnitte": [{"titel": "...",
                  "bilder": [{"bild_id": "...", "zu_sehen": "1 Satz", "erklaert": "Zusammenfassung",
                              "schritte": ["...", "..."]}],
@@ -364,18 +384,6 @@ def ablegen(uid: str) -> str:
             mitschrift_bericht.datei_entfernen(z[k])
     log.info("Kursmitschrift abgelegt uid=%s", mitschrift_bericht.uid8(uid))
     return gebucht[0]["kurs_status"]
-
-
-def entfernen_dateien(uid: str) -> None:
-    z = server._q("select kurs_pfad, kurs_pfad_lernend, kurs_pdf from termin_mitschriften "
-                  "where uid = %s", (uid,))
-    if not z:
-        return
-    for k in _DATEI_SPALTEN:
-        mitschrift_bericht.datei_entfernen(z[0][k])
-    server._q("update termin_mitschriften set kurs_pfad = null, kurs_pfad_lernend = null, "
-              "kurs_pdf = null, kurs_json = null, kurs_stand = null, kurs_status = null "
-              "where uid = %s returning id", (uid,))
 
 
 def entfernen(uid: str) -> None:
