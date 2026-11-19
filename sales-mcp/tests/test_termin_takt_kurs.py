@@ -16,6 +16,7 @@ import termin_takt  # noqa: E402
 
 JETZT = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
 TAG = datetime(2026, 11, 14, 9, 0, tzinfo=timezone.utc)
+ECHT_CHAT = ollama.chat                     # vor jedem Ersetzen: zaehlt die KI-Auftraege
 _zaehler = [0]
 _LEADS: list[str] = []
 
@@ -342,11 +343,14 @@ def test_logs_ohne_klartext(ki, caplog):
 
 
 def _zwei_sitzungen(lead):
+    """Zwei zugeordnete, noch nicht eingearbeitete Sitzungen (so stehen sie z. B. nach dem
+    Rueckrollen fuer eine aeltere Sitzung da). Der Taktgeber ordnet eine zweite Sitzung erst
+    zu, wenn die erste eingearbeitet ist (Final-Fix I1), daher hier direkt."""
     _sitzung("k-s1", beginn=TAG, lead=lead, kurs_json="Kapitel-Eins", kurs_status="fertig")
     _sitzung("k-s2", beginn=TAG + timedelta(days=1), lead=lead, kurs_json="Kapitel-Zwei",
              kurs_status="fertig")
-    termin_takt._kurs(JETZT)                                  # Zuordnung S1
-    termin_takt._kurs(JETZT + timedelta(minutes=1))           # Zuordnung S2
+    kh.zuordnen(lead, "k-s1")
+    kh.zuordnen(lead, "k-s2")
     assert len(server._q("select 1 from kurs_handbuch_quelle")) == 2
 
 
@@ -484,3 +488,180 @@ def test_erzeugen_dreimal_fehler_bleibt_fehler_bis_neuer_stand(ki, monkeypatch):
     assert ki.kurs == 1
     assert z["kurs_status"] == "fertig" and z["kurs_json"] is not None
     assert z["kurs_versuche"] == 0 and z["kurs_stand"] == km.kurs_stand("k-1")
+
+
+# ---------- Final-Fix-Welle ----------
+
+class KIThema(KI):
+    """Zuordnung wie ein Modell, das die vorhandenen Kapitel liest: gleiches Thema ->
+    "ergaenzen" in das vorhandene Kapitel, sonst "neu"."""
+
+    def chat(self, system, nutzer, **kw):
+        if system != kh.ZUORDNUNG_SYSTEM:
+            return super().chat(system, nutzer, **kw)
+        self.n += 1
+        self.zeiten.append(kw.get("timeout_s"))
+        eingabe = json.loads(nutzer)
+        kapitel = {k["titel"]: k["kapitel_id"] for k in eingabe["kapitel"]}
+        return json.dumps({"zuordnung": [
+            {"abschnitt": a["abschnitt"], "entscheidung": "ergaenzen",
+             "kapitel_id": kapitel[a["titel"]], "titel": None} if a["titel"] in kapitel else
+            {"abschnitt": a["abschnitt"], "entscheidung": "neu", "kapitel_id": None,
+             "titel": a["titel"]} for a in eingabe["abschnitte"]]})
+
+
+def test_bestand_gleiches_thema_ein_kapitel(monkeypatch):
+    # I1: zweite Sitzung erst zuordnen, wenn die erste eingearbeitet ist - sonst sieht die
+    # KI das Kapitel noch nicht und legt ein paralleles an
+    k = KIThema()
+    monkeypatch.setattr(ollama, "chat", k.chat)
+    lead = _lead()
+    _sitzung("k-frueh", beginn=TAG, lead=lead, kurs_json=True, kurs_status="fertig")
+    _sitzung("k-spaet", beginn=TAG + timedelta(days=1), lead=lead, kurs_json=True,
+             kurs_status="fertig")
+    _runden(10)
+    kapitel = server._q(
+        "select k.titel, f.quellen from kurs_handbuch_kapitel k "
+        "join kurs_handbuch_fassung f on f.id = k.aktuelle_fassung where k.lead_id = %s",
+        (lead,))
+    assert [(z["titel"], list(z["quellen"])) for z in kapitel] == [
+        ("Termin anlegen", ["k-frueh", "k-spaet"])]
+    quellen = server._q("select eingearbeitet_am from kurs_handbuch_quelle where lead_id = %s",
+                        (lead,))
+    assert len(quellen) == 2 and all(q["eingearbeitet_am"] for q in quellen)
+    assert server._q("select 1 from kurs_handbuch where lead_id = %s", (lead,))
+
+
+def test_offene_quelle_haelt_nur_den_eigenen_lernenden_an(ki):
+    # I1: Anna hat eine offene Quelle (wartet mit der Zuordnung von k-a2), Bert wird trotzdem
+    # zugeordnet; danach wird Annas Kapitel fortgeschrieben (niemand verhungert)
+    anna, bert = _lead("Anna-fixture"), _lead("Bert-fixture")
+    _sitzung("k-a1", beginn=TAG, lead=anna, kurs_json=True, kurs_status="fertig")
+    _sitzung("k-a2", beginn=TAG + timedelta(days=1), lead=anna, kurs_json=True,
+             kurs_status="fertig")
+    _sitzung("k-b1", beginn=TAG + timedelta(days=2), lead=bert, kurs_json=True,
+             kurs_status="fertig")
+    kh.zuordnen(anna, "k-a1")
+    termin_takt._kurs(JETZT)
+    assert sorted(q["uid"] for q in server._q("select uid from kurs_handbuch_quelle")) == [
+        "k-a1", "k-b1"]
+    _runden(20, start=JETZT + timedelta(minutes=1))
+    quellen = server._q("select uid, eingearbeitet_am from kurs_handbuch_quelle order by uid")
+    assert [q["uid"] for q in quellen] == ["k-a1", "k-a2", "k-b1"]
+    assert all(q["eingearbeitet_am"] for q in quellen)
+
+
+def _bald(beginn):
+    server._q("insert into termin_akten (uid, herkunft, beginn, ende, titel, status, link) "
+              "values ('bald', 'sales-claw', %s, %s, 'Bald', 'geplant', 'https://x.test/m') "
+              "returning uid", (beginn, beginn + timedelta(hours=1)))
+
+
+def test_ki_sperre_mit_frischer_uhrzeit(ki, monkeypatch):
+    # I2: die Runde begann 20 Minuten vor dem Termin; bis zum Kurs-Schritt sind 10 Minuten
+    # vergangen (Briefing, Auswertung) - jetzt beginnt der Termin in 10 Minuten
+    _sitzung("k-1")
+    _bald(JETZT + timedelta(minutes=20))
+    monkeypatch.setattr(termin_takt, "_uhr", lambda: JETZT + timedelta(minutes=10),
+                        raising=False)
+    termin_takt._kurs(JETZT)
+    assert ki.n == 0
+    monkeypatch.setattr(termin_takt, "_uhr", lambda: JETZT, raising=False)
+    termin_takt._kurs(JETZT)
+    assert ki.n == 1
+
+
+def test_kein_kurs_ki_wenn_die_runde_schon_ki_nutzte(ki, monkeypatch):
+    # I2: ein frueherer Schritt der Runde (hier: Auswertung) hat die KI schon benutzt
+    _sitzung("k-1")
+    monkeypatch.setattr(ollama, "_anfrage",
+                        lambda *a, **k: json.dumps({"message": {"content": "{}"}}).encode())
+
+    def auswerten_mit_ki(jetzt):
+        ECHT_CHAT("system", "nutzer")
+        return 1
+
+    monkeypatch.setattr(termin_takt, "SCHRITTE", (("auswerten", auswerten_mit_ki),
+                                                  ("kurs", termin_takt._kurs)))
+    termin_takt.runde(JETZT)
+    assert ki.n == 0
+    monkeypatch.setattr(termin_takt, "SCHRITTE", (("auswerten", lambda j: 0),
+                                                  ("kurs", termin_takt._kurs)))
+    termin_takt.runde(JETZT + timedelta(minutes=1))
+    assert ki.n == 1
+
+
+def test_pdf_wartet_wenn_termin_ansteht(ki, monkeypatch):
+    # Minor 8: Ablegen (PDF) und Handbuch-Ausgabe nicht waehrend eines Termins mit Bot
+    # (sales-auge druckt im selben Prozess, der den Bildschirm des Kurses aufnimmt)
+    lead = _lead()
+    _sitzung("k-1", kurs_json=True)                           # Ablegen faellig
+    _sitzung("k-2", beginn=TAG + timedelta(days=1), lead=lead)
+    _runden(15, start=JETZT - timedelta(days=1))
+    assert _z("k-2")["kurs_status"] == "fertig"
+    server._q("update termin_mitschriften set kurs_status = null where uid = 'k-1' "
+              "returning id")
+    server._q("update kurs_handbuch set fassungen_stand = null where lead_id = %s "
+              "returning lead_id", (lead,))
+    pdfs = []
+    monkeypatch.setattr(kurs_pdf, "pdf_aus_html", lambda html: pdfs.append(1) or b"%PDF-1.7")
+    _bald(JETZT + timedelta(minutes=20))
+    monkeypatch.setattr(termin_takt, "_uhr", lambda: JETZT + timedelta(minutes=10),
+                        raising=False)
+    termin_takt._kurs(JETZT)
+    assert pdfs == [] and _z("k-1")["kurs_status"] is None
+    assert termin_takt._kurs_pause == {}                      # kein Fehlversuch
+    monkeypatch.setattr(termin_takt, "_uhr", lambda: JETZT + timedelta(hours=3),
+                        raising=False)
+    _runden(2, start=JETZT + timedelta(hours=3))
+    assert _z("k-1")["kurs_status"] == "fertig"
+    assert server._q("select fassungen_stand from kurs_handbuch where lead_id = %s",
+                     (lead,))[0]["fassungen_stand"] is not None
+
+
+def _loeschantrag(lead):
+    server._q("update leads set enrichment = jsonb_set(coalesce(enrichment, '{}'::jsonb), "
+              "%s, %s::jsonb, true) where id = %s returning id",
+              ([server.LOESCH_SCHLUESSEL], json.dumps({"am": "2026-11-19", "quelle": "test"}),
+               lead))
+
+
+def test_kein_handbuch_fuer_lernenden_mit_loeschantrag(ki):
+    # I3 (Verteidigung in der Tiefe): kurs_lead_id steht noch, der Kontakt hat aber einen
+    # Loeschantrag - weder zuordnen noch fortschreiben noch ausgeben
+    weg, da = _lead("Weg-fixture"), _lead("Da-fixture")
+    _sitzung("k-weg", lead=weg, kurs_json=True, kurs_status="fertig")
+    _sitzung("k-offen", beginn=TAG + timedelta(days=1), lead=weg, kurs_json=True,
+             kurs_status="fertig")
+    _sitzung("k-da", beginn=TAG + timedelta(days=2), lead=da, kurs_json=True,
+             kurs_status="fertig")
+    kh.zuordnen(weg, "k-weg")                 # offene Quelle (fortschreiben faellig)
+    n = ki.n
+    _loeschantrag(weg)
+    _runden(15)
+    assert ki.n - n > 0                       # Da wird bearbeitet
+    assert server._q("select 1 from kurs_handbuch where lead_id = %s", (da,))
+    assert [q["uid"] for q in server._q(
+        "select uid from kurs_handbuch_quelle where lead_id = %s", (weg,))] == ["k-weg"]
+    assert not server._q("select 1 from kurs_handbuch_kapitel where lead_id = %s", (weg,))
+    assert not server._q("select 1 from kurs_handbuch where lead_id = %s", (weg,))
+
+
+def test_keine_ausgabe_fuer_gesperrten_lernenden(ki, monkeypatch):
+    # I3: Sperre (Verbotsliste) wie Loeschantrag - auch keine Ausgabe mehr
+    import sperrliste
+    lead = _lead()
+    _sitzung("k-1", lead=lead, kurs_json=True, kurs_status="fertig")
+    _runden(5)
+    assert server._q("select 1 from kurs_handbuch where lead_id = %s", (lead,))
+    server._q("update kurs_handbuch set fassungen_stand = null where lead_id = %s "
+              "returning lead_id", (lead,))
+    telefon = server._q("select phone from leads where id = %s", (lead,))[0]["phone"]
+    kennung = sperrliste.kennung_tel(telefon)
+    monkeypatch.setattr(sperrliste, "gesperrt",
+                        lambda q, email="", phone="": "test: gesperrt"
+                        if sperrliste.kennung_tel(phone) == kennung else None)
+    aufrufe = []
+    monkeypatch.setattr(kh, "ausgeben", lambda lid: aufrufe.append(lid))
+    _runden(3, start=JETZT + timedelta(hours=1))
+    assert aufrufe == []

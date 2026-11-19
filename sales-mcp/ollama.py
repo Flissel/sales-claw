@@ -30,6 +30,15 @@ class OllamaFehler(Exception):
     """Ollama nicht konfiguriert, nicht erreichbar oder Antwort unbrauchbar."""
 
 
+# Begonnene KI-Auftraege (`chat`) dieses Prozesses, auch gescheiterte. Der Taktgeber erkennt
+# daran, ob ein frueherer Schritt der laufenden Runde die KI schon benutzt hat.
+_auftraege = 0
+
+
+def auftraege() -> int:
+    return _auftraege
+
+
 def _basis() -> str:
     return os.environ.get("OLLAMA_URL", "").strip().rstrip("/")
 
@@ -111,6 +120,8 @@ def chat(system: str, nutzer: str, *, als_json: bool = False,
     """POST /api/chat; gibt `message.content` zurueck. `timeout_s` ersetzt
     `OLLAMA_TIMEOUT_S` fuer diesen Aufruf (Briefing: `briefing_timeout()`).
     `bilder` (JPEG-Bytes) gehen Base64-kodiert als `images` an die Nutzer-Nachricht."""
+    global _auftraege
+    _auftraege += 1
     nutzer_nachricht: dict = {"role": "user", "content": nutzer}
     if bilder:
         nutzer_nachricht["images"] = [base64.b64encode(b).decode("ascii") for b in bilder]
