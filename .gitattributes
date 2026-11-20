@@ -1,2 +1,7 @@
 sales-mcp/konzept_lesen.py -text
 sales-mcp/tests/konzept_vektoren.json -text
+# Vexa-Patch-Abbild: Dateien gehen byteweise ins Linux-Abbild (sha256-Pruefung in vexa-pause-bauen.sh).
+deploy/vexa/patch/** text eol=lf
+deploy/vexa/Dockerfile.pause text eol=lf
+deploy/vexa/vexa-pause-bauen.sh text eol=lf
+deploy/vexa/README-pause.md text eol=lf

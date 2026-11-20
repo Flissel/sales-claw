@@ -1,0 +1,5 @@
+# Baukontext von Dockerfile.pause ist deploy/vexa/patch. Nur Quelltexte ins Abbild.
+**/__pycache__
+**/*.pyc
+**/node_modules
+.dockerignore

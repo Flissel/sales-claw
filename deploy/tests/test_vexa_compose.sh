@@ -32,7 +32,8 @@ echo "$AKTIV" | grep -qx 'name: vexa' || fehler "Projektname ist nicht 'name: ve
 n_image=0
 while IFS= read -r zeile; do
   n_image=$((n_image + 1))
-  [[ $zeile =~ @sha256:[0-9a-f]{64}[[:space:]\"\']*$ ]] || fehler "image ohne Digest: $zeile"
+  # Auch als Vorgabe einer Variablen (${VEXA_LITE_IMAGE:-...@sha256:...}).
+  [[ $zeile =~ @sha256:[0-9a-f]{64}\}?[[:space:]\"\']*$ ]] || fehler "image ohne Digest: $zeile"
 done < <(echo "$AKTIV" | grep -E '^[[:space:]]+image:')
 [ "$n_image" -ge 6 ] || fehler "erwartet mindestens 6 image-Zeilen (inkl. vexa-tor, nginx), gefunden $n_image"
 
@@ -76,6 +77,11 @@ done
 
 # vexa-lite: Prozess-Backend, Jitsi-Host, Port; NICHT an sales-claw_default.
 LITE="$(block vexa-lite)"
+# Abbild waehlbar (Patch-Abbild, README-pause.md); Vorgabe bleibt das gepinnte Upstream-Abbild.
+echo "$LITE" | grep -qE '^[[:space:]]+image:[[:space:]]*"?\$\{VEXA_LITE_IMAGE:-vexaai/vexa-lite:v0\.12\.28@sha256:[0-9a-f]{64}\}"?[[:space:]]*$' \
+  || fehler "vexa-lite: image nicht \${VEXA_LITE_IMAGE:-vexaai/vexa-lite:v0.12.28@sha256:...}"
+grep -qE '^#VEXA_LITE_IMAGE=sales-vexa-lite:v0\.12\.28-pause1$' "$BEISPIEL" || fehler ".env.example nennt VEXA_LITE_IMAGE nicht (auskommentiert)"
+if grep -qE '^VEXA_LITE_IMAGE=' "$BEISPIEL"; then fehler ".env.example setzt VEXA_LITE_IMAGE aktiv (Prod erst mit Task 9)"; fi
 echo "$LITE" | grep -qE 'RUNTIME_BACKEND:[[:space:]]*"?process"?[[:space:]]*$' || fehler "RUNTIME_BACKEND: process fehlt"
 # Jitsi-Hosts aus deploy/vexa/.env, Vorgabe meet.ffmuc.net.
 echo "$LITE" | grep -qE 'VEXA_JITSI_HOSTS:[[:space:]]*"?\$\{VEXA_JITSI_HOSTS:-meet\.ffmuc\.net\}"?[[:space:]]*$'   || fehler "VEXA_JITSI_HOSTS nicht aus der .env (\${VEXA_JITSI_HOSTS:-meet.ffmuc.net})"
@@ -195,6 +201,9 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   [ "$n_pub" -ge 1 ] || fehler "gerendert: kein veroeffentlichter Port"
   [ "$n_pub" -eq "$n_loop" ] || fehler "gerendert: $n_pub veroeffentlichte Ports, aber nur $n_loop mit host_ip 127.0.0.1"
   if echo "$ausgabe" | grep -q 'network_mode'; then fehler "gerendert: network_mode"; fi
+  # Ohne VEXA_LITE_IMAGE (die .env.example setzt sie nicht) bleibt es beim Upstream-Abbild.
+  echo "$ausgabe" | grep -qE '^[[:space:]]+image:[[:space:]]*vexaai/vexa-lite:v0\.12\.28@sha256:[0-9a-f]{64}[[:space:]]*$' \
+    || fehler "gerendert: vexa-lite nicht auf vexaai/vexa-lite:v0.12.28@sha256:..."
   echo "OK: docker compose config gueltig"
 else
   echo "HINWEIS: docker compose nicht vorhanden, config-Pruefung uebersprungen"

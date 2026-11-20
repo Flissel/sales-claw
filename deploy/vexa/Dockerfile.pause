@@ -1,0 +1,52 @@
+# Patch-Abbild sales-vexa-lite:v0.12.28-pause1 (Meeting-Steuerseite, Plan Task 3).
+# Upstream vexaai/vexa-lite:v0.12.28 (Apache-2.0) plus die Dateien aus
+# deploy/vexa/patch/: Bot-Acts pause/resume mit Pausen-Tor, Meeting-API-Endpunkte
+# pause/resume mit Pausenzustand und Sicherheitsloeschung, Gateway-Weiterleitung.
+# Kein Fork: nur diese Dateien liegen ueber dem Original. Warum und wie man es auf
+# eine neue Vexa-Version hebt: README-pause.md.
+#
+# Bauen und pruefen nur ueber das Skript (Kontext ist deploy/vexa/patch, nicht
+# deploy/vexa - so geht die .env mit den Geheimnissen nie an den Daemon):
+#   bash deploy/vexa/vexa-pause-bauen.sh
+#
+# Basis per Digest gepinnt (derselbe wie in docker-compose.yml fuer vexa-lite).
+FROM vexaai/vexa-lite:v0.12.28@sha256:9eebb534fdab4079baf11af678968ac8d9679e20ce48db206bcf5a62b85eb538
+
+LABEL org.opencontainers.image.title="sales-vexa-lite" \
+      org.opencontainers.image.version="v0.12.28-pause1" \
+      org.opencontainers.image.base.name="vexaai/vexa-lite:v0.12.28" \
+      org.opencontainers.image.base.digest="sha256:9eebb534fdab4079baf11af678968ac8d9679e20ce48db206bcf5a62b85eb538" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.description="vexa-lite v0.12.28 mit sales-claw pause patch (Bot, Meeting-API, Gateway)"
+
+# ── Bot ─────────────────────────────────────────────────────────────────────
+# Der Prozess-Backend-Starter (/usr/local/bin/vexa-bot-launch) fuehrt
+# `cd /app/core/meetings/services/bot && exec node dist/index.js` aus, also das
+# KOMPILIERTE dist/, nicht src/. Darum nach dem Kopieren mit dem build-Skript
+# des Pakets neu bauen (tsc + build-browser-utils.mjs). Die Werkzeugkette
+# (node 22, tsc, esbuild) liegt im Abbild; ohne Netz gebaut. Ungepatcht
+# reproduziert dieser Bau dist/ byteweise (geprueft, siehe Task-3-Bericht).
+COPY bot/ /app/core/meetings/services/bot/
+RUN --network=none cd /app/core/meetings/services/bot \
+ && npm run build \
+ && test -f dist/pause-gate.js \
+ && cmp /app/browser-utils.global.js dist/browser-utils.global.js
+
+# ── Meeting-API ─────────────────────────────────────────────────────────────
+# Zwei Kopien von src/ im Abbild: /app/meeting-api/src ist die Laufzeit
+# (supervisord: PYTHONPATH=/app/meeting-api/src), /app/core/... der Baum, in
+# dem die Paket-Tests laufen. Beide muessen den Patch tragen.
+COPY meeting-api/src/ /app/meeting-api/src/
+COPY meeting-api/src/ /app/core/meetings/services/meeting-api/src/
+COPY meeting-api/tests/ /app/core/meetings/services/meeting-api/tests/
+
+# ── Gateway ─────────────────────────────────────────────────────────────────
+# app.py und routes.v1.json gehoeren zusammen: das Gateway verweigert den Start,
+# wenn eine Route von app.py im Manifest fehlt. Laufzeit (supervisord:
+# directory=/app/gateway, PYTHONPATH=/app/gateway/src) und Test-Baum
+# (/app/core/gateway/services/gateway, Manifest unter /app/core/meetings).
+COPY gateway/src/gateway/app.py /app/gateway/src/gateway/app.py
+COPY gateway/core/meetings/routes.v1.json /app/gateway/core/meetings/routes.v1.json
+COPY gateway/src/gateway/app.py /app/core/gateway/services/gateway/src/gateway/app.py
+COPY gateway/core/meetings/routes.v1.json /app/core/meetings/routes.v1.json
+COPY gateway/tests/ /app/core/gateway/services/gateway/tests/

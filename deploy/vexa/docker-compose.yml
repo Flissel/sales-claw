@@ -129,8 +129,12 @@ services:
   # Alles in einem Container (Gateway, Admin-API, meeting-api, runtime, Bots
   # als Prozesse). RUNTIME_BACKEND steht in supervisord.conf ohnehin fest auf
   # "process"; hier zusaetzlich gesetzt, damit die Datei es sagt.
+  # Abbild waehlbar ueber VEXA_LITE_IMAGE (deploy/vexa/.env). Ohne die Variable
+  # gilt das Upstream-Abbild wie bisher (per Digest gepinnt). Das Patch-Abbild
+  # mit Pause/Weiter (sales-vexa-lite:v0.12.28-pause1, lokal gebaut von
+  # vexa-pause-bauen.sh, siehe README-pause.md) erst nach Felix' OK eintragen.
   vexa-lite:
-    image: vexaai/vexa-lite:v0.12.28@sha256:9eebb534fdab4079baf11af678968ac8d9679e20ce48db206bcf5a62b85eb538
+    image: ${VEXA_LITE_IMAGE:-vexaai/vexa-lite:v0.12.28@sha256:9eebb534fdab4079baf11af678968ac8d9679e20ce48db206bcf5a62b85eb538}
     container_name: vexa-lite
     restart: unless-stopped
     shm_size: 2gb
