@@ -17,6 +17,10 @@ Alle `TERMIN_TAKT_S` Sekunden (Vorgabe 30) eine Runde, jeder Schritt mit eigenem
      (gleiche Pause wie 6), einen Bericht (neu) ablegen, hoechstens stuendlich
      Dateien und Buchungen abgleichen (`mitschrift_bericht.abgleichen`)
 
+Daneben laeuft ein Thread mit dem schnellen Pausenweg der Meeting-Steuerseite
+(`termin_pause.schleife`: Pause/Weiter/Notbremse jede Sekunde, Live-Transkript
+alle 5 s).
+
 NUR DER TAKTGEBER SPRICHT MIT VEXA (Final-Review C1): Oberflaeche und MCP haben
 keinen VEXA_API_KEY; sie setzen nur Status und lassen die Vexa-Ids stehen.
 Schritt 5 stoppt den Bot und loescht das Meeting.
@@ -60,6 +64,7 @@ import mitschrift_einordnung
 import ollama
 import server
 import termin_akte
+import termin_pause
 import vexa
 
 LOG = logging.getLogger("sales-termine")
@@ -269,14 +274,27 @@ def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
     gegangen; nur die Meeting-Id bleibt zum Loeschen.
 
     Die Segmente werden VOR dem Insert bereinigt: ihre Indizes in der
-    gespeicherten Mitschrift sind Bezug fuer Auswertung und Vorschaubilder."""
-    segmente = mitschrift_bereinigen.bereinigen(segmente)
+    gespeicherten Mitschrift sind Bezug fuer Auswertung und Vorschaubilder.
+
+    Pausen (Meeting-Steuerseite, R4/R11): unter der Sperre fallen erst alle
+    Segmente weg, die ein Pausenfenster beruehren (`termin_pause.pausen_filtern`,
+    VOR dem Bereinigen - das verbindet Bruchstuecke). Eine noch offene Pause
+    (Ende waehrend der Pause, auch nach Notbremse) schliesst mit bis = Terminende
+    (nie vor `von`); die Live-Ablage der Akte wird mit `fertig` geleert."""
+    roh = len(segmente)
     with server.pool.connection() as conn:
         with conn.transaction():
-            z = conn.execute("select status from termin_akten where uid = %s for update",
+            z = conn.execute("select status, ende from termin_akten where uid = %s for update",
                              (uid,)).fetchone()
             if not z or z["status"] not in BOT_STATUS:
                 return False
+            pausen = conn.execute("select von, bis from termin_pausen where uid = %s "
+                                  "order by von", (uid,)).fetchall()
+            segmente = termin_pause.pausen_filtern(segmente, pausen)
+            if len(segmente) != roh:
+                LOG.info("Mitschrift uid=%s: %d Segmente aus Pausen verworfen",
+                         _h(uid), roh - len(segmente))
+            segmente = mitschrift_bereinigen.bereinigen(segmente)
             conn.execute(
                 "insert into termin_mitschriften (uid, segmente, auswertung_status) "
                 "values (%s, %s::jsonb, %s) on conflict (uid) do nothing",
@@ -287,6 +305,9 @@ def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
                     "geaendert_am = now() where uid = %s "
                     "and status in ('wartet_auf_einlass', 'laeuft')", (uid,)).rowcount != 1:
                 raise RuntimeError("Status inzwischen geaendert")   # rollt den Insert zurueck
+            conn.execute("update termin_pausen set bis = greatest(%s::timestamptz, von) "
+                         "where uid = %s and bis is null", (z["ende"], uid))
+            conn.execute("delete from termin_live_segmente where uid = %s", (uid,))
     return True
 
 
@@ -299,12 +320,8 @@ def _stille_nach_ende() -> timedelta:
     return timedelta(minutes=max(minuten, 1.0))
 
 
-def _zeitpunkt(text: str) -> datetime | None:
-    try:
-        t = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+# Vexa-Zeit -> aware datetime; dieselbe Umrechnung nutzt der Pausenfilter.
+_zeitpunkt = termin_pause.zeitpunkt
 
 
 def _nach_ende_stoppen(z: dict, jetzt: datetime) -> None:
@@ -1048,6 +1065,11 @@ def main() -> int:
     except ValueError:      # nicht im Hauptthread
         pass
     LOG.info("sales-termine startet (Takt %.0f s%s)", _takt(), ", einmalig" if einmal else "")
+    if not einmal:
+        # Meeting-Steuerseite: Pause/Weiter/Notbremse binnen 2 s und das
+        # Live-Transkript laufen neben dem 30-s-Takt (termin_pause.schleife).
+        threading.Thread(target=termin_pause.schleife, args=(_STOPP,),
+                         name="pausen-weg", daemon=True).start()
     while not _STOPP.is_set():
         try:
             runde(datetime.now(timezone.utc))

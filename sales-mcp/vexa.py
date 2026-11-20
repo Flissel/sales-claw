@@ -17,8 +17,11 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("vexa")
+
+_EPOCHE = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 BOT_NAME = "VibeMind Mitschrift"
 SPRACHE = "de"
@@ -75,7 +78,7 @@ def _zahl(name: str, standard: int) -> int:
 
 
 def _anfrage(methode: str, pfad: str, body: dict | None = None,
-             ok404: bool = False):
+             ok404: bool = False, timeout_s: float | None = None):
     schluessel = _schluessel()
     if not schluessel:
         raise VexaFehler("VEXA_API_KEY fehlt")
@@ -90,7 +93,7 @@ def _anfrage(methode: str, pfad: str, body: dict | None = None,
         req = urllib.request.Request(_basis() + pfad, data=daten, headers=kopf,
                                      method=methode)
         with urllib.request.urlopen(
-                req, timeout=_zahl("VEXA_TIMEOUT_S", 20)) as antwort:
+                req, timeout=timeout_s or _zahl("VEXA_TIMEOUT_S", 20)) as antwort:
             roh = antwort.read()
     except urllib.error.HTTPError as e:
         _erreichbar_merken(True)
@@ -148,8 +151,12 @@ def meeting_lesen(meeting_id: int) -> dict:
 def segmente_holen(meeting_id: int) -> list[dict]:
     antwort = _anfrage("GET", f"/transcripts/by-id/{int(meeting_id)}")
     roh = antwort.get("segments", []) if isinstance(antwort, dict) else []
+    # `ende` und `segment_id` dienen nur dem Pausenfilter und der Live-Ablage
+    # (termin_pause); die gespeicherte Mitschrift behaelt das alte Schema.
     segmente = [{"sprecher": s.get("speaker") or "",
                  "beginn": s.get("absolute_start_time") or "",
+                 "ende": s.get("absolute_end_time") or "",
+                 "segment_id": str(s.get("segment_id") or ""),
                  "text": s.get("text") or "",
                  "sprache": s.get("language") or ""} for s in roh]
     # Ohne Zeitstempel ans Ende; sort ist stabil, die Vexa-Reihenfolge bleibt.
@@ -157,11 +164,49 @@ def segmente_holen(meeting_id: int) -> list[dict]:
     return segmente
 
 
-def bot_stoppen(plattform: str, native_id: str) -> None:
-    pfad = "/bots/{}/{}".format(
+def _bot_pfad(plattform: str, native_id: str) -> str:
+    return "/bots/{}/{}".format(
         urllib.parse.quote(plattform, safe=""),
         urllib.parse.quote(native_id, safe="@."))
-    _anfrage("DELETE", pfad, ok404=True)
+
+
+def bot_stoppen(plattform: str, native_id: str) -> None:
+    _anfrage("DELETE", _bot_pfad(plattform, native_id), ok404=True)
+
+
+def _pause_timeout() -> int:
+    # Der schnelle Pausenweg laeuft jede Sekunde: ein haengendes Vexa darf ihn
+    # nicht 20 s lang blockieren.
+    return _zahl("VEXA_PAUSE_TIMEOUT_S", 5)
+
+
+def pause_setzen(plattform: str, native_id: str, ab: datetime | None) -> None:
+    """Aufnahme anhalten ab der Klickzeit `ab` (POST .../pause, `at_ms` als
+    ganze Epoch-Millisekunden) bzw. mit `ab=None` fortsetzen (POST .../resume).
+    VexaFehler bei Fehler (404: VexaNichtGefunden)."""
+    pfad = _bot_pfad(plattform, native_id)
+    if ab is None:
+        _anfrage("POST", pfad + "/resume", timeout_s=_pause_timeout())
+        return
+    if ab.tzinfo is None:
+        ab = ab.replace(tzinfo=timezone.utc)
+    at_ms = (ab - _EPOCHE) // timedelta(milliseconds=1)
+    _anfrage("POST", pfad + "/pause", {"at_ms": int(at_ms)}, timeout_s=_pause_timeout())
+
+
+def pause_zustand(meeting_id: int) -> dict | None:
+    """Vom Bot bestaetigter Pausenzustand `{"pausiert": bool, "seit_ms": int|None}`
+    aus `data.aufnahme_pause` von GET /meetings/{id}; None, wenn (noch) keine
+    gueltige Bestaetigung vorliegt. VexaFehler bei Fehler."""
+    antwort = _anfrage("GET", f"/meetings/{int(meeting_id)}", timeout_s=_pause_timeout())
+    daten = antwort.get("data") if isinstance(antwort, dict) else None
+    p = daten.get("aufnahme_pause") if isinstance(daten, dict) else None
+    if not isinstance(p, dict) or not isinstance(p.get("pausiert"), bool):
+        return None
+    seit = p.get("seit_ms")
+    if isinstance(seit, bool) or not isinstance(seit, (int, float)):
+        seit = None
+    return {"pausiert": p["pausiert"], "seit_ms": int(seit) if seit is not None else None}
 
 
 def meeting_loeschen(meeting_id: int) -> None:

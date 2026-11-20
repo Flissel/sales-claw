@@ -1,0 +1,615 @@
+"""Schneller Pausenweg und Live-Transkript in sales-termine (Meeting-Steuerseite, Task 5).
+
+Vexa und Telegram sind gefakt; die Datenbank ist sales_test. Die Zeit kommt als
+`jetzt` in die Runden - Wiederholungen und die 10-s-Frist rechnen damit.
+"""
+import hashlib
+import json
+import logging
+import os
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+os.environ["SALES_DB_SCHEMA"] = "sales_test"
+import betreiber_hinweis  # noqa: E402
+import server  # noqa: E402
+import termin_akte  # noqa: E402
+import termin_pause  # noqa: E402
+import termin_takt  # noqa: E402
+import vexa  # noqa: E402
+
+T0 = datetime(2099, 1, 10, 10, 0, tzinfo=timezone.utc)
+MID = 41
+NATIVE = "Raum-Karla@meet.ffmuc.net"
+TITEL = "Geheimprojekt Karla Kunde"
+HINWEISE: list[str] = []
+
+
+def s(sek: float) -> timedelta:
+    return timedelta(seconds=sek)
+
+
+def ms(t: datetime) -> int:
+    return int(t.timestamp() * 1000)
+
+
+def iso(t: datetime) -> str:
+    return t.isoformat().replace("+00:00", "Z")
+
+
+class FakeVexa:
+    def __init__(self):
+        self.acts: list[tuple] = []
+        self.zustand: dict[int, dict | None] = {}
+        self.zustand_fehler: dict[int, Exception] = {}
+        self.senden_fehler: list[Exception] = []
+        self.stoppen_fehler: list[Exception] = []
+        self.segmente: dict[int, list[dict]] = {}
+        self.holen_fehler: dict[int, Exception] = {}
+        self.lesungen = 0
+
+    def pause_setzen(self, plattform, native_id, ab):
+        self.acts.append(("pause" if ab is not None else "resume", plattform, native_id, ab))
+        if self.senden_fehler:
+            raise self.senden_fehler.pop(0)
+
+    def pause_zustand(self, mid):
+        self.lesungen += 1
+        if mid in self.zustand_fehler:
+            raise self.zustand_fehler[mid]
+        return self.zustand.get(mid)
+
+    def bot_stoppen(self, plattform, native_id):
+        self.acts.append(("stoppen", plattform, native_id, None))
+        if self.stoppen_fehler:
+            raise self.stoppen_fehler.pop(0)
+
+    def segmente_holen(self, mid):
+        if mid in self.holen_fehler:
+            raise self.holen_fehler[mid]
+        return [dict(x) for x in self.segmente.get(mid, [])]
+
+    def pausen_abs(self):
+        return [a[3] for a in self.acts if a[0] == "pause"]
+
+
+@pytest.fixture
+def fake(monkeypatch):
+    f = FakeVexa()
+    for name in ("pause_setzen", "pause_zustand", "bot_stoppen", "segmente_holen"):
+        monkeypatch.setattr(vexa, name, getattr(f, name))
+    return f
+
+
+@pytest.fixture(autouse=True)
+def leer(monkeypatch):
+    server._q("truncate sales_test.termin_akten cascade")
+    monkeypatch.setenv("VEXA_API_KEY", "SCHLUESSEL-test")
+    monkeypatch.setenv("UI_BASIS_URL", "https://ui.example.test")
+    HINWEISE.clear()
+    monkeypatch.setattr(betreiber_hinweis, "senden",
+                        lambda text, *, link_vorschau=False: HINWEISE.append(text) or True)
+    termin_pause._zuruecksetzen()
+    yield
+    termin_pause._zuruecksetzen()
+    server._q("truncate sales_test.termin_akten cascade")
+
+
+def _akte(uid="w1", status="laeuft", ids=True, mid=MID, ende=None):
+    server._q(
+        "insert into termin_akten (uid, herkunft, beginn, ende, status, titel, "
+        "vexa_meeting_id, vexa_plattform, vexa_native_id) "
+        "values (%s, 'kalender', %s, %s, %s, %s, %s, %s, %s) returning uid",
+        (uid, T0 - timedelta(minutes=5), ende or T0 + timedelta(hours=1), status, TITEL,
+         mid if ids else None, "jitsi" if ids else None, NATIVE if ids else None))
+    return uid
+
+
+def _zeile(uid="w1"):
+    return server._q("select * from termin_akten where uid = %s", (uid,))[0]
+
+
+def _live(uid="w1"):
+    return server._q("select segment_id, beginn, sprecher, text from termin_live_segmente "
+                     "where uid = %s order by beginn, segment_id", (uid,))
+
+
+def _live_einfuegen(uid, sid, beginn, text="x"):
+    server._q("insert into termin_live_segmente (uid, segment_id, beginn, sprecher, text) "
+              "values (%s, %s, %s, 'Karla', %s) returning uid", (uid, sid, beginn, text))
+
+
+def _seg(sid, beginn, ende=None, text=None, sprecher="Karla"):
+    return {"sprecher": sprecher, "beginn": iso(beginn) if beginn else "",
+            "ende": iso(ende) if ende else "", "segment_id": sid,
+            "text": text or f"Text {sid}", "sprache": "de"}
+
+
+def _bestaetigt(f, von, mid=MID):
+    f.zustand[mid] = {"pausiert": True, "seit_ms": ms(von)}
+
+
+# ---------- Brief, Step 2 ----------
+
+def test_wunsch_pause_sendet_act_mit_klickzeit(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    assert termin_pause.wache_runde(T0 + s(0.5)) == 1
+    assert fake.acts == [("pause", "jitsi", NATIVE, T0)]
+    # Doppelklick setzt aufnahme_wunsch_am neu - der Act behaelt die erste Klickzeit (R10)
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0 + s(2))
+    assert _zeile()["aufnahme_wunsch_am"] == T0 + s(2)
+    termin_pause.wache_runde(T0 + s(1.5))     # unbestaetigt, aber noch zu frueh fuer erneut
+    assert fake.pausen_abs() == [T0]
+    termin_pause.wache_runde(T0 + s(4))       # unbestaetigt, Wiederholung faellig
+    assert fake.pausen_abs() == [T0, T0]
+
+
+def test_bestaetigung_setzt_pausiert_seit(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    assert _zeile()["aufnahme_pausiert_seit"] is None
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(1.5))
+    z = _zeile()
+    assert z["aufnahme_pausiert_seit"] == T0 and z["aufnahme_pause_fehler"] is None
+    assert termin_akte.pausen("w1")[0]["bestaetigt_am"] == T0 + s(1.5)
+    # R11c: nach der ERSTEN Bestaetigung genau ein zweiter pause-Aufruf, gleiche Klickzeit
+    assert fake.pausen_abs() == [T0, T0]
+    for t in (2.5, 5, 12, 30, 90):
+        termin_pause.wache_runde(T0 + s(t))
+    assert fake.pausen_abs() == [T0, T0]
+    assert termin_akte.pausen("w1")[0]["bestaetigt_am"] == T0 + s(1.5)
+    assert _zeile()["aufnahme_pause_fehler"] is None and HINWEISE == []
+
+
+def test_bestaetigung_ohne_seit_ms_nimmt_von(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    fake.zustand[MID] = {"pausiert": True, "seit_ms": None}
+    termin_pause.wache_runde(T0 + s(0.5))
+    assert _zeile()["aufnahme_pausiert_seit"] == T0
+
+
+def test_bestaetigung_mit_seit_ms_vom_bot(fake):
+    """Der Bot klemmt eine Klickzeit in der Zukunft auf seine Uhr: seit_ms zaehlt."""
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    fake.zustand[MID] = {"pausiert": True, "seit_ms": ms(T0) - 700}
+    termin_pause.wache_runde(T0 + s(0.5))
+    assert _zeile()["aufnahme_pausiert_seit"] == T0 - timedelta(milliseconds=700)
+
+
+def test_alte_bestaetigung_einer_spaeteren_pause_zaehlt_nicht(fake):
+    """seit_ms deutlich NACH der Klickzeit ist nicht diese Pause: erneut senden."""
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    fake.zustand[MID] = {"pausiert": True, "seit_ms": ms(T0 + s(60))}
+    termin_pause.wache_runde(T0 + s(0.5))
+    assert _zeile()["aufnahme_pausiert_seit"] is None
+
+
+def test_ohne_bestaetigung_nach_10s_fehler_und_ein_hinweis(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    for i in range(1, 11):
+        termin_pause.wache_runde(T0 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] is None          # genau 10 s: noch nicht
+    assert HINWEISE == []
+    for i in range(11, 31):
+        termin_pause.wache_runde(T0 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] == "nicht_bestaetigt"
+    assert len(HINWEISE) == 1
+    text = HINWEISE[0]
+    assert "nicht bestätigt" in text
+    assert "https://ui.example.test/termine/w1/live" in text
+    assert TITEL not in text and "Karla" not in text and NATIVE not in text
+    # Wiederholungen gedrosselt (nicht jede Sekunde), aber es wird weiter gesendet
+    assert 2 <= len(fake.pausen_abs()) <= 11
+    assert set(fake.pausen_abs()) == {T0}
+    # Spaete Bestaetigung loescht den Fehler
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(31))
+    z = _zeile()
+    assert z["aufnahme_pause_fehler"] is None and z["aufnahme_pausiert_seit"] == T0
+    # Vexa vergisst die Pause wieder: Fehler ja, aber kein zweiter Hinweis je Pause
+    fake.zustand[MID] = None
+    for i in range(32, 50):
+        termin_pause.wache_runde(T0 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] == "nicht_bestaetigt"
+    assert len(HINWEISE) == 1
+
+
+def test_hinweis_scheitert_wird_spaeter_wiederholt(fake, monkeypatch):
+    versuche: list[str] = []
+    monkeypatch.setattr(betreiber_hinweis, "senden",
+                        lambda text, *, link_vorschau=False: versuche.append(text) and False)
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    for i in range(1, 30):
+        termin_pause.wache_runde(T0 + s(i))
+    assert len(versuche) == 1                                 # nicht jede Sekunde
+    termin_pause.wache_runde(T0 + s(11 + 61))
+    assert len(versuche) == 2
+
+
+def test_lobby_wunsch_wird_nach_aktivierung_gesendet(fake):
+    _akte(status="wartet_auf_einlass", ids=False)
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    assert termin_pause.wache_runde(T0 + s(0.5)) == 0
+    assert fake.acts == [] and fake.lesungen == 0
+    server._q("update termin_akten set vexa_meeting_id = %s, vexa_plattform = 'jitsi', "
+              "vexa_native_id = %s where uid = 'w1' returning uid", (MID, NATIVE))
+    assert termin_pause.wache_runde(T0 + s(1)) == 1
+    assert fake.acts == [("pause", "jitsi", NATIVE, T0)]
+    assert _zeile()["status"] == "wartet_auf_einlass"
+
+
+def test_vexa_neustart_schickt_pause_erneut(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(1.5))
+    assert fake.pausen_abs() == [T0, T0]
+    # Vexa neu gestartet: Zustand pausiert:false
+    fake.zustand[MID] = {"pausiert": False, "seit_ms": None}
+    assert termin_pause.wache_runde(T0 + s(20)) == 1
+    assert fake.pausen_abs() == [T0, T0, T0]
+    assert _zeile()["aufnahme_pausiert_seit"] is None         # Seite zeigt "wird pausiert"
+    # Zustand fehlt ganz (neues Meeting-Objekt): ebenfalls erneut
+    fake.zustand[MID] = None
+    termin_pause.wache_runde(T0 + s(24))
+    assert fake.pausen_abs() == [T0] * 4
+    # wieder bestaetigt: kein weiterer Nachschuss (nur nach der ERSTEN Bestaetigung)
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(25))
+    assert fake.pausen_abs() == [T0] * 4
+    assert _zeile()["aufnahme_pausiert_seit"] == T0
+
+
+def test_vexa_nicht_erreichbar_beim_lesen_sendet_trotzdem(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    fake.zustand_fehler[MID] = vexa.VexaNichtErreichbar("weg")
+    assert termin_pause.wache_runde(T0 + s(0.5)) == 1
+    assert fake.pausen_abs() == [T0]
+
+
+def test_senden_scheitert_wird_wiederholt(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    fake.senden_fehler.append(vexa.VexaFehler("503"))
+    assert termin_pause.wache_runde(T0 + s(0.5)) == 0
+    assert termin_pause.wache_runde(T0 + s(4)) == 1
+    assert fake.pausen_abs() == [T0, T0]
+
+
+def test_notbremse_stoppt_bot_sofort_und_behaelt_live_segmente(fake):
+    _akte()
+    _live_einfuegen("w1", "s1", T0 - s(30), "vor der Pause")
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    termin_akte.aufnahme_wuenschen("w1", "notbremse", "felix", T0 + s(5))
+    fake.stoppen_fehler.append(vexa.VexaNichtErreichbar("kurz weg"))
+    termin_pause.wache_runde(T0 + s(5.5))                    # scheitert: naechste Sekunde
+    assert termin_pause.wache_runde(T0 + s(6.5)) == 1
+    stopps = [a for a in fake.acts if a[0] == "stoppen"]
+    assert stopps == [("stoppen", "jitsi", NATIVE, None)] * 2
+    for t in (7.5, 8.5, 20):
+        termin_pause.wache_runde(T0 + s(t))
+    assert len([a for a in fake.acts if a[0] == "stoppen"]) == 2   # nicht wiederholt
+    assert fake.pausen_abs() == [T0]                          # nach Notbremse keine Pause-Acts
+    assert [z["segment_id"] for z in _live()] == ["s1"]       # Live-Ablage bleibt (R2)
+    assert termin_akte.pausen("w1")[0]["bis"] is None         # offene Pause bleibt offen (R2)
+    z = _zeile()
+    assert z["status"] == "laeuft"                            # keine aufnahme_beenden-Wirkung
+    assert HINWEISE == []                                     # keine 10-s-Frist nach Notbremse
+
+
+def test_live_runde_laesst_pausensegmente_weg(fake):
+    _akte()
+    server._q("insert into termin_pausen (uid, von, bis, angefordert_von) "
+              "values ('w1', %s, %s, 'felix') returning id", (T0 + s(60), T0 + s(120)))
+    server._q("insert into termin_pausen (uid, von, angefordert_von) "
+              "values ('w1', %s, 'felix') returning id", (T0 + s(300),))
+    fake.segmente[MID] = [
+        _seg("vor", T0 + s(10), T0 + s(15)),
+        _seg("endet_bei_von", T0 + s(55), T0 + s(60)),     # endet genau bei von: bleibt
+        _seg("ueber_von", T0 + s(58), T0 + s(61)),         # R4: ueberspannt von -> weg
+        _seg("drin", T0 + s(70), T0 + s(75)),
+        _seg("bei_bis", T0 + s(120), T0 + s(123)),         # bis exklusiv: bleibt
+        _seg("nach", T0 + s(130), T0 + s(131)),
+        _seg("offen", T0 + s(310), T0 + s(311)),           # offene Pause: weg
+        _seg("ueber_offen", T0 + s(299), T0 + s(301)),     # R4 an der offenen Pause
+        _seg("ohne_zeit", None),                           # nicht einzuordnen: weg
+        {**_seg("ohne_ende", T0 + s(140)), "ende": ""},
+    ]
+    assert termin_pause.live_runde(T0 + s(400)) == 5
+    assert [z["segment_id"] for z in _live()] == [
+        "vor", "endet_bei_von", "bei_bis", "nach", "ohne_ende"]
+    # Upsert: geaenderter Text, ein von Vexa zurueckgezogenes Segment verschwindet
+    fake.segmente[MID] = [_seg("vor", T0 + s(10), T0 + s(15), text="neu"),
+                          _seg("nach", T0 + s(130), T0 + s(131))]
+    termin_pause.live_runde(T0 + s(405))
+    z = _live()
+    assert [(x["segment_id"], x["text"]) for x in z] == [("vor", "neu"), ("nach", "Text nach")]
+    assert z[0]["beginn"] == T0 + s(10) and z[0]["sprecher"] == "Karla"
+
+
+def test_live_runde_nur_laufende_akten(fake):
+    _akte("w1", status="wartet_auf_einlass")
+    _akte("w2", status="laeuft", mid=42)
+    fake.segmente[MID] = [_seg("a", T0)]
+    fake.segmente[42] = [_seg("b", T0)]
+    termin_pause.live_runde(T0 + s(10))
+    assert _live("w1") == [] and [z["segment_id"] for z in _live("w2")] == ["b"]
+
+
+def test_live_runde_nach_fertig_traegt_nichts_mehr_ein(fake, monkeypatch):
+    """Rennen: die Akte wird fertig, waehrend die Live-Runde bei Vexa holt."""
+    _akte()
+    fake.segmente[MID] = [_seg("a", T0)]
+    echt = fake.segmente_holen
+
+    def holen_und_fertig(mid):
+        segs = echt(mid)
+        assert termin_takt._mitschrift_ablegen("w1", segs) is True
+        return segs
+
+    monkeypatch.setattr(vexa, "segmente_holen", holen_und_fertig)
+    assert termin_pause.live_runde(T0 + s(5)) == 0
+    assert _live() == [] and _zeile()["status"] == "fertig"
+
+
+def test_live_segment_ohne_id_bekommt_stabile_id(fake):
+    _akte()
+    fake.segmente[MID] = [{**_seg("", T0, T0 + s(2)), "text": "eins"}]
+    termin_pause.live_runde(T0 + s(5))
+    fake.segmente[MID] = [{**_seg("", T0, T0 + s(2)), "text": "eins zwei"}]
+    termin_pause.live_runde(T0 + s(10))
+    z = _live()
+    assert len(z) == 1 and z[0]["text"] == "eins zwei" and z[0]["segment_id"]
+
+
+def test_ende_waehrend_pause_schliesst_pause_und_mitschrift_ohne_fenster(fake):
+    ende = T0 + timedelta(hours=1)
+    _akte(ende=ende)
+    von = T0 + timedelta(minutes=10)
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", von)
+    _live_einfuegen("w1", "s1", T0 + s(60))
+    segmente = [
+        _seg("vorher", T0 + s(60), T0 + s(64), text="vor der Pause"),
+        _seg("ueber", von - s(2), von + s(1), text="ueber den Klick"),
+        _seg("drin", von + s(30), von + s(33), text="GEHEIM in der Pause"),
+        _seg("ohne_zeit", None, text="ohne Zeit"),
+    ]
+    assert termin_takt._mitschrift_ablegen("w1", segmente) is True
+    m = server._q("select segmente from termin_mitschriften where uid = 'w1'")[0]["segmente"]
+    assert [x["text"] for x in m] == ["vor der Pause"]
+    assert set(m[0]) == {"sprecher", "beginn", "text", "sprache"}   # Schema unveraendert
+    p = termin_akte.pausen("w1")
+    assert len(p) == 1 and p[0]["von"] == von and p[0]["bis"] == ende   # bis = Terminende
+    assert _live() == []
+    assert _zeile()["status"] == "fertig"
+
+
+def test_mitschrift_mit_geschlossener_pause_behaelt_danach(fake):
+    _akte()
+    server._q("insert into termin_pausen (uid, von, bis, angefordert_von) "
+              "values ('w1', %s, %s, 'felix') returning id", (T0 + s(60), T0 + s(120)))
+    segmente = [_seg("a", T0 + s(10), T0 + s(12), text="eins"),
+                _seg("b", T0 + s(90), T0 + s(92), text="GEHEIM"),
+                _seg("c", T0 + s(150), T0 + s(152), text="drei")]
+    assert termin_takt._mitschrift_ablegen("w1", segmente) is True
+    m = server._q("select segmente from termin_mitschriften where uid = 'w1'")[0]["segmente"]
+    assert "GEHEIM" not in json.dumps(m)
+    assert [x["text"] for x in m] in (["eins", "drei"], ["eins drei"])
+    assert termin_akte.pausen("w1")[0]["bis"] == T0 + s(120)
+
+
+def test_mitschrift_ohne_pause_behaelt_segmente_ohne_zeit(fake):
+    _akte()
+    segmente = [{"sprecher": "A", "beginn": "", "text": "ohne Zeit", "sprache": "de"}]
+    assert termin_takt._mitschrift_ablegen("w1", segmente) is True
+    m = server._q("select segmente from termin_mitschriften where uid = 'w1'")[0]["segmente"]
+    assert [x["text"] for x in m] == ["ohne Zeit"]
+
+
+# ---------- Rulings R10/R11 ----------
+
+def test_pause_weiter_pause_sendet_neues_von(fake):
+    """Bindung aus Task 2: nach einem resume nie eine pause mit aelterem at_ms."""
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(1.5))
+    t1 = T0 + s(60)
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", t1)
+    assert termin_pause.wache_runde(t1 + s(0.5)) == 1
+    assert fake.acts[-1] == ("resume", "jitsi", NATIVE, None)
+    assert _zeile()["aufnahme_pausiert_seit"] == T0           # "wird fortgesetzt"
+    fake.zustand[MID] = {"pausiert": False, "seit_ms": None}
+    termin_pause.wache_runde(t1 + s(1.5))
+    assert _zeile()["aufnahme_pausiert_seit"] is None
+    t2 = T0 + s(120)
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", t2)
+    for t in (0.5, 4, 8, 12):
+        termin_pause.wache_runde(t2 + s(t))
+    i = max(i for i, a in enumerate(fake.acts) if a[0] == "resume")
+    nach = [a[3] for a in fake.acts[i + 1:] if a[0] == "pause"]
+    assert nach and set(nach) == {t2}
+    _bestaetigt(fake, t2)
+    termin_pause.wache_runde(t2 + s(13))
+    i = max(i for i, a in enumerate(fake.acts) if a[0] == "resume")
+    assert set(a[3] for a in fake.acts[i + 1:] if a[0] == "pause") == {t2}
+    assert _zeile()["aufnahme_pausiert_seit"] == t2
+
+
+def test_weiter_vor_nachschuss_sendet_keine_alte_pause(fake, monkeypatch):
+    """Scheitert der Nachschuss (R11c) und kommt dann Weiter, geht keine alte Pause mehr raus."""
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    _bestaetigt(fake, T0)
+    fake.senden_fehler.append(vexa.VexaFehler("503"))
+    termin_pause.wache_runde(T0 + s(1.5))                     # Nachschuss scheitert
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", T0 + s(2))
+    for t in (2.5, 6, 10):
+        termin_pause.wache_runde(T0 + s(t))
+    i = min(i for i, a in enumerate(fake.acts) if a[0] == "resume")
+    assert [a for a in fake.acts[i:] if a[0] == "pause"] == []
+
+
+def test_weiter_unbestaetigt_resume_wird_wiederholt(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(1.5))
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", T0 + s(10))
+    for t in (10.5, 11.5, 14):
+        termin_pause.wache_runde(T0 + s(t))
+    assert [a[0] for a in fake.acts].count("resume") == 2
+    fake.zustand[MID] = {"pausiert": False, "seit_ms": None}
+    termin_pause.wache_runde(T0 + s(15))
+    for t in (20, 30):
+        termin_pause.wache_runde(T0 + s(t))
+    assert [a[0] for a in fake.acts].count("resume") == 2
+    z = _zeile()
+    assert z["aufnahme_pausiert_seit"] is None and z["aufnahme_pause_fehler"] is None
+
+
+def test_weiter_raeumt_fehler_nach_bestaetigung(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    for i in range(1, 13):
+        termin_pause.wache_runde(T0 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] == "nicht_bestaetigt"
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", T0 + s(13))
+    termin_pause.wache_runde(T0 + s(13.5))
+    assert fake.acts[-1][0] == "resume"                       # unklar, ob pausiert: resume
+    fake.zustand[MID] = {"pausiert": False, "seit_ms": None}
+    termin_pause.wache_runde(T0 + s(14.5))
+    assert _zeile()["aufnahme_pause_fehler"] is None
+
+
+def test_bestaetigung_loescht_live_segmente_im_fenster(fake):
+    """R11b: schon geholte Segmente, die das Fenster beruehren, verschwinden."""
+    _akte()
+    fake.segmente[MID] = [_seg("a", T0 - s(10), T0 - s(6)),
+                          _seg("ueber", T0 - s(3), T0 + s(1))]   # Teilsegment, waechst noch
+    termin_pause.live_runde(T0 - s(1))
+    _live_einfuegen("w1", "drin", T0 + s(2))
+    assert [z["segment_id"] for z in _live()] == ["a", "ueber", "drin"]
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    assert len(_live()) == 3                                  # erst bei Bestaetigung
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(1.5))
+    assert [z["segment_id"] for z in _live()] == ["a"]
+
+
+def test_aufraeumen_nach_ende_ausserhalb_der_mitschrift(fake):
+    """Akte endet fehlgeschlagen/ohne Aufnahme waehrend einer Pause: Pause zu, Live leer."""
+    ende = T0 + timedelta(hours=1)
+    _akte(ende=ende)
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    _live_einfuegen("w1", "s1", T0 - s(5))
+    termin_akte.status_wechseln("w1", ("laeuft",), "fehlgeschlagen", "Bot ist gescheitert")
+    termin_pause.live_runde(T0 + s(5))
+    assert termin_akte.pausen("w1")[0]["bis"] == ende
+    assert _live() == []
+
+
+def test_weiter_ohne_pause_fragt_vexa_nicht(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", T0)
+    for t in (1, 2, 3):
+        assert termin_pause.wache_runde(T0 + s(t)) == 0
+    assert fake.lesungen == 0 and fake.acts == []
+
+
+def test_ohne_vexa_schluessel_nichts(fake, monkeypatch):
+    monkeypatch.delenv("VEXA_API_KEY")
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    assert termin_pause.wache_runde(T0 + s(1)) == 0
+    assert fake.acts == []
+
+
+def test_fehler_je_akte_ohne_inhalte_im_log(fake, caplog):
+    caplog.set_level(logging.DEBUG)
+    _akte("Karla-uid-1", mid=MID)
+    _akte("w2", mid=42)
+    termin_akte.aufnahme_wuenschen("Karla-uid-1", "pause", "felix", T0)
+    termin_akte.aufnahme_wuenschen("w2", "pause", "felix", T0)
+    fake.senden_fehler.append(RuntimeError(f"{TITEL} {NATIVE}"))
+    assert termin_pause.wache_runde(T0 + s(0.5)) == 1          # die zweite Akte laeuft weiter
+    fake.segmente[MID] = [_seg("x", T0 - s(30), text="GEHEIMTEXT")]
+    fake.holen_fehler[42] = RuntimeError(f"{TITEL} GEHEIMTEXT")
+    termin_pause.live_runde(T0 - s(1) + s(10))
+    log = caplog.text
+    assert "Karla" not in log and NATIVE not in log and "GEHEIMTEXT" not in log
+    assert hashlib.sha256(b"Karla-uid-1").hexdigest()[:8] in log
+
+
+# ---------- Thread ----------
+
+def test_schleife_stirbt_nie_und_live_alle_5s(monkeypatch):
+    aufrufe = {"wache": 0, "live": 0}
+
+    def wache(jetzt):
+        aufrufe["wache"] += 1
+        if aufrufe["wache"] == 1:
+            raise RuntimeError("einmal kaputt")
+        return 0
+
+    def live(jetzt):
+        aufrufe["live"] += 1
+        raise RuntimeError("auch kaputt")
+
+    monkeypatch.setattr(termin_pause, "wache_runde", wache)
+    monkeypatch.setattr(termin_pause, "live_runde", live)
+    monkeypatch.setattr(termin_pause, "WACHE_TAKT_S", 0.01)
+    stopp = threading.Event()
+    th = threading.Thread(target=termin_pause.schleife, args=(stopp,), daemon=True)
+    th.start()
+    ende = time.monotonic() + 2
+    while aufrufe["wache"] < 5 and time.monotonic() < ende:
+        time.sleep(0.01)
+    stopp.set()
+    th.join(timeout=2)
+    assert not th.is_alive()
+    assert aufrufe["wache"] >= 5
+    assert aufrufe["live"] == 1                               # alle 5 s, nicht jede Runde
+
+
+def test_main_startet_schnellen_weg(monkeypatch):
+    import signal
+    stopp = threading.Event()
+    monkeypatch.setattr(termin_takt, "_STOPP", stopp)
+    monkeypatch.delenv("TERMIN_EINMAL", raising=False)
+    gestartet = threading.Event()
+    gesehen: list = []
+
+    def schleife(ev):
+        gesehen.append(ev)
+        gestartet.set()
+
+    monkeypatch.setattr(termin_pause, "schleife", schleife)
+    monkeypatch.setattr(termin_takt, "runde", lambda jetzt: stopp.set() or {})
+    alt = signal.getsignal(signal.SIGTERM)
+    try:
+        assert termin_takt.main() == 0
+    finally:
+        signal.signal(signal.SIGTERM, alt)
+        termin_takt.LOG.handlers.clear()
+        termin_takt.LOG.propagate = True
+    assert gestartet.wait(2)
+    assert gesehen == [stopp]

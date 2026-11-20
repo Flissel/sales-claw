@@ -85,8 +85,88 @@ def test_segmente_sortiert_und_abgebildet(stub):
     segs = vexa.segmente_holen(7)
     assert [s["text"] for s in segs] == ["erstens", "zweitens", "ohne Zeit"]
     assert segs[0] == {"sprecher": "A", "beginn": "2026-11-11T10:00:01Z",
+                       "ende": "", "segment_id": "",
                        "text": "erstens", "sprache": "de"}
     assert segs[2]["beginn"] == ""
+
+
+def test_segmente_mit_ende_und_id(stub):
+    """Fuer den Pausenfilter (R4/R11): Ende und segment_id reiten mit."""
+    stub.antworten[("GET", "/transcripts/by-id/7")] = (200, {"segments": [
+        {"speaker": "A", "absolute_start_time": "2026-11-11T10:00:01Z",
+         "absolute_end_time": "2026-11-11T10:00:04Z", "segment_id": "s-1",
+         "text": "erstens", "language": "de"},
+        {"speaker": "B", "absolute_start_time": "2026-11-11T10:00:05Z",
+         "text": "ohne Ende", "language": "de"}]})
+    segs = vexa.segmente_holen(7)
+    assert segs[0] == {"sprecher": "A", "beginn": "2026-11-11T10:00:01Z",
+                       "ende": "2026-11-11T10:00:04Z", "segment_id": "s-1",
+                       "text": "erstens", "sprache": "de"}
+    assert segs[1]["ende"] == "" and segs[1]["segment_id"] == ""
+
+
+# ---------- Meeting-Steuerseite: Pause/Weiter (Task 5) ----------
+
+def test_pause_setzen_sendet_klickzeit_in_ms(stub):
+    from datetime import datetime, timezone
+    ab = datetime(2026, 11, 20, 10, 0, 0, 123000, tzinfo=timezone.utc)
+    stub.antworten[("POST", "/bots/jitsi/R1@meet.ffmuc.net/pause")] = (202, {})
+    assert vexa.pause_setzen("jitsi", "R1@meet.ffmuc.net", ab) is None
+    methode, pfad, key, koerper = stub.anfragen[0]
+    assert (methode, pfad, key) == ("POST", "/bots/jitsi/R1@meet.ffmuc.net/pause", SCHLUESSEL)
+    body = json.loads(koerper)
+    assert body == {"at_ms": 1795168800123}
+    assert type(body["at_ms"]) is int
+
+
+def test_pause_setzen_ohne_ab_ist_resume(stub):
+    stub.antworten[("POST", "/bots/jitsi/R1/resume")] = (202, {})
+    vexa.pause_setzen("jitsi", "R1", None)
+    assert len(stub.anfragen) == 1
+    methode, pfad, key, koerper = stub.anfragen[0]
+    assert (methode, pfad, key) == ("POST", "/bots/jitsi/R1/resume", SCHLUESSEL)
+    assert koerper == ""
+
+
+def test_pause_setzen_sonderzeichen_und_fehler(stub):
+    from datetime import datetime, timezone
+    stub.antworten[("POST", "/bots/jitsi/a%23b%2Fc@h/pause")] = (503, {"detail": "bus"})
+    with pytest.raises(vexa.VexaFehler) as e:
+        vexa.pause_setzen("jitsi", "a#b/c@h", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert stub.anfragen[0][1] == "/bots/jitsi/a%23b%2Fc@h/pause"
+    assert "503" in str(e.value) and SCHLUESSEL not in str(e.value)
+
+
+def test_pause_setzen_404_ist_nicht_gefunden(stub):
+    stub.antworten[("POST", "/bots/jitsi/R1/resume")] = (404, {})
+    with pytest.raises(vexa.VexaNichtGefunden):
+        vexa.pause_setzen("jitsi", "R1", None)
+
+
+def test_pause_zustand_liest_data_aufnahme_pause(stub):
+    stub.antworten[("GET", "/meetings/7")] = (200, {
+        "id": 7, "status": "active",
+        "data": {"aufnahme_pause": {"pausiert": True, "seit_ms": 1795168800123},
+                 "andere": 1}})
+    assert vexa.pause_zustand(7) == {"pausiert": True, "seit_ms": 1795168800123}
+    assert stub.anfragen[0][:3] == ("GET", "/meetings/7", SCHLUESSEL)
+
+
+@pytest.mark.parametrize("antwort", [
+    {"id": 7, "data": {}}, {"id": 7}, {"id": 7, "data": None},
+    {"id": 7, "data": {"aufnahme_pause": "kaputt"}},
+    {"id": 7, "data": {"aufnahme_pause": {"seit_ms": 5}}},
+    {"id": 7, "data": {"aufnahme_pause": {"pausiert": "ja", "seit_ms": 5}}},
+])
+def test_pause_zustand_ohne_bestaetigung_none(stub, antwort):
+    stub.antworten[("GET", "/meetings/7")] = (200, antwort)
+    assert vexa.pause_zustand(7) is None
+
+
+def test_pause_zustand_404(stub):
+    stub.antworten[("GET", "/meetings/7")] = (404, {})
+    with pytest.raises(vexa.VexaNichtGefunden):
+        vexa.pause_zustand(7)
 
 
 def test_stoppen_404_ok(stub):
