@@ -312,6 +312,101 @@ async def test_a_second_pause_is_idempotent():
     assert len(await h.feed_retracts(m["id"])) == 1, "nothing deleted → no empty retract marker"
 
 
+# ── ruling R7: the bot→collector bus `transcription_segments` ────────────────────────────────────
+
+
+def _bus_entry(meeting_id: int, seg: dict) -> dict:
+    """One entry exactly as the bot XADDs it: one segment per entry, row id as a string."""
+    return {"payload": json.dumps({"type": "transcription", "meeting_id": str(meeting_id),
+                                   "native_meeting_id": NATIVE, "segments": [seg]})}
+
+
+def _sid(entry_id) -> str:
+    return entry_id.decode() if isinstance(entry_id, bytes) else entry_id
+
+
+async def _group_state(redis, stream: str, group: str) -> tuple:
+    info = [g for g in await redis.xinfo_groups(stream) if _sid(g["name"]) == group][0]
+    pending = await redis.xpending_range(stream, group, min="-", max="+", count=100)
+    return _sid(info["last-delivered-id"]), sorted(_sid(p["message_id"]) for p in pending)
+
+
+async def test_pause_xdels_touching_bus_entries_without_touching_the_consumer_group():
+    """R7: entries of THIS meeting on `transcription_segments` whose segment touches the click go
+    — acked, pending and still undelivered alike — so the collector can never ingest them after
+    the purge. Only XDEL: the group's last-delivered-id and its pending list stay as they were;
+    retract entries and other meetings' entries stay; a draft whose LATER version touches (known
+    id) goes too."""
+    from meeting_api.collector.ingest import CONSUMER_GROUP, STREAM_NAME, consume_segments
+
+    h = _Harness()
+    m = await h.seed()
+    other = await h.seed(native="anderer-raum")
+    # The final version of "draft" is in the live hash and straddles the click; its earlier draft on
+    # the bus ended before the click and would not touch on its own.
+    await h.ingest(m["id"], [_seg("draft", AT_S - 3, AT_S + 1)])
+    r = h.redis
+    ids = {}
+    for name, mid, seg in [
+        ("before", m["id"], _seg("b-before", AT_S - 10, AT_S - 5)),      # stays
+        ("straddle", m["id"], _seg("b-straddle", AT_S - 2, AT_S + 2)),   # gone (acked)
+        ("after1", m["id"], _seg("b-after1", AT_S + 5, AT_S + 6)),       # gone (pending)
+        ("other", other["id"], _seg("o-after", AT_S + 5, AT_S + 6)),     # stays (other meeting)
+    ]:
+        ids[name] = _sid(await r.xadd(STREAM_NAME, _bus_entry(mid, seg)))
+    ids["retract"] = _sid(await r.xadd(STREAM_NAME, {"payload": json.dumps({
+        "type": "transcript_retract", "meeting_id": str(m["id"]), "native_meeting_id": NATIVE,
+        "segment_ids": ["b-zzz"]})}))                                    # stays (never a retract)
+    ids["after2"] = _sid(await r.xadd(STREAM_NAME, _bus_entry(m["id"], _seg("b-after2", AT_S + 8, AT_S + 9))))
+    ids["draft"] = _sid(await r.xadd(STREAM_NAME, _bus_entry(m["id"], _seg("draft", AT_S - 3, AT_S - 1))))
+
+    # The collector has read three entries and acked two of them; the rest is undelivered.
+    await r.xgroup_create(name=STREAM_NAME, groupname=CONSUMER_GROUP, id="0", mkstream=True)
+    await r.xreadgroup(groupname=CONSUMER_GROUP, consumername="c1", streams={STREAM_NAME: ">"}, count=3)
+    await r.xack(STREAM_NAME, CONSUMER_GROUP, ids["before"], ids["straddle"])
+    group_before = await _group_state(r, STREAM_NAME, CONSUMER_GROUP)
+    assert group_before == (ids["after1"], [ids["after1"]])
+
+    async with h.client() as c:
+        resp = await c.post(f"/bots/jitsi/{NATIVE}/pause", json={"at_ms": AT_MS}, headers=H)
+    assert resp.status_code == 202, resp.text
+
+    left = [_sid(e) for e, _f in await r.xrange(STREAM_NAME)]
+    assert left == [ids["before"], ids["other"], ids["retract"]]
+    # Only XDEL: no XGROUP/XTRIM/XACK — the group's cursor and pending list are untouched.
+    assert await _group_state(r, STREAM_NAME, CONSUMER_GROUP) == group_before
+    # The collector carries on: it acks the deleted pending id, ingests what is left, and nothing
+    # this meeting's purge removed comes back.
+    assert await r.xack(STREAM_NAME, CONSUMER_GROUP, ids["after1"]) in (0, 1)
+    assert await consume_segments(h.store, h.bus, consumer="c1", count=100) == 1  # o-after only
+    assert await consume_segments(h.store, h.bus, consumer="c1", count=100) == 0
+    assert (await r.xpending(STREAM_NAME, CONSUMER_GROUP))["pending"] == 0
+    assert await h.hash_ids(m["id"]) == set()
+    assert await h.hash_ids(other["id"]) == {"o-after"}
+    assert "b-after2" not in await h.feed_segment_ids(m["id"])
+    assert "draft" not in await h.feed_segment_ids(m["id"])
+
+
+async def test_the_bus_scan_pages_through_the_whole_stream(monkeypatch):
+    """The scan is paged; every page is visited (exclusive restart after the last id, also on a
+    Redis without the ``(`` range prefix) and a page boundary drops nothing."""
+    from meeting_api.collector import adapters
+    from meeting_api.collector.ingest import STREAM_NAME
+
+    monkeypatch.setattr(adapters, "_BUS_PAGE", 2)
+    h = _Harness()
+    m = await h.seed()
+    keep, drop = [], []
+    for i in range(7):
+        seg = _seg(f"k{i}", AT_S - 10, AT_S - 9) if i % 2 else _seg(f"d{i}", AT_S + i, AT_S + i + 1)
+        eid = _sid(await h.redis.xadd(STREAM_NAME, _bus_entry(m["id"], seg)))
+        (keep if i % 2 else drop).append(eid)
+    async with h.client() as c:
+        resp = await c.post(f"/bots/jitsi/{NATIVE}/pause", json={"at_ms": AT_MS}, headers=H)
+    assert resp.status_code == 202, resp.text
+    assert [_sid(e) for e, _f in await h.redis.xrange(STREAM_NAME)] == keep
+
+
 def test_segment_touches_pause_units_and_edges():
     from meeting_api.collector.adapters import segment_touches_pause
 
@@ -518,10 +613,14 @@ async def test_sql_store_deletes_touching_rows_hash_and_feed():
             "type": "transcription", "meeting_id": str(mid), "uid": "s", "platform": "jitsi",
             "segments": [_seg("h-before", AT_S - 4, AT_S - 3), _seg("h-after", AT_S + 1, AT_S + 2)],
         })})
+        # R7: the bus — a relative segment placed via the meeting start (base + 100.5 > click) goes.
+        from meeting_api.collector.ingest import STREAM_NAME
+        bus_keep = await redis.xadd(STREAM_NAME, _bus_entry(mid, _seg("bus-before", AT_S - 8, AT_S - 7)))
+        await redis.xadd(STREAM_NAME, _bus_entry(mid, _seg("bus-rel-after", 100.5, 101.0)))
 
         deleted = await store.delete_segments_from(mid, AT_MS)
 
-        assert sorted(deleted) == ["after", "h-after", "rel-after", "straddle"]
+        assert sorted(deleted) == ["after", "bus-rel-after", "h-after", "rel-after", "straddle"]
         async with sf() as db:
             left = (await db.execute(text(
                 "SELECT meeting_id, segment_id FROM transcriptions ORDER BY segment_id"))).all()
@@ -532,6 +631,7 @@ async def test_sql_store_deletes_touching_rows_hash_and_feed():
         feed = {json.loads(f[b"payload"])["segments"][0]["segment_id"]
                 for _e, f in await redis.xrange(f"tc:meeting:{mid}")}
         assert feed == {"h-before"}
+        assert [e for e, _f in await redis.xrange(STREAM_NAME)] == [bus_keep]
     finally:
         await redis.aclose()
         await engine.dispose()

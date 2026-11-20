@@ -369,6 +369,71 @@ async def pause_purge_live_feed(redis_c, meeting_id, at_s: float, base_epoch_s, 
     return gone
 
 
+# Ruling R7: the bot→collector bus. Paged, so a backlog never becomes one huge reply.
+_BUS_PAGE = 500
+
+
+def _after_stream_id(entry_id) -> str:
+    """The smallest stream id strictly after ``entry_id`` (an exclusive XRANGE start that also works
+    on Redis < 6.2, which lacks the ``(`` prefix)."""
+    ms, seq = _txt(entry_id).split("-")
+    return f"{ms}-{int(seq) + 1}"
+
+
+async def pause_purge_bus_stream(redis_c, meeting_id, at_s: float, base_epoch_s, known_ids) -> set:
+    """XDEL from the bot→collector bus ``transcription_segments`` every TRANSCRIPTION entry of THIS
+    meeting carrying a touching segment or a deleted id, so the collector can never ingest it after
+    the purge. The whole stream is scanned (it is bounded by the collector's acked-entry retention),
+    because entry ids are Redis server time and the click is the caller's clock.
+
+    Only XDEL — never XGROUP / XTRIM / XACK / XCLAIM: the group's last-delivered-id and pending list
+    stay as they are. An XDEL'd entry that was undelivered is simply never delivered; one that is
+    pending is acked by id as usual (XACK of a deleted id is fine) and on a reclaim comes back with
+    no fields (Redis 6.2) or not at all (Redis 7), which ``ingest`` treats as "nothing". Retract,
+    session and other meetings' entries are never touched. Returns the segment ids removed."""
+    from .ingest import STREAM_NAME
+
+    gone: set = set()
+    start = "-"
+    while True:
+        page = (await redis_c.xrange(STREAM_NAME, min=start, max="+", count=_BUS_PAGE)) or []
+        doomed: list = []
+        for entry_id, fields in page:
+            raw = fields.get("payload", fields.get(b"payload")) if isinstance(fields, dict) else None
+            try:
+                payload = json.loads(_txt(raw))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("type", "transcription") not in ("transcription", "transcript"):
+                continue
+            try:
+                if int(payload.get("meeting_id")) != int(meeting_id):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            hit = False
+            for seg in payload.get("segments") or []:
+                if not isinstance(seg, dict):
+                    continue
+                start_s = seg.get("abs_start_ms")
+                start_s = start_s / 1000 if isinstance(start_s, (int, float)) else seg.get("start")
+                if seg.get("segment_id") in known_ids or segment_touches_pause(
+                    start_s, seg.get("end"), at_s, base_epoch_s
+                ):
+                    hit = True
+                    if seg.get("segment_id"):
+                        gone.add(seg["segment_id"])
+            if hit:
+                doomed.append(entry_id)
+        if doomed:
+            await redis_c.xdel(STREAM_NAME, *doomed)
+        if len(page) < _BUS_PAGE:
+            return gone
+        start = _after_stream_id(page[-1][0])
+
+
 def _fill_absolute_times(segments: list, base) -> None:
     """Fill each segment's ``absolute_start_time``/``absolute_end_time`` (in place) when a producer
     didn't supply them, so a renderer that keys on absolute time shows the segment.
@@ -1048,9 +1113,10 @@ class SqlAlchemyTranscriptStore:
         """sales-claw pause patch — the pause's safety deletion for ONE meeting: every segment that
         touches the click ``at_ms`` (epoch ms; see ``segment_touches_pause``) leaves the live hash,
         the ``transcriptions`` rows and the live feed, in that order (hash first, so the db-writer
-        cannot flush it back after the row delete). Idempotent. Returns the deleted segment ids
-        (a legacy row without ``segment_id`` is deleted but not listed). Raises on a store fault —
-        the route answers 503 and the caller retries."""
+        cannot flush it back after the row delete), framed by two XDEL passes over the bus
+        ``transcription_segments`` (R7; see ``pause_purge_bus_stream``). Idempotent. Returns the
+        deleted segment ids (a legacy row without ``segment_id`` is deleted but not listed). Raises
+        on a store fault — the route answers 503 and the caller retries."""
         from sqlalchemy import bindparam
         from sqlalchemy import text as sql_text
 
@@ -1063,6 +1129,8 @@ class SqlAlchemyTranscriptStore:
         base = _epoch_s(meeting.start_time or meeting.created_at) if meeting else None
         gone: set = set()
         if self._redis is not None:
+            # R7: the bus first, so an undelivered touching entry cannot reach the hash meanwhile.
+            gone |= await pause_purge_bus_stream(self._redis, mid, at_s, base, set())
             gone |= await pause_purge_live_hash(self._redis, mid, at_s, base)
         async with self._session_factory() as db:
             rows = (await db.execute(
@@ -1080,6 +1148,8 @@ class SqlAlchemyTranscriptStore:
         gone |= {r.segment_id for r in doomed if r.segment_id}
         if self._redis is not None:
             gone |= await pause_purge_live_feed(self._redis, mid, at_s, base, gone)
+            # R7: a second bus pass for drafts whose LATER version touched (known ids only).
+            gone |= await pause_purge_bus_stream(self._redis, mid, at_s, base, gone)
         return sorted(gone)
 
     async def upsert_segments(self, meeting_id, segments) -> None:

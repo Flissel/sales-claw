@@ -802,9 +802,10 @@ class InMemoryTranscriptStore:
     # sales-claw pause patch
     async def delete_segments_from(self, meeting_id, at_ms: int) -> list:
         """sales-claw pause patch — mirrors ``SqlAlchemyTranscriptStore.delete_segments_from``: the
-        live hash, the durable rows (this dict) and the live feed, same predicate, same base time."""
+        bus (R7), live hash, durable rows (this dict), live feed, bus again; same predicate and base."""
         from .adapters import (
             _epoch_s,
+            pause_purge_bus_stream,
             pause_purge_live_feed,
             pause_purge_live_hash,
             segment_touches_pause,
@@ -815,6 +816,7 @@ class InMemoryTranscriptStore:
         base = _epoch_s((m.get("start_time") or m.get("created_at")) if m else None)
         gone: set = set()
         if self._redis is not None:
+            gone |= await pause_purge_bus_stream(self._redis, meeting_id, at_s, base, set())
             gone |= await pause_purge_live_hash(self._redis, meeting_id, at_s, base)
         if m is not None:
             for sid, seg in list(m["segments"].items()):
@@ -824,6 +826,7 @@ class InMemoryTranscriptStore:
                     gone.add(sid)
         if self._redis is not None:
             gone |= await pause_purge_live_feed(self._redis, meeting_id, at_s, base, gone)
+            gone |= await pause_purge_bus_stream(self._redis, meeting_id, at_s, base, gone)
         return sorted(gone)
 
     async def upsert_segments(self, meeting_id, segments) -> None:
