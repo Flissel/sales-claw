@@ -395,6 +395,60 @@ def felder_setzen(uid: str, **felder) -> None:
         (*[felder[n] for n in namen], uid))
 
 
+WUENSCHE = ("an", "pause", "notbremse")
+WUNSCH_STATUS = ("wartet_auf_einlass", "laeuft")
+
+
+def aufnahme_wuenschen(uid: str, wunsch: str, wer: str, jetzt: datetime) -> bool:
+    """Meeting-Steuerseite: schreibt nur den WUNSCH (aufnahme_wunsch); Vexa
+    spricht hier niemand an, das tut sales-termine. Nur fuer Akten in
+    wartet_auf_einlass/laeuft, sonst False und nichts geaendert. Unbekannter
+    Wunsch -> ValueError.
+
+    'pause': legt die offene termin_pausen-Zeile an (von = jetzt). Ein zweiter
+    Klick aendert weder Zeile noch `von` (Unique-Index where bis is null +
+    on conflict do nothing). 'an': schliesst die offene Zeile (bis = jetzt);
+    ohne offene Pause bleibt es beim Wunsch. 'notbremse' (R2): nur der Wunsch,
+    eine offene Pause bleibt offen - sie schliesst das Meeting-Ende."""
+    if wunsch not in WUENSCHE:
+        raise ValueError(f"Unbekannter Wunsch: {wunsch!r}")
+    jetzt = _utc(jetzt)
+    with server.pool.connection() as conn:
+        with conn.transaction():
+            z = conn.execute(
+                "update termin_akten set aufnahme_wunsch = %s, aufnahme_wunsch_am = %s, "
+                "geaendert_am = now() where uid = %s and status = any(%s) returning uid",
+                (wunsch, jetzt, uid, list(WUNSCH_STATUS))).fetchall()
+            if not z:
+                return False
+            if wunsch == "pause":
+                conn.execute(
+                    "insert into termin_pausen (uid, von, angefordert_von) "
+                    "values (%s, %s, %s) on conflict (uid) where bis is null do nothing",
+                    (uid, jetzt, wer))
+            elif wunsch == "an":
+                conn.execute(
+                    "update termin_pausen set bis = %s where uid = %s and bis is null",
+                    (jetzt, uid))
+    LOG.info("Aufnahme-Wunsch %s fuer Akte %s", wunsch, _h(uid))
+    return True
+
+
+def pausen(uid: str) -> list[dict]:
+    """Pausenzeilen einer Akte, nach Beginn sortiert (bis None = offen)."""
+    return server._q(
+        "select von, bis, angefordert_von, bestaetigt_am from termin_pausen "
+        "where uid = %s order by von, id", (uid,))
+
+
+def in_pause(beginn: datetime, pausen: list[dict]) -> bool:
+    """Liegt `beginn` in einer Pause? von inklusive, bis exklusiv, offen = unendlich."""
+    for p in pausen:
+        if p["von"] <= beginn and (p["bis"] is None or beginn < p["bis"]):
+            return True
+    return False
+
+
 def hat_gesperrte(uid: str) -> bool:
     """Steht unter den Teilnehmern jemand, der JETZT gesperrt ist? Prueft jede
     gespeicherte Adresse und jeden verknuepften Kontakt live - eine Sperre

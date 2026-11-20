@@ -414,6 +414,34 @@ begin
     -- Ruling R16: Zeitpunkt des letzten Beschreib-Versuchs; der naechste wartet
     -- 30 s (nach Versuch 1) bzw. 5 min (nach Versuch 2), sales-mcp/bild_arbeit.py.
     execute format('alter table %I.termin_bilder add column if not exists versucht_am timestamptz null', s);
+    -- Meeting-Steuerseite (20.11.2026): die Oberflaeche schreibt nur einen WUNSCH
+    -- (aufnahme_wunsch); sales-termine fuehrt ihn gegen Vexa aus (Pause/Weiter,
+    -- Notbremse), sales-auge haelt die Standbilder an. Pausenzeilen halten die
+    -- Zeitraeume fest (hoechstens eine offene je Akte), die Live-Ablage haelt
+    -- den laufenden Text getrennt von termin_mitschriften.
+    execute format($ddl$alter table %I.termin_akten add column if not exists aufnahme_wunsch text not null default 'an'
+      check (aufnahme_wunsch in ('an','pause','notbremse'))$ddl$, s);
+    execute format('alter table %I.termin_akten add column if not exists aufnahme_wunsch_am timestamptz null', s);
+    execute format('alter table %I.termin_akten add column if not exists aufnahme_pausiert_seit timestamptz null', s);
+    execute format('alter table %I.termin_akten add column if not exists aufnahme_pause_fehler text null', s);
+    execute format($ddl$
+      create table if not exists %I.termin_pausen (
+        id bigserial primary key,
+        uid text not null references %I.termin_akten(uid) on delete cascade,
+        von timestamptz not null,
+        bis timestamptz null,
+        angefordert_von text not null,
+        bestaetigt_am timestamptz null)$ddl$, s, s);
+    execute format('create index if not exists termin_pausen_uid_idx on %I.termin_pausen (uid, von)', s);
+    execute format('create unique index if not exists termin_pausen_offen_idx on %I.termin_pausen (uid) where bis is null', s);
+    execute format($ddl$
+      create table if not exists %I.termin_live_segmente (
+        uid text not null references %I.termin_akten(uid) on delete cascade,
+        segment_id text not null,
+        beginn timestamptz not null,
+        sprecher text null,
+        text text not null,
+        primary key (uid, segment_id))$ddl$, s, s);
     -- Kursmitschrift und Kurs-Handbuch (16.11.2026): je Kurs-Mitschrift eine Auswertung
     -- (kurs_*), je Lernender ein Handbuch aus Kapiteln, Fassungen und Quellen.
     -- kurs_pfad/kurs_pfad_lernend/kurs_pdf sind relativ zum Ablage-Ordner.
@@ -466,6 +494,20 @@ begin
         select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
       execute format('grant select, insert, update, delete on %I.termin_akten, %I.termin_teilnehmer, %I.termin_mitschriften, %I.termin_vorschlaege, %I.termin_bilder, %I.kurs_handbuch_kapitel, %I.kurs_handbuch_fassung, %I.kurs_handbuch_quelle, %I.kurs_handbuch to %I',
                      s, s, s, s, s, s, s, s, s, 'sales_app_' || substr(s, 7));
+    end if;
+    -- Meeting-Steuerseite: neue Tabellen im selben Stil (sales_test steht im
+    -- Sammel-Grant nach der Schleife); bigserial braucht die Sequenz dazu.
+    if s = 'sales' then
+      execute 'grant select, insert, update, delete on sales.termin_pausen, sales.termin_live_segmente to sales_app';
+      execute 'grant usage, select on sequence sales.termin_pausen_id_seq to sales_app';
+    elsif s <> 'sales_test' and exists (
+        select 1 from pg_roles where rolname = 'sales_app_' || substr(s, 7)) then
+      execute format('grant select, insert, update, delete on %I.termin_pausen, %I.termin_live_segmente to %I',
+                     s, s, 'sales_app_' || substr(s, 7));
+      execute format('grant usage, select on sequence %I.termin_pausen_id_seq to %I',
+                     s, 'sales_app_' || substr(s, 7));
+    elsif s = 'sales_test' then
+      execute 'grant usage, select on sequence sales_test.termin_pausen_id_seq to sales_app';
     end if;
     -- Postfach aufraeumen + durchsuchen (28.10.2026, Sales-UI-Rundgang):
     -- je gesehene Mail eine Zeile. art: 'spam' (Betrug, sofort verschoben),
