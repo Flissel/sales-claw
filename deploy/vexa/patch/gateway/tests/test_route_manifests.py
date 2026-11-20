@@ -42,7 +42,7 @@ AGENT_ROWS = frozenset({
 #: What shipped. A count, not a copy of the table: a second copy of 67 rows is a second thing to
 #: keep in step, and `test_the_assembled_table_matches_the_app_exactly` is what proves the
 #: CONTENT — against the routes themselves, which is a stronger anchor than a literal.
-FULL_SCOPED, FULL_UNSCOPED = 68, 2
+FULL_SCOPED, FULL_UNSCOPED = 70, 2  # sales-claw pause patch: +2 (pause, resume)
 #: What THIS BUILD publishes — the full profile, less the agent rows when the build omits them.
 #: DERIVED, so the count stays exact in either build rather than softening to a range or a
 #: subset check. 67 on the line; 60 in a build with no agent manifest.
@@ -90,7 +90,8 @@ def test_every_domain_declares_its_own_and_only_its_own():
     # read 38 for meetings, which is 69 scoped and contradicts FULL_SCOPED in this same file; the
     # arithmetic was never checked because this test is `needs_agent` and the agent manifest was
     # absent from the cut, so it SKIPPED. It stopped skipping when core/agent/routes.v1.json landed.
-    assert a.domains == {"agent": 7, "gateway": 2, "identity": 12, "mcp": 12, "meetings": 37}
+    # sales-claw pause patch: meetings 37 -> 39 (pause, resume); 7+2+12+12+39 = 72, less 2 = 70.
+    assert a.domains == {"agent": 7, "gateway": 2, "identity": 12, "mcp": 12, "meetings": 39}
     assert {k for k, d in a.owner_of.items() if d == "agent"} == AGENT_ROWS
     # The EDGE declares two routes and they are its own — /health and /auth/me forward nothing.
     assert {k for k, d in a.owner_of.items() if d == "gateway"} == set(UNSCOPED_ROUTES)

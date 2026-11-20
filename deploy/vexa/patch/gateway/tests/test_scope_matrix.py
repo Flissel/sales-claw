@@ -41,6 +41,8 @@ CASES = [
     ("DELETE", "/bots/google_meet/abc-defg-hij", "/bots/{platform}/{native_meeting_id}"),
     ("PUT", "/bots/google_meet/abc-defg-hij/config", "/bots/{platform}/{native_meeting_id}/config"),
     ("POST", "/bots/google_meet/abc-defg-hij/speak", "/bots/{platform}/{native_meeting_id}/speak"),
+    ("POST", "/bots/google_meet/abc-defg-hij/pause", "/bots/{platform}/{native_meeting_id}/pause"),  # sales-claw pause patch
+    ("POST", "/bots/google_meet/abc-defg-hij/resume", "/bots/{platform}/{native_meeting_id}/resume"),  # sales-claw pause patch
     ("GET", "/bots/google_meet/abc-defg-hij/chat", "/bots/{platform}/{native_meeting_id}/chat"),
 
     ("GET", "/meetings", "/meetings"),

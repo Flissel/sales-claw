@@ -56,6 +56,20 @@
       ]
     },
     {
+      "method": "POST",
+      "path": "/bots/{platform}/{native_meeting_id}/pause",
+      "scopes": [
+        "bot"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/bots/{platform}/{native_meeting_id}/resume",
+      "scopes": [
+        "bot"
+      ]
+    },
+    {
       "method": "GET",
       "path": "/meetings",
       "scopes": [

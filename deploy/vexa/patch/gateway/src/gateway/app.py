@@ -525,6 +525,17 @@ def create_app(
     async def speak(platform: str, native_meeting_id: str, request: Request):
         return await _forward("POST", _meeting(f"/bots/{platform}/{native_meeting_id}/speak"), request)
 
+    # sales-claw pause patch: recording pause/resume, forwarded like `speak` (scope `bot`,
+    # declared in core/meetings/routes.v1.json). meeting-api validates `at_ms` and owns the verdict.
+    @app.post("/bots/{platform}/{native_meeting_id}/pause")
+    async def pause_recording(platform: str, native_meeting_id: str, request: Request):
+        return await _forward("POST", _meeting(f"/bots/{platform}/{native_meeting_id}/pause"), request)
+
+    # sales-claw pause patch
+    @app.post("/bots/{platform}/{native_meeting_id}/resume")
+    async def resume_recording(platform: str, native_meeting_id: str, request: Request):
+        return await _forward("POST", _meeting(f"/bots/{platform}/{native_meeting_id}/resume"), request)
+
     # P0 (cross-tenant leak fix): the by-ROW-id transcript read the terminal uses to fetch EXACTLY the
     # row it displays (owner-scoped downstream). Registered BEFORE the native route so `by-id` is not
     # matched as a {platform}. Forwarded verbatim; the auth/identity prep (X-User-Id) is shared.
