@@ -271,6 +271,104 @@ def _upsert_processed_view(
 _EPOCH_THRESHOLD_S = 1_000_000_000  # ~2001-09-09
 
 
+# ── sales-claw pause patch: the safety deletion behind POST /bots/{platform}/{native}/pause ────────
+# Segment times carry TWO semantics (see `_fill_absolute_times`): the live pipeline stamps ABSOLUTE
+# epoch SECONDS (~1.78e9), transcript.v1 describes seconds RELATIVE to the meeting start. The click
+# arrives as epoch MILLISECONDS; callers pass `at_s = at_ms / 1000`. A relative segment is placed on
+# the clock with the SAME base the REST read uses (`start_time or created_at` of the meeting row).
+# Ruling R4: a segment goes when it starts at/after the click OR ends after it (the whole sentence);
+# one ending at or before the click stays. A segment that cannot be placed goes ("im Zweifel weg").
+
+
+def segment_touches_pause(start, end, at_s: float, base_epoch_s: Optional[float] = None) -> bool:
+    """True when the segment ``[start, end]`` must be deleted for a pause clicked at ``at_s``."""
+    try:
+        s = float(start)
+        e = float(end) if end is not None else s
+    except (TypeError, ValueError):
+        return True
+    if s != s or e != e:  # NaN
+        return True
+    if e < s:
+        s, e = e, s
+    if s < _EPOCH_THRESHOLD_S:
+        if base_epoch_s is None:
+            return True
+        s, e = s + base_epoch_s, e + base_epoch_s
+    return s >= at_s or e > at_s
+
+
+def _epoch_s(value) -> Optional[float]:
+    """A meeting time column (naive UTC datetime, or an ISO string in the fakes) → epoch seconds."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if isinstance(value, datetime):
+        return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp()
+    return None
+
+
+def _txt(v) -> str:
+    return v.decode() if isinstance(v, (bytes, bytearray)) else v
+
+
+async def pause_purge_live_hash(redis_c, meeting_id, at_s: float, base_epoch_s) -> set:
+    """HDEL every touching segment from the live hash ``meeting:{id}:segments`` (before the
+    db-writer can flush it). Returns the deleted segment ids."""
+    from .db_writer import segments_hash_key
+
+    hash_key = segments_hash_key(meeting_id)
+    gone: set = set()
+    for field, value in ((await redis_c.hgetall(hash_key)) or {}).items():
+        try:
+            seg = json.loads(_txt(value))
+            touches = segment_touches_pause(seg.get("start"), seg.get("end"), at_s, base_epoch_s)
+        except (TypeError, ValueError, AttributeError):
+            touches = True
+        if touches:
+            gone.add(_txt(field))
+    if gone:
+        await redis_c.hdel(hash_key, *gone)
+    return gone
+
+
+async def pause_purge_live_feed(redis_c, meeting_id, at_s: float, base_epoch_s, known_ids) -> set:
+    """XDEL from the live feed ``tc:meeting:{id}`` (copilot / terminal SSE; never trimmed) every
+    transcription entry carrying a deleted id or a touching segment. Returns the ids it removed."""
+    from .ingest import _transcript_stream
+
+    stream = _transcript_stream(meeting_id)
+    entries: list = []
+    gone: set = set()
+    for entry_id, fields in (await redis_c.xrange(stream)) or []:
+        raw = fields.get("payload", fields.get(b"payload")) if isinstance(fields, dict) else None
+        try:
+            payload = json.loads(_txt(raw))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("type") != "transcription":
+            continue
+        hit = False
+        for seg in payload.get("segments") or []:
+            if not isinstance(seg, dict):
+                continue
+            start = seg.get("abs_start_ms")
+            start = start / 1000 if isinstance(start, (int, float)) else seg.get("start")
+            if seg.get("segment_id") in known_ids or segment_touches_pause(
+                start, seg.get("end"), at_s, base_epoch_s
+            ):
+                hit = True
+                if seg.get("segment_id"):
+                    gone.add(seg["segment_id"])
+        if hit:
+            entries.append(entry_id)
+    if entries:
+        await redis_c.xdel(stream, *entries)
+    return gone
+
+
 def _fill_absolute_times(segments: list, base) -> None:
     """Fill each segment's ``absolute_start_time``/``absolute_end_time`` (in place) when a producer
     didn't supply them, so a renderer that keys on absolute time shows the segment.
@@ -944,6 +1042,45 @@ class SqlAlchemyTranscriptStore:
         async with self._session_factory() as db:
             await db.execute(stmt, {"mid": int(meeting_id), "sids": ids})
             await db.commit()
+
+    # sales-claw pause patch
+    async def delete_segments_from(self, meeting_id, at_ms: int) -> list:
+        """sales-claw pause patch — the pause's safety deletion for ONE meeting: every segment that
+        touches the click ``at_ms`` (epoch ms; see ``segment_touches_pause``) leaves the live hash,
+        the ``transcriptions`` rows and the live feed, in that order (hash first, so the db-writer
+        cannot flush it back after the row delete). Idempotent. Returns the deleted segment ids
+        (a legacy row without ``segment_id`` is deleted but not listed). Raises on a store fault —
+        the route answers 503 and the caller retries."""
+        from sqlalchemy import bindparam
+        from sqlalchemy import text as sql_text
+
+        mid = int(meeting_id)
+        at_s = at_ms / 1000.0
+        async with self._session_factory() as db:
+            meeting = (await db.execute(
+                sql_text("SELECT start_time, created_at FROM meetings WHERE id = :mid"), {"mid": mid}
+            )).first()
+        base = _epoch_s(meeting.start_time or meeting.created_at) if meeting else None
+        gone: set = set()
+        if self._redis is not None:
+            gone |= await pause_purge_live_hash(self._redis, mid, at_s, base)
+        async with self._session_factory() as db:
+            rows = (await db.execute(
+                sql_text("SELECT id, segment_id, start_time, end_time FROM transcriptions "
+                         "WHERE meeting_id = :mid"), {"mid": mid}
+            )).all()
+            doomed = [r for r in rows if segment_touches_pause(r.start_time, r.end_time, at_s, base)]
+            if doomed:
+                await db.execute(
+                    sql_text("DELETE FROM transcriptions WHERE meeting_id = :mid AND id IN :ids")
+                    .bindparams(bindparam("ids", expanding=True)),
+                    {"mid": mid, "ids": [r.id for r in doomed]},
+                )
+                await db.commit()
+        gone |= {r.segment_id for r in doomed if r.segment_id}
+        if self._redis is not None:
+            gone |= await pause_purge_live_feed(self._redis, mid, at_s, base, gone)
+        return sorted(gone)
 
     async def upsert_segments(self, meeting_id, segments) -> None:
         """The db-writer's durable sink — UPSERT a batch of flushed segments into ``transcriptions``

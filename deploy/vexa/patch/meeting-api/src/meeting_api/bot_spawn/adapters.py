@@ -632,6 +632,25 @@ class SqlAlchemyMeetingRepo:
             flag_modified(meeting, "data")
             await db.commit()
 
+    # sales-claw pause patch
+    async def merge_meeting_data_by_session(self, *, session_uid, patch: dict) -> Optional[int]:
+        """sales-claw pause patch — ``merge_meeting_data`` addressed by the bot's session uid (the
+        lifecycle callback's only key), WITHOUT writing ``status``: the pause confirmation must land
+        even on a repeated or rejected status edge. Returns the meeting id, or ``None`` when the
+        session is unknown."""
+        from sqlalchemy import select
+
+        from ..sessions.models import MeetingSession
+
+        async with self._session_factory() as db:
+            meeting_id = (await db.execute(
+                select(MeetingSession.meeting_id).where(MeetingSession.session_uid == session_uid)
+            )).scalars().first()
+        if meeting_id is None:
+            return None
+        await self.merge_meeting_data(meeting_id, patch)
+        return meeting_id
+
     async def list_service_authority_sessions(self) -> list[dict]:
         """Active admitted sessions carrying the frozen generic authority identity."""
         from sqlalchemy import select

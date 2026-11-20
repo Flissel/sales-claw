@@ -213,6 +213,15 @@ class InMemoryMeetingRepo:
             else:
                 m["data"][k] = v
 
+    # sales-claw pause patch
+    async def merge_meeting_data_by_session(self, *, session_uid, patch) -> Optional[int]:
+        """sales-claw pause patch — mirrors the SQL adapter: merge by session uid, status untouched."""
+        sess = next((s for s in self.sessions if s["session_uid"] == session_uid), None)
+        if sess is None or sess["meeting_id"] not in self._meetings:
+            return None
+        await self.merge_meeting_data(sess["meeting_id"], patch)
+        return sess["meeting_id"]
+
     async def get_meeting(self, meeting_id) -> Optional[dict]:
         row = self._meetings.get(meeting_id)
         # A COPY, like every other read: the spawn fence must observe committed row state, never

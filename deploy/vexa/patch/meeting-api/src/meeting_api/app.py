@@ -291,6 +291,15 @@ def create_app(
                                             calendar_sync_status=calendar_sync_status,
                                             artifact_object_deleter=_delete_recording_objects))
 
+    # sales-claw pause patch: POST /bots/{platform}/{native_meeting_id}/pause|resume — the acts go
+    # out on the same command channel as the stop's leave; the pause's safety deletion runs on the
+    # transcript store (live hash + transcriptions + live feed). See lifecycle/pause_router.py.
+    from .lifecycle.pause_router import build_pause_router  # sales-claw pause patch
+
+    app.include_router(  # sales-claw pause patch
+        build_pause_router(meeting_repo, command_publisher, transcript_store, redis)
+    )
+
     # --- recordings: chunk upload + finalize → meeting.data JSONB (recording.v1) ---
     if recording_repo is None:
         recording_repo = _recordings_fakes().InMemoryRecordingRepo()
@@ -435,6 +444,16 @@ def _mount_lifecycle(
             return (
                 422,
                 {"status": "error", "detail": f"lifecycle.v1 schema violation: {e.message}"},
+            )
+        # sales-claw pause patch: the bot confirms a pause/resume under its CURRENT status — usually
+        # a repeated status (an FSM no-op below that persists nothing) or, for a lobby pause whose
+        # POST lands after `active`, a rejected edge (409). Store `aufnahme_pause` FIRST, apart from
+        # the FSM step, so neither loses it; the status handling below is unchanged.
+        if "aufnahme_pause" in body:  # sales-claw pause patch
+            from .lifecycle.pause_router import store_pause_confirmation  # sales-claw pause patch
+
+            await store_pause_confirmation(  # sales-claw pause patch
+                meeting_repo, body.get("connection_id"), body.get("aufnahme_pause")
             )
         # LIFECYCLE-409 fix: rehydrate the in-memory FSM record from the DB's CURRENT status before
         # applying the event. The in-memory MeetingStore is non-durable — after a meeting-api restart
