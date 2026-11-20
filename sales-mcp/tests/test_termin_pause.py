@@ -92,10 +92,56 @@ def test_notbremse_laesst_offene_pause_offen():
     assert _akte_zeile()["aufnahme_wunsch"] == "notbremse"
 
 
-def test_notbremse_ohne_pause_legt_keine_an():
+def test_notbremse_aus_an_oeffnet_ein_pausenfenster():
+    """Final-Review C1: die Notbremse aus "an" oeffnet ein Fenster (von = Klick), das bis
+    zum Meeting-Ende offen bleibt (R2) - so filtert alles nach dem Klick (Mitschrift,
+    Live, Bilder), auch wenn der Bot erst spaeter geht."""
     _akte()
     assert termin_akte.aufnahme_wuenschen("p1", "notbremse", "felix", T0) is True
-    assert termin_akte.pausen("p1") == []
+    z = termin_akte.pausen("p1")
+    assert len(z) == 1 and z[0]["von"] == T0 and z[0]["bis"] is None
+    assert z[0]["angefordert_von"] == "felix"
+
+
+def test_notbremse_ist_endgueltig():
+    """Final-Review M2: nach der Notbremse aendert kein Wunsch mehr etwas (ein alter
+    zweiter Tab darf sie nicht still aufheben); auch ein zweiter Notbremse-Klick nicht
+    (er wuerde die 10-s-Frist neu starten)."""
+    _akte()
+    assert termin_akte.aufnahme_wuenschen("p1", "notbremse", "felix", T0) is True
+    spaeter = T0 + timedelta(seconds=30)
+    for wunsch in ("an", "pause", "notbremse"):
+        assert termin_akte.aufnahme_wuenschen("p1", wunsch, "zweiter-tab", spaeter) is False
+    a = _akte_zeile()
+    assert a["aufnahme_wunsch"] == "notbremse" and a["aufnahme_wunsch_am"] == T0
+    z = termin_akte.pausen("p1")
+    assert len(z) == 1 and z[0]["bis"] is None and z[0]["angefordert_von"] == "felix"
+
+
+def _live_segment(uid="p1"):
+    server._q("insert into termin_live_segmente (uid, segment_id, beginn, sprecher, text) "
+              "values (%s, 's1', %s, 'Karla', 'hallo') returning uid", (uid, T0))
+
+
+def _live_anzahl(uid="p1"):
+    return server._q("select count(*) as n from termin_live_segmente where uid = %s",
+                     (uid,))[0]["n"]
+
+
+def test_mitschrift_entfernen_loescht_live_ablage():
+    """Final-Review M1: wer die Mitschrift loescht, loescht auch die Live-Ablage - sofort,
+    nicht erst, wenn sales-termine aufraeumt."""
+    _akte()
+    _live_segment()
+    termin_akte.mitschrift_entfernen("p1")
+    assert _live_anzahl() == 0
+
+
+def test_aufnahme_beenden_loescht_live_ablage():
+    _akte()
+    _live_segment()
+    termin_akte.aufnahme_beenden("p1", "Nein")
+    assert _live_anzahl() == 0
 
 
 @pytest.mark.parametrize("status", ["wartet_auf_einlass", "laeuft"])

@@ -743,6 +743,27 @@ def test_bot_claim_verhindert_zweiten_bot(fake):
     assert _zeile("u1")["status"] == "wartet_auf_einlass"
 
 
+@pytest.mark.parametrize("wunsch", ["pause", "notbremse"])
+def test_bot_start_setzt_alten_aufnahme_wunsch_zurueck(fake, wunsch):
+    """Final-Review I1: eine fehlgeschlagene Akte, die nach einer Verschiebung wieder
+    'geplant' ist, bringt keinen alten Wunsch / Bestaetigung / Fehler in die neue
+    Bot-Sitzung mit; eine noch offene Pausenzeile wird geschlossen."""
+    alt = JETZT - timedelta(days=1)
+    _akte("u1", beginn=JETZT + timedelta(seconds=30), aufnahme_wunsch=wunsch,
+          aufnahme_wunsch_am=alt, aufnahme_pausiert_seit=alt,
+          aufnahme_pause_fehler="nicht_bestaetigt", aufnahme_notbremse_am=alt)
+    server._q("insert into termin_pausen (uid, von, angefordert_von) values ('u1', %s, 'felix') "
+              "returning id", (alt,))
+    termin_takt._bot_starten("u1", MEET, JETZT)
+    z = _zeile("u1")
+    assert z["status"] == "wartet_auf_einlass" and fake.anzahl("bot") == 1
+    assert z["aufnahme_wunsch"] == "an"
+    assert (z["aufnahme_wunsch_am"], z["aufnahme_pausiert_seit"], z["aufnahme_pause_fehler"],
+            z["aufnahme_notbremse_am"]) == (None, None, None, None)
+    assert server._q("select count(*) as n from termin_pausen where uid = 'u1' "
+                     "and bis is null")[0]["n"] == 0
+
+
 def test_bot_gestartet_speichern_scheitert_raeumt_auf(fake, monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     _akte("u1", beginn=JETZT + timedelta(seconds=30))

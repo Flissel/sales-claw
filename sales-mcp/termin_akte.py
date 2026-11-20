@@ -408,8 +408,14 @@ def aufnahme_wuenschen(uid: str, wunsch: str, wer: str, jetzt: datetime) -> bool
     'pause': legt die offene termin_pausen-Zeile an (von = jetzt). Ein zweiter
     Klick aendert weder Zeile noch `von` (Unique-Index where bis is null +
     on conflict do nothing). 'an': schliesst die offene Zeile (bis = jetzt);
-    ohne offene Pause bleibt es beim Wunsch. 'notbremse' (R2): nur der Wunsch,
-    eine offene Pause bleibt offen - sie schliesst das Meeting-Ende."""
+    ohne offene Pause bleibt es beim Wunsch. 'notbremse' (R2, Final-Review C1):
+    oeffnet wie 'pause' ein Fenster ab jetzt, falls keins offen ist; es bleibt
+    offen, bis das Meeting-Ende es schliesst - so faellt alles nach dem Klick weg,
+    auch wenn der Bot erst spaeter geht.
+
+    Die Notbremse ist endgueltig (Final-Review M2): steht der Wunsch schon auf
+    'notbremse', aendert kein weiterer Wunsch etwas (False) - ein alter zweiter
+    Tab hebt sie nicht still auf, ein zweiter Klick startet keine neue Frist."""
     if wunsch not in WUENSCHE:
         raise ValueError(f"Unbekannter Wunsch: {wunsch!r}")
     jetzt = _utc(jetzt)
@@ -417,11 +423,12 @@ def aufnahme_wuenschen(uid: str, wunsch: str, wer: str, jetzt: datetime) -> bool
         with conn.transaction():
             z = conn.execute(
                 "update termin_akten set aufnahme_wunsch = %s, aufnahme_wunsch_am = %s, "
-                "geaendert_am = now() where uid = %s and status = any(%s) returning uid",
+                "geaendert_am = now() where uid = %s and status = any(%s) "
+                "and aufnahme_wunsch <> 'notbremse' returning uid",
                 (wunsch, jetzt, uid, list(WUNSCH_STATUS))).fetchall()
             if not z:
                 return False
-            if wunsch == "pause":
+            if wunsch in ("pause", "notbremse"):
                 conn.execute(
                     "insert into termin_pausen (uid, von, angefordert_von) "
                     "values (%s, %s, %s) on conflict (uid) where bis is null do nothing",
@@ -511,6 +518,8 @@ def mitschrift_entfernen(uid: str) -> None:
     weg = server._q("delete from termin_mitschriften where uid = %s returning bericht_pfad",
                     (uid,))
     bilder_entfernen(uid)  # Bilder entstehen live, auch ohne Mitschrift
+    # Live-Ablage (Steuerseite) sofort mit - nicht erst, wenn sales-termine aufraeumt (M1).
+    server._q("delete from termin_live_segmente where uid = %s returning uid", (uid,))
     berichte_entfernen(weg)
 
 

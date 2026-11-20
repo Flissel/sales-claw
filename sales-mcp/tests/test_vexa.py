@@ -169,6 +169,17 @@ def test_pause_zustand_404(stub):
         vexa.pause_zustand(7)
 
 
+def test_bot_status_liest_status(stub):
+    """Notbremse-Bestaetigung (Final-Review C1): Status aus GET /meetings/{id}."""
+    stub.antworten[("GET", "/meetings/7")] = (200, {"id": 7, "status": "completed", "data": {}})
+    assert vexa.bot_status(7) == "completed"
+    stub.antworten[("GET", "/meetings/7")] = (200, {"id": 7})
+    assert vexa.bot_status(7) == ""
+    stub.antworten[("GET", "/meetings/7")] = (503, {})
+    with pytest.raises(vexa.VexaFehler):
+        vexa.bot_status(7)
+
+
 def test_stoppen_404_ok(stub):
     stub.antworten[("DELETE", "/bots/jitsi/R1")] = (404, {})
     assert vexa.bot_stoppen("jitsi", "R1") is None

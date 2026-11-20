@@ -1563,9 +1563,16 @@ a.knopf.gross { display: flex; align-items: center; justify-content: center;
 /* Steuerseite /termine/{uid}/live: Zustand gross, nur der bestaetigte. */
 .live-zustand { font-size: 1.8rem; font-weight: 700; margin: .6rem 0; }
 .live-zustand[data-zustand=wird_pausiert], .live-zustand[data-zustand=pausiert],
-.live-zustand[data-zustand=wird_fortgesetzt] { color: var(--gedaempft); }
+.live-zustand[data-zustand=wird_fortgesetzt],
+.live-zustand[data-zustand=notbremse_angefordert] { color: var(--gedaempft); }
 .live-zustand[data-zustand=nicht_bestaetigt], .live-zustand[data-zustand=weiter_nicht_bestaetigt],
+.live-zustand[data-zustand=notbremse_nicht_bestaetigt],
 .live-zustand[data-zustand=notbremse] { color: var(--fehler); }
+.live-spalten { display: grid; gap: 1rem; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+@media (max-width: 800px) { .live-spalten { grid-template-columns: minmax(0, 1fr); } }
+.live-bilder { list-style: none; padding: 0; }
+.live-bilder img { width: 100%; height: auto; display: block; border-radius: 6px; }
+.live-bilder p { margin: .2rem 0; font-size: .85rem; }
 .live-knoepfe button { min-height: 56px; font-size: 1.1rem; }
 .live-text { overflow-wrap: anywhere; max-height: 60vh; overflow: auto; }
 .live-text p { margin: .3rem 0; }

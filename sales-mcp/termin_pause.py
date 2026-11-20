@@ -10,7 +10,9 @@ eigenen, nie sterbenden Threads (`starten`) und fuehrt den Wunsch gegen Vexa aus
     tragen, nach 10 s ohne Bestaetigung `aufnahme_pause_fehler =
     'nicht_bestaetigt'` (Pause) bzw. `'weiter_nicht_bestaetigt'` (Weiter, R14)
     plus EIN Betreiber-Hinweis je Klick (nur eingereiht); Notbremse stoppt den
-    Bot sofort. Hier laeuft nur, was das kurze Pausen-Zeitlimit hat.
+    Bot sofort und traegt erst dann `aufnahme_notbremse_am` ein, wenn Vexa den
+    Bot als beendet meldet (sonst nach 10 s `'notbremse_nicht_bestaetigt'` +
+    Hinweis). Hier laeuft nur, was das kurze Pausen-Zeitlimit hat.
   * Live-Thread, `live_runde` alle 5 s: Segmente laufender Akten in
     `termin_live_segmente` spiegeln - nie ein Segment, das ein Pausenfenster
     beruehrt.
@@ -68,7 +70,10 @@ HINWEIS_TAKT_S = 1.0
 # beides zaehlt nicht, es wird weiter gesendet.
 SEIT_VOR = timedelta(seconds=1)
 SEIT_NACH = timedelta(seconds=2)
-FEHLER = {"pause": "nicht_bestaetigt", "weiter": "weiter_nicht_bestaetigt"}
+FEHLER = {"pause": "nicht_bestaetigt", "weiter": "weiter_nicht_bestaetigt",
+          "notbremse": "notbremse_nicht_bestaetigt"}
+# Vexa-Status, bei denen der Bot den Raum verlassen hat (Notbremse bestaetigt, C1).
+BOT_WEG = ("completed", "failed")
 
 # Speicher dieses Prozesses (nach einem Neustart leer - siehe die Funktionen).
 _gesendet: dict[tuple[str, str], datetime] = {}   # (uid, "pause:<ms>"|"resume") -> letzter Versuch
@@ -201,6 +206,9 @@ def _hinweis_text(z: dict, art: str, klick: datetime) -> str:
     if art == "weiter":
         zeilen = [f"⚠️ Weiter (Aufnahme fortsetzen) nicht bestätigt (Klick {uhr}).",
                   "Die Aufnahme ist womöglich noch angehalten – bitte die Steuerseite prüfen."]
+    elif art == "notbremse":
+        zeilen = [f"⚠️ Notbremse nicht bestätigt (Klick {uhr}).",
+                  "Der Bot ist womöglich noch im Raum – bitte die Steuerseite prüfen."]
     else:
         zeilen = [f"⚠️ Aufnahme-Pause nicht bestätigt (Klick {uhr}).",
                   "Die Aufnahme läuft womöglich weiter – bitte die Steuerseite prüfen."]
@@ -218,8 +226,11 @@ def _nicht_bestaetigt(z: dict, art: str, klick: datetime) -> None:
     Hinweis. Ein Fehler der anderen Art wird ueberschrieben: es zaehlt, was gerade
     gewuenscht ist."""
     uid, schluessel = z["uid"], (z["uid"], art, _ms(klick))
-    bedingung = ("aufnahme_wunsch = 'pause' and aufnahme_pausiert_seit is null"
-                 if art == "pause" else "aufnahme_wunsch = 'an'")
+    bedingung = {
+        "pause": "aufnahme_wunsch = 'pause' and aufnahme_pausiert_seit is null",
+        "weiter": "aufnahme_wunsch = 'an'",
+        "notbremse": "aufnahme_wunsch = 'notbremse' and aufnahme_notbremse_am is null",
+    }[art]
     gesetzt = server._q(
         "update termin_akten set aufnahme_pause_fehler = %s "
         f"where uid = %s and {bedingung} "
@@ -227,8 +238,8 @@ def _nicht_bestaetigt(z: dict, art: str, klick: datetime) -> None:
         (FEHLER[art], uid, FEHLER[art]))
     if gesetzt:
         LOG.warning("%s nicht bestaetigt uid=%s (Frist %d s)",
-                    "Pause" if art == "pause" else "Weiter", _h(uid),
-                    int(FRIST.total_seconds()))
+                    {"pause": "Pause", "weiter": "Weiter", "notbremse": "Notbremse"}[art],
+                    _h(uid), int(FRIST.total_seconds()))
         if schluessel not in _gemeldet:
             _gemeldet.add(schluessel)
             _hinweis_schlange.put(_hinweis_text(z, art, klick))
@@ -355,30 +366,60 @@ def _weiter(z: dict, jetzt: datetime) -> int:
     return acts
 
 
-def _notbremse(z: dict) -> int:
+def _notbremse(z: dict, jetzt: datetime) -> int:
     """R2: Bot sofort stoppen (einmal; scheitert es, die naechste Sekunde). Keine
-    Pause-Acts mehr; offene Pause bleibt offen, Mitschrift und Live-Ablage
-    bleiben - das Meeting-Ende schliesst ab."""
+    Pause-Acts mehr; die offene Pause (C1: die Notbremse oeffnet sie) bleibt offen,
+    Mitschrift und Live-Ablage bleiben - das Meeting-Ende schliesst ab.
+
+    Final-Review C1: "Stopp angenommen" ist noch nicht "Bot weg". Bestaetigt ist die
+    Notbremse erst, wenn Vexa das Meeting als beendet meldet (completed/failed); das
+    steht dann in `aufnahme_notbremse_am` (die Seite zeigt bis dahin "angefordert").
+    Ohne Bestaetigung 10 s nach dem Klick: Fehler + EIN Betreiber-Hinweis."""
     uid = z["uid"]
+    if z["aufnahme_notbremse_am"] is not None:
+        return 0
+    acts = 0
+    if uid not in _gestoppt:
+        try:
+            vexa.bot_stoppen(z["vexa_plattform"], z["vexa_native_id"])
+        except vexa.VexaFehler as e:
+            LOG.warning("Notbremse: Bot stoppen gescheitert uid=%s (%s)", _h(uid),
+                        type(e).__name__)
+        else:
+            _gestoppt.add(uid)
+            LOG.info("Notbremse: Bot gestoppt uid=%s", _h(uid))
+            acts = 1
     if uid in _gestoppt:
-        return 0
-    try:
-        vexa.bot_stoppen(z["vexa_plattform"], z["vexa_native_id"])
-    except vexa.VexaFehler as e:
-        LOG.warning("Notbremse: Bot stoppen gescheitert uid=%s (%s)", _h(uid), type(e).__name__)
-        return 0
-    _gestoppt.add(uid)
-    LOG.info("Notbremse: Bot gestoppt uid=%s", _h(uid))
-    return 1
+        try:
+            status = vexa.bot_status(int(z["vexa_meeting_id"]))
+        except vexa.VexaFehler:
+            status = ""                    # nicht lesbar: nicht bestaetigt
+        if status in BOT_WEG:
+            if server._q("update termin_akten set aufnahme_notbremse_am = %s, "
+                         "aufnahme_pause_fehler = null where uid = %s "
+                         "and aufnahme_wunsch = 'notbremse' and aufnahme_notbremse_am is null "
+                         "returning uid", (jetzt, uid)):
+                LOG.info("Notbremse bestaetigt uid=%s", _h(uid))
+            return acts
+    klick = z["aufnahme_wunsch_am"]
+    if klick is None or jetzt - klick > FRIST:
+        _nicht_bestaetigt(z, "notbremse", klick or jetzt)
+    return acts
 
 
 def _wache_eine(z: dict, jetzt: datetime) -> int:
     wunsch = z["aufnahme_wunsch"]
     if wunsch == "notbremse":
-        return _notbremse(z)
+        return _notbremse(z, jetzt)
     if wunsch == "pause":
-        # Ohne offene Zeile gibt es kein `von` (nach Task 4 nicht moeglich): nichts raten.
-        return _pause(z, jetzt) if z["von"] is not None else 0
+        if z["von"] is None:
+            # Final-Review I1: ohne offene Zeile gibt es kein `von` (z. B. ein alter Wunsch
+            # aus einer frueheren Bot-Sitzung). Nichts raten - aber laut, nicht still.
+            server._q("update termin_akten set aufnahme_pausiert_seit = null where uid = %s "
+                      "and aufnahme_pausiert_seit is not null returning uid", (z["uid"],))
+            _nicht_bestaetigt(z, "pause", z["aufnahme_wunsch_am"] or jetzt)
+            return 0
+        return _pause(z, jetzt)
     # 'an': nur Akten, die je eine Pause hatten (sonst kein Vexa-Aufruf je Sekunde)
     if not (z["hatte_pause"] or z["aufnahme_pausiert_seit"] is not None
             or z["aufnahme_pause_fehler"] is not None or z["uid"] in _letzter_act):
@@ -411,7 +452,8 @@ def wache_runde(jetzt: datetime) -> int:
     zeilen = server._q(
         "select a.uid, a.zeitzone, a.vexa_meeting_id, a.vexa_plattform, a.vexa_native_id, "
         "a.aufnahme_wunsch, a.aufnahme_wunsch_am, a.aufnahme_pausiert_seit, "
-        "a.aufnahme_pause_fehler, p.id as pause_id, p.von, p.bestaetigt_am, "
+        "a.aufnahme_pause_fehler, a.aufnahme_notbremse_am, "
+        "p.id as pause_id, p.von, p.bestaetigt_am, "
         "exists (select 1 from termin_pausen q where q.uid = a.uid) as hatte_pause, "
         "(select max(q.bis) from termin_pausen q where q.uid = a.uid) as weiter_am "
         "from termin_akten a "

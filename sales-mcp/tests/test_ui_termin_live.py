@@ -212,9 +212,20 @@ def test_post_akte_nicht_aktiv_meldet_sichtbar():
 SEIT = JETZT + timedelta(minutes=3)
 
 
+ALT = datetime(2020, 1, 1, tzinfo=timezone.utc)      # laengst ueber jede Frist hinaus
+
+
 @pytest.mark.parametrize("spalten, erwartet, text", [
     ({"aufnahme_wunsch": "notbremse", "aufnahme_pause_fehler": "nicht_bestaetigt",
-      "aufnahme_pausiert_seit": SEIT}, "notbremse", "■ Notbremse – Bot hat den Raum verlassen"),
+      "aufnahme_pausiert_seit": SEIT, "aufnahme_wunsch_am": JETZT,
+      "aufnahme_notbremse_am": SEIT}, "notbremse", "■ Notbremse – Bot hat den Raum verlassen"),
+    ({"aufnahme_wunsch": "notbremse", "aufnahme_wunsch_am": JETZT}, "notbremse_angefordert",
+     "■ Notbremse angefordert – Bot wird entfernt …"),
+    ({"aufnahme_wunsch": "notbremse", "aufnahme_wunsch_am": ALT}, "notbremse_nicht_bestaetigt",
+     "⚠ Notbremse nicht bestätigt – Bot evtl. noch im Raum"),
+    ({"aufnahme_wunsch": "notbremse", "aufnahme_wunsch_am": JETZT,
+      "aufnahme_pause_fehler": "notbremse_nicht_bestaetigt"}, "notbremse_nicht_bestaetigt",
+     "⚠ Notbremse nicht bestätigt – Bot evtl. noch im Raum"),
     ({"aufnahme_wunsch": "pause", "aufnahme_pause_fehler": "nicht_bestaetigt"},
      "nicht_bestaetigt", "⚠ Pause nicht bestätigt – Notbremse?"),
     ({"aufnahme_wunsch": "an", "aufnahme_pause_fehler": "weiter_nicht_bestaetigt",
@@ -222,14 +233,19 @@ SEIT = JETZT + timedelta(minutes=3)
      "⚠ Weiter nicht bestätigt – Aufnahme evtl. noch pausiert"),
     ({"aufnahme_wunsch": "pause", "aufnahme_pausiert_seit": SEIT}, "pausiert",
      "⏸ Pausiert seit 13:03"),
-    ({"aufnahme_wunsch": "pause"}, "wird_pausiert", "⏳ Wird pausiert …"),
-    ({"aufnahme_wunsch": "an", "aufnahme_pausiert_seit": SEIT}, "wird_fortgesetzt",
-     "⏳ Wird fortgesetzt …"),
+    ({"aufnahme_wunsch": "pause", "_offen_von": JETZT}, "wird_pausiert", "⏳ Wird pausiert …"),
+    ({"aufnahme_wunsch": "an", "aufnahme_pausiert_seit": SEIT, "aufnahme_wunsch_am": JETZT},
+     "wird_fortgesetzt", "⏳ Wird fortgesetzt …"),
     ({"aufnahme_wunsch": "an"}, "an", "● Aufnahme läuft"),
     ({}, "an", "● Aufnahme läuft"),
 ])
 def test_zustand_zuordnung(spalten, erwartet, text):
+    spalten = dict(spalten)
+    offen_von = spalten.pop("_offen_von", None)
     _akte("u1", zeitzone="Europe/Berlin", **spalten)
+    if offen_von:
+        server._q("insert into termin_pausen (uid, von, angefordert_von) values "
+                  "('u1', %s, 'felix') returning id", (offen_von,))
     d = _json()
     assert d["zustand"] == erwartet and d["zustand_text"] == text
     assert d["pausiert_seit"] == (SEIT.isoformat() if "aufnahme_pausiert_seit" in spalten else None)
@@ -257,6 +273,154 @@ def test_json_nicht_bestaetigt():
     d = _json()
     assert d["zustand"] == "nicht_bestaetigt"
     assert d["zustand_text"] == "⚠ Pause nicht bestätigt – Notbremse?"
+
+
+def _vor(sekunden):
+    return datetime.now(timezone.utc) - timedelta(seconds=sekunden)
+
+
+def test_i2_pause_ohne_bestaetigung_wird_von_selbst_laut():
+    """Final-Review I2: laeuft die Wache nicht (sales-termine aus), schreibt niemand den
+    Fehler - die Seite wird trotzdem laut, ~12 s nach `von` der offenen Zeile."""
+    _akte("u1", aufnahme_wunsch="pause", aufnahme_wunsch_am=_vor(1))
+    server._q("insert into termin_pausen (uid, von, angefordert_von) values "
+              "('u1', %s, 'felix') returning id", (_vor(5),))
+    assert _json()["zustand"] == "wird_pausiert"
+    server._q("update termin_pausen set von = %s where uid = 'u1' returning id", (_vor(20),))
+    d = _json()
+    assert d["zustand"] == "nicht_bestaetigt"
+    assert d["zustand_text"] == "⚠ Pause nicht bestätigt – Notbremse?"
+
+
+def test_i1_pause_wunsch_ohne_offene_zeile_ist_laut():
+    _akte("u1", aufnahme_wunsch="pause", aufnahme_wunsch_am=_vor(1))
+    assert _json()["zustand"] == "nicht_bestaetigt"
+
+
+def test_i2_weiter_ohne_bestaetigung_wird_von_selbst_laut():
+    _akte("u1", aufnahme_wunsch="an", aufnahme_wunsch_am=_vor(1),
+          aufnahme_pausiert_seit=_vor(60))
+    server._q("insert into termin_pausen (uid, von, bis, angefordert_von) values "
+              "('u1', %s, %s, 'felix') returning id", (_vor(60), _vor(3)))
+    assert _json()["zustand"] == "wird_fortgesetzt"
+    server._q("update termin_pausen set bis = %s where uid = 'u1' returning id", (_vor(20),))
+    assert _json()["zustand"] == "weiter_nicht_bestaetigt"
+
+
+def test_c1_notbremse_zeigt_angefordert_bis_bestaetigt():
+    """Final-Review C1: die Seite behauptet nie "Bot hat den Raum verlassen", bevor das
+    bestaetigt ist; unbestaetigt nach ~12 s laut; ohne Wache (I2) ebenso."""
+    _akte("u1")
+    assert _post("u1", "notbremse").status_code == 303
+    assert len(termin_akte.pausen("u1")) == 1                    # Fenster ab dem Klick
+    d = _json()
+    assert d["zustand"] == "notbremse_angefordert"
+    assert d["zustand_text"] == "■ Notbremse angefordert – Bot wird entfernt …"
+    assert "Bot hat den Raum verlassen" not in _get(_pfad("u1") + "/live").text
+    server._q("update termin_akten set aufnahme_wunsch_am = %s where uid = 'u1' "
+              "returning uid", (_vor(20),))
+    assert _json()["zustand"] == "notbremse_nicht_bestaetigt"
+    server._q("update termin_akten set aufnahme_notbremse_am = now() where uid = 'u1' "
+              "returning uid")
+    d = _json()
+    assert d["zustand"] == "notbremse"
+    assert d["zustand_text"] == "■ Notbremse – Bot hat den Raum verlassen"
+
+
+def test_c1_notbremse_bestaetigt_wenn_meeting_beendet():
+    """Hat der Taktgeber das Ende schon erkannt (Vexa completed/failed), ist der Bot weg."""
+    _akte("u1", status="fertig", aufnahme_wunsch="notbremse", aufnahme_wunsch_am=ALT)
+    assert _json()["zustand"] == "notbremse"
+    _akte("u2", status="fehlgeschlagen", aufnahme_wunsch="notbremse", aufnahme_wunsch_am=ALT)
+    assert _json("u2")["zustand"] == "notbremse"
+
+
+def test_c1_notbremse_knoepfe_weg():
+    _akte("u1")
+    _post("u1", "notbremse")
+    t = _get(_pfad("u1") + "/live").text
+    assert 'data-zustand="notbremse_angefordert"' in t
+    # Alle Knopf-Formulare sind ausgeblendet (keins ist fuer diesen Zustand vorgesehen).
+    assert t.count("live-knopf") == 3 and t.count('" hidden>') >= 3
+
+
+def test_m2_notbremse_kann_nicht_zurueckgenommen_werden():
+    """Final-Review M2: ein alter zweiter Tab hebt die Notbremse nicht still auf."""
+    _akte("u1")
+    assert _post("u1", "notbremse").status_code == 303
+    for aktion in ("weiter", "pause"):
+        a = _post("u1", aktion)
+        assert a.status_code == 303
+        assert a.headers["location"] == _pfad("u1") + "/live?m=notbremse"
+        assert _zeile()["aufnahme_wunsch"] == "notbremse"
+    seite = _get(_pfad("u1") + "/live?m=notbremse").text
+    assert "Notbremse ist gezogen" in seite
+
+
+# --- Bilder live (Kacheln, Final-Review I5) ---------------------------------
+
+def _jpeg(farbe=(10, 20, 30)):
+    import io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (64, 40), farbe).save(out, "JPEG")
+    return out.getvalue()
+
+
+def _bild(uid="u1", minuten=1, beschr="Folie", status="fertig"):
+    import bildschirm
+    bid = bildschirm.bild_ablegen(uid, _jpeg((minuten * 20 % 255, 0, 0)),
+                                  JETZT + timedelta(minutes=minuten), None)
+    assert bid
+    server._q("update termin_bilder set beschreibung = %s, beschreibung_status = %s "
+              "where id = %s returning id", (beschr, status, bid))
+    return bid
+
+
+def _bilder_akte():
+    return _akte("u1", zeitzone="Europe/Berlin", bildschirm_auswerten=True, vexa_meeting_id=7)
+
+
+def test_i5_live_json_liefert_bildkacheln_gleicher_herkunft():
+    _bilder_akte()
+    b1, b2 = _bild(minuten=1), _bild(minuten=2, beschr="Preisliste")
+    offen = _bild(minuten=3, beschr=None, status="offen")       # ungeprueft: nie sichtbar (R11)
+    d = _json()
+    assert [b["id"] for b in d["bilder"]] == [b1, b2]
+    assert all(b["url"] == f"/termine/u1/bild/{b['id']}.jpg" for b in d["bilder"])
+    assert d["bilder"][1]["beschreibung"] == "Preisliste" and d["bilder"][0]["uhr"] == "13:01:00"
+    assert offen not in json.dumps(d) and d["bilder_anzahl"] == 2
+    assert _get(d["bilder"][0]["url"]).status_code == 200      # dieselbe Route wie die Akte
+
+
+def test_i5_kein_bild_aus_einem_pausenfenster():
+    _bilder_akte()
+    vor = _bild(minuten=1)
+    drin = _bild(minuten=5)
+    server._q("insert into termin_pausen (uid, von, bis, angefordert_von) values "
+              "('u1', %s, %s, 'felix') returning id",
+              (JETZT + timedelta(minutes=4), JETZT + timedelta(minutes=6)))
+    ids = [b["id"] for b in _json()["bilder"]]
+    assert vor in ids and drin not in ids
+
+
+def test_i5_gesperrt_keine_bilder():
+    _bilder_akte()
+    _bild(minuten=1)
+    _teilnehmer("u1", "weg@firma.de", grund="gesperrt")
+    d = _json()
+    assert d["bilder"] == [] and d["bilder_anzahl"] == 0
+
+
+def test_i5_seite_hat_kachelraster_und_skript_baut_sicher():
+    _bilder_akte()
+    a = _get(_pfad("u1") + "/live")
+    assert 'id="live-bilder-raster"' in a.text and "Bilder live" in a.text
+    assert "img-src 'self'" in a.headers["content-security-policy"]
+    assert a.text.lower().count("<script") == 1                 # kein zweites Skript
+    js = _get("/termine/live.js").text
+    assert "live-bilder-raster" in js and "createElement(\"img\")" in js
+    assert "/termine/" in js and "noopener" in js               # nur eigene Bild-Adressen
 
 
 def test_json_pausen_und_segmente():

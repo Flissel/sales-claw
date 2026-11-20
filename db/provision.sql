@@ -424,6 +424,9 @@ begin
     execute format('alter table %I.termin_akten add column if not exists aufnahme_wunsch_am timestamptz null', s);
     execute format('alter table %I.termin_akten add column if not exists aufnahme_pausiert_seit timestamptz null', s);
     execute format('alter table %I.termin_akten add column if not exists aufnahme_pause_fehler text null', s);
+    -- Final-Review C1: Notbremse BESTAETIGT (Vexa meldet den Bot als beendet); bis dahin
+    -- zeigt die Steuerseite nur "angefordert", nach 10 s ohne Bestaetigung laut.
+    execute format('alter table %I.termin_akten add column if not exists aufnahme_notbremse_am timestamptz null', s);
     execute format($ddl$
       create table if not exists %I.termin_pausen (
         id bigserial primary key,

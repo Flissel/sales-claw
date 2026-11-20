@@ -1,6 +1,7 @@
 // Live-Steuerseite /termine/<uid>/live: fragt alle 3 s live.json ab und zeigt den
-// BESTAETIGTEN Zustand, das Transkript mit Pausenzeilen und die Bilderzahl.
-// Das Transkript ist Fremdtext: es wird nur per textContent gesetzt. Die Knoepfe
+// BESTAETIGTEN Zustand, das Transkript mit Pausenzeilen und die Bilder als Kacheln
+// (nur eigene Adressen /termine/..., dieselbe Route wie in der Akte).
+// Transkript und Bildbeschreibungen sind Fremdtext: nur per textContent. Die Knoepfe
 // sind normale Formulare der Seite; dieses Skript blendet sie nur je nach Zustand
 // ein oder aus. Bei Fehlern: "Verbindung unterbrochen", spaeter erneut versuchen.
 (function () {
@@ -12,9 +13,11 @@
   var verbindungEl = document.getElementById("live-verbindung");
   var textEl = document.getElementById("live-text");
   var bilderEl = document.getElementById("live-bilder");
+  var bilderRaster = document.getElementById("live-bilder-raster");
   var TAKT = 3000;
   var TAKT_FEHLER = 10000;
   var letzteAnsicht = "";
+  var letzteBilder = "";
 
   function zeit(iso) {
     var t = Date.parse(iso);
@@ -67,6 +70,40 @@
     });
   }
 
+  // Nur eigene Bild-Adressen (dieselbe gesicherte Route wie im Bildschirm-Reiter der Akte).
+  function eigeneBildAdresse(url) {
+    return typeof url === "string" && url.indexOf("/termine/") === 0 && url.indexOf("//") < 0;
+  }
+
+  function kachel(b) {
+    var li = document.createElement("li");
+    li.className = "bild-karte karte";
+    var a = document.createElement("a");
+    a.href = b.url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    var img = document.createElement("img");
+    img.src = b.url;
+    img.loading = "lazy";
+    img.alt = "Bildschirm um " + String(b.uhr || "");
+    a.appendChild(img);
+    li.appendChild(a);
+    var wer = String(b.uhr || "") + (b.geteilt_von ? " · geteilt von " + String(b.geteilt_von) : "");
+    li.appendChild(zeile("meta", [textKnoten(wer, false)]));
+    li.appendChild(zeile("", [textKnoten(String(b.beschreibung || ""), false)]));
+    return li;
+  }
+
+  function kacheln(d) {
+    var teile = document.createDocumentFragment();
+    // Neueste zuerst (die Liste kommt alt -> neu).
+    (d.bilder || []).slice().reverse().forEach(function (b) {
+      if (eigeneBildAdresse(b.url)) { teile.appendChild(kachel(b)); }
+    });
+    bilderRaster.textContent = "";
+    bilderRaster.appendChild(teile);
+  }
+
   function zeigen(d) {
     zustandEl.textContent = String(d.zustand_text || "");
     zustandEl.setAttribute("data-zustand", String(d.zustand || ""));
@@ -76,6 +113,11 @@
     if (ansicht !== letzteAnsicht) {
       letzteAnsicht = ansicht;
       transkript(d);
+    }
+    var bilder = JSON.stringify(d.bilder || []);
+    if (bilderRaster && bilder !== letzteBilder) {
+      letzteBilder = bilder;
+      kacheln(d);
     }
   }
 

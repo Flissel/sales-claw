@@ -209,6 +209,14 @@ def pause_zustand(meeting_id: int) -> dict | None:
     return {"pausiert": p["pausiert"], "seit_ms": int(seit) if seit is not None else None}
 
 
+def bot_status(meeting_id: int) -> str:
+    """Status des Meetings bei Vexa (`status` aus GET /meetings/{id}, z. B. active,
+    stopping, completed, failed) - fuer die Bestaetigung der Notbremse (Final-Review
+    C1), mit dem kurzen Pausen-Zeitlimit. VexaFehler bei Fehler."""
+    antwort = _anfrage("GET", f"/meetings/{int(meeting_id)}", timeout_s=_pause_timeout())
+    return str((antwort.get("status") if isinstance(antwort, dict) else "") or "")
+
+
 def meeting_loeschen(meeting_id: int) -> None:
     _anfrage("DELETE", f"/meetings/{int(meeting_id)}", ok404=True)
 

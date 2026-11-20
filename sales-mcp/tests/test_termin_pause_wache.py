@@ -47,6 +47,8 @@ class FakeVexa:
         self.zustand_fehler: dict[int, Exception] = {}
         self.senden_fehler: list[Exception] = []
         self.stoppen_fehler: list[Exception] = []
+        self.status: dict[int, str] = {}           # Vexa-Meeting-Status (Notbremse, C1)
+        self.status_fehler: dict[int, Exception] = {}
         self.segmente: dict[int, list[dict]] = {}
         self.holen_fehler: dict[int, Exception] = {}
         self.lesungen = 0
@@ -67,6 +69,11 @@ class FakeVexa:
         if self.stoppen_fehler:
             raise self.stoppen_fehler.pop(0)
 
+    def bot_status(self, mid):
+        if mid in self.status_fehler:
+            raise self.status_fehler[mid]
+        return self.status.get(mid, "active")
+
     def segmente_holen(self, mid):
         if mid in self.holen_fehler:
             raise self.holen_fehler[mid]
@@ -81,6 +88,7 @@ def fake(monkeypatch):
     f = FakeVexa()
     for name in ("pause_setzen", "pause_zustand", "bot_stoppen", "segmente_holen"):
         monkeypatch.setattr(vexa, name, getattr(f, name))
+    monkeypatch.setattr(vexa, "bot_status", f.bot_status, raising=False)   # neu (C1)
     return f
 
 
@@ -332,6 +340,8 @@ def test_notbremse_stoppt_bot_sofort_und_behaelt_live_segmente(fake):
     assert _runde(T0 + s(6.5)) == 1
     stopps = [a for a in fake.acts if a[0] == "stoppen"]
     assert stopps == [("stoppen", "jitsi", NATIVE, None)] * 2
+    assert _zeile()["aufnahme_notbremse_am"] is None          # Stopp angenommen != Bot weg (C1)
+    fake.status[MID] = "completed"                            # Vexa: Bot hat den Raum verlassen
     for t in (7.5, 8.5, 20):
         _runde(T0 + s(t))
     assert len([a for a in fake.acts if a[0] == "stoppen"]) == 2   # nicht wiederholt
@@ -340,7 +350,62 @@ def test_notbremse_stoppt_bot_sofort_und_behaelt_live_segmente(fake):
     assert termin_akte.pausen("w1")[0]["bis"] is None         # offene Pause bleibt offen (R2)
     z = _zeile()
     assert z["status"] == "laeuft"                            # keine aufnahme_beenden-Wirkung
-    assert HINWEISE == []                                     # keine 10-s-Frist nach Notbremse
+    assert z["aufnahme_notbremse_am"] == T0 + s(7.5)          # bestaetigt (C1), in der DB
+    assert z["aufnahme_pause_fehler"] is None
+    assert HINWEISE == []                                     # bestaetigt binnen 10 s: still
+
+
+def test_notbremse_aus_an_unbestaetigt_nach_10s_laut_und_ein_hinweis(fake):
+    """Final-Review C1: aus "an" oeffnet die Notbremse ein Fenster; meldet Vexa den Bot
+    nicht binnen 10 s als beendet, wird es laut (Fehler + EIN Betreiber-Hinweis)."""
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "notbremse", "felix", T0)
+    assert termin_akte.pausen("w1")[0]["von"] == T0           # Fenster ab dem Klick
+    assert _runde(T0 + s(0.5)) == 1                           # Stopp sofort, kein Pause-Act
+    assert fake.pausen_abs() == [] and len(fake.acts) == 1
+    for i in range(1, 11):
+        _runde(T0 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] is None and HINWEISE == []   # genau 10 s: noch nicht
+    for i in range(11, 25):
+        _runde(T0 + s(i))
+    z = _zeile()
+    assert z["aufnahme_pause_fehler"] == "notbremse_nicht_bestaetigt"
+    assert z["aufnahme_notbremse_am"] is None
+    assert len(HINWEISE) == 1
+    assert "Notbremse" in HINWEISE[0] and "nicht bestätigt" in HINWEISE[0]
+    assert "https://ui.example.test/termine/w1/live" in HINWEISE[0]
+    assert TITEL not in HINWEISE[0] and NATIVE not in HINWEISE[0]
+    # spaete Bestaetigung: Fehler weg, bestaetigt; kein zweiter Hinweis
+    fake.status[MID] = "failed"
+    _runde(T0 + s(30))
+    z = _zeile()
+    assert z["aufnahme_notbremse_am"] == T0 + s(30) and z["aufnahme_pause_fehler"] is None
+    for i in range(31, 40):
+        _runde(T0 + s(i))
+    assert len(HINWEISE) == 1
+
+
+def test_notbremse_stopp_scheitert_dauerhaft_wird_laut(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "notbremse", "felix", T0)
+    fake.stoppen_fehler.extend([vexa.VexaNichtErreichbar("weg")] * 30)
+    for i in range(1, 15):
+        assert _runde(T0 + s(i)) == 0
+    assert _zeile()["aufnahme_pause_fehler"] == "notbremse_nicht_bestaetigt"
+    assert len(HINWEISE) == 1
+
+
+def test_pause_wunsch_ohne_offene_zeile_wird_laut(fake):
+    """Final-Review I1: Wunsch 'pause' ohne offene Pausenzeile (alter Wunsch aus einer
+    frueheren Bot-Sitzung) ist nicht still: Fehler + Hinweis, statt return 0."""
+    _akte()
+    server._q("update termin_akten set aufnahme_wunsch = 'pause', aufnahme_wunsch_am = %s "
+              "where uid = 'w1' returning uid", (T0,))
+    _runde(T0 + s(1))
+    assert _zeile()["aufnahme_pause_fehler"] == "nicht_bestaetigt"
+    assert len(HINWEISE) == 1 and "Pause nicht bestätigt" in HINWEISE[0]
+    _runde(T0 + s(2))
+    assert len(HINWEISE) == 1
 
 
 def test_live_runde_laesst_pausensegmente_weg(fake):

@@ -184,12 +184,22 @@ def _bot_starten(uid: str, link: str, jetzt: datetime) -> None:
     # Akte ZUERST beanspruchen: nur wer sie von 'geplant' weiterschaltet, schickt
     # den Bot. Ein zweiter Aufruf (Rennen, Neustart) findet keine Zeile. Stehen
     # noch Ids eines alten Bots, raeumt erst Schritt 5 auf.
+    # Final-Review I1: eine neue Bot-Sitzung beginnt immer mit "Aufnahme an" - ein
+    # Wunsch, eine Bestaetigung oder ein Fehler aus einer frueheren Sitzung (Akte
+    # nach Verschiebung wieder 'geplant') gilt nicht weiter.
     if not server._q(
             "update termin_akten set status = 'wartet_auf_einlass', status_grund = null, "
-            "bot_geschickt_am = now(), geaendert_am = now() "
+            "bot_geschickt_am = now(), geaendert_am = now(), "
+            "aufnahme_wunsch = 'an', aufnahme_wunsch_am = null, "
+            "aufnahme_pausiert_seit = null, aufnahme_pause_fehler = null, "
+            "aufnahme_notbremse_am = null "
             "where uid = %s and status = 'geplant' and vexa_meeting_id is null "
             "and vexa_native_id is null returning uid", (uid,)):
         return
+    # Eine noch offene Pause der alten Sitzung (sonst schliesst sie termin_pause._aufraeumen)
+    # endet jetzt - sie wuerde sonst die ganze neue Sitzung wegfiltern.
+    server._q("update termin_pausen set bis = greatest(now(), von) "
+              "where uid = %s and bis is null returning id", (uid,))
     try:
         m = vexa.bot_schicken(link)
     except vexa.VexaFehler:
