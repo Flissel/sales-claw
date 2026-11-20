@@ -3294,7 +3294,7 @@ def test_portal_karte_maskiert_alles(client, falsch):
 def test_portal_karte_ohne_dict_bleibt_unterlagen_karte(client, falsch):
     falsch.karten = [karte(portal=None), karte(application_id=BID2, firma="B GmbH", portal="x")]
     s = _abschnitt(client)
-    assert s.count(">Freigeben<") + s.count("Freigeben und senden<") >= 2 and "Bot bereitet vor" not in s
+    assert s.count(">Freigeben<") + s.count("Freigeben und senden<") >= 2 and "Bot liest das Formular" not in s
 
 
 def test_portal_karte_mit_kaputtem_lauf_id_hat_keine_formulare(client, falsch):

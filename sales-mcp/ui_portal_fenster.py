@@ -4,7 +4,7 @@ Das noVNC-Fenster des Bewerbungs-Bots gibt es seit Schritt A der Direktlink-Umst
 Portal-Karte zeigt stattdessen die Adresse des Bewerbungsformulars. Dieses Relay bleibt nur als Stumpf, damit
 alte Seiten und Lesezeichen eine klare Antwort bekommen: dieselben Pfade unter /freigaben/bewerbung/fenster,
 HTTP antwortet 410, der WebSocket `/ws` wird vor dem Annehmen mit Code 1008 geschlossen. Nichts fragt die
-Zentrale oder den Container. Mit Schritt B ist das Relay entfernt: Schritt B loescht diese Datei samt
+Zentrale oder den Container. Das Relay ist mit Schritt A entfernt (nur noch dieser Stumpf); Schritt B loescht diese Datei samt
 `trennen` (ui.py) und den Einstellungen."""
 from __future__ import annotations
 
