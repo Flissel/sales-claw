@@ -2,16 +2,24 @@
 
 Die Steuerseite schreibt nur einen WUNSCH (`termin_akte.aufnahme_wuenschen`):
 `aufnahme_wunsch` an/pause/notbremse plus die Pausenzeilen in `termin_pausen`.
-Dieser Weg laeuft als eigener Thread in sales-termine (nur dieser Prozess hat
-VEXA_API_KEY) und fuehrt den Wunsch gegen Vexa aus:
+Dieser Weg laeuft in sales-termine (nur dieser Prozess hat VEXA_API_KEY) in drei
+eigenen, nie sterbenden Threads (`starten`) und fuehrt den Wunsch gegen Vexa aus:
 
-  * `wache_runde` jede Sekunde: Pause/Weiter senden, die Bot-Bestaetigung aus
-    `GET /meetings/{id}` (`data.aufnahme_pause`) in die Akte tragen, nach 10 s
-    ohne Bestaetigung `aufnahme_pause_fehler = 'nicht_bestaetigt'` (Pause) bzw.
-    `'weiter_nicht_bestaetigt'` (Weiter, R14) plus EIN Betreiber-Hinweis je
-    Klick; Notbremse stoppt den Bot sofort.
-  * `live_runde` alle 5 s: Segmente laufender Akten in `termin_live_segmente`
-    spiegeln - nie ein Segment, das ein Pausenfenster beruehrt.
+  * Wach-Thread, `wache_runde` jede Sekunde: Pause/Weiter senden, die Bot-
+    Bestaetigung aus `GET /meetings/{id}` (`data.aufnahme_pause`) in die Akte
+    tragen, nach 10 s ohne Bestaetigung `aufnahme_pause_fehler =
+    'nicht_bestaetigt'` (Pause) bzw. `'weiter_nicht_bestaetigt'` (Weiter, R14)
+    plus EIN Betreiber-Hinweis je Klick (nur eingereiht); Notbremse stoppt den
+    Bot sofort. Hier laeuft nur, was das kurze Pausen-Zeitlimit hat.
+  * Live-Thread, `live_runde` alle 5 s: Segmente laufender Akten in
+    `termin_live_segmente` spiegeln - nie ein Segment, das ein Pausenfenster
+    beruehrt.
+  * Hinweis-Thread, `hinweise_senden`: Telegram an den Betreiber.
+
+LESEFEHLER != NICHT PAUSIERT: scheitert das Lesen des Zustands, bleibt ein
+bestaetigter Zustand stehen (kein Leeren, kein Fehler, kein Hinweis). Meldet Vexa
+dagegen gelesen das Gegenteil, wird sofort erneut gesendet (gleiche Klickzeit)
+und die 10-s-Frist beginnt ab diesem Moment neu.
 
 PAUSENBEGINN (R10): `ab`/`at_ms` ist `von` der OFFENEN Pausenzeile (erster
 Klick), nicht `aufnahme_wunsch_am` (ein Doppelklick setzt das neu). Die 10-s-Frist
@@ -32,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import queue
 import threading
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
@@ -48,8 +57,11 @@ BOT_STATUS = ("wartet_auf_einlass", "laeuft")
 FRIST = timedelta(seconds=10)            # Bestaetigung spaetestens 10 s nach `von`
 NEU_SENDEN_NACH = timedelta(seconds=3)   # unbestaetigte Acts hoechstens alle 3 s erneut
 HINWEIS_NEU_NACH = timedelta(seconds=60)  # gescheiterter Betreiber-Hinweis: Neuversuch
-LIVE_ALLE = timedelta(seconds=5)
+# Drei Threads (Review Important 1): nur der Wach-Thread steht im 2-s-Weg; das
+# Live-Transkript (Vexa-Abruf bis 20 s) und Telegram (bis 10 s) laufen getrennt.
 WACHE_TAKT_S = 1.0
+LIVE_TAKT_S = 5.0
+HINWEIS_TAKT_S = 1.0
 # R15: eine Bestaetigung gehoert zu DIESER Pause nur mit von - 1 s <= seit_ms <=
 # von + 2 s (Uhren von sales-termine und Bot; der Bot klemmt eine Klickzeit in der
 # Zukunft auf seine Uhr). Aelter = eine fruehere Pause, ohne seit_ms = unklar:
@@ -62,17 +74,29 @@ FEHLER = {"pause": "nicht_bestaetigt", "weiter": "weiter_nicht_bestaetigt"}
 _gesendet: dict[tuple[str, str], datetime] = {}   # (uid, "pause:<ms>"|"resume") -> letzter Versuch
 _letzter_act: dict[str, str] = {}                  # uid -> "pause" | "resume"
 _nachschuss: set[tuple[str, int]] = set()          # (uid, von_ms): R11c-Aufruf steht aus
-# (uid, "pause"|"weiter", Klick-ms): Betreiber-Hinweis raus bzw. noch offen
+# (uid, "pause"|"weiter", Klick-ms): Betreiber-Hinweis eingereiht (einmal je Klick)
 _gemeldet: set[tuple[str, str, int]] = set()
-_hinweis_offen: dict[tuple[str, str, int], datetime | None] = {}
+# (uid, "pause"|"weiter", Klick-ms) -> Beginn der laufenden 10-s-Frist, wenn sie
+# NICHT beim Klick beginnt: eine schon bestaetigte Pause bzw. ein bestaetigtes
+# Weiter, das Vexa danach verliert, bekommt ab dem Verlust frische 10 s.
+_frist_ab: dict[tuple[str, str, int], datetime] = {}
 _gestoppt: set[str] = set()                        # Notbremse: Bot gestoppt
+# Betreiber-Hinweise: der Wach-Thread reiht ein, der Hinweis-Thread sendet.
+_hinweis_schlange: queue.Queue[str] = queue.Queue()
+_hinweis_ausstehend: list[list] = []               # [letzter Fehlversuch | None, Text]
+_UNBEKANNT = object()                              # Vexa-Zustand nicht lesbar
 
 
 def _zuruecksetzen() -> None:
     """Speicher leeren (Tests, "Neustart")."""
-    for ablage in (_gesendet, _letzter_act, _nachschuss, _gemeldet, _hinweis_offen,
-                   _gestoppt):
+    for ablage in (_gesendet, _letzter_act, _nachschuss, _gemeldet, _frist_ab,
+                   _gestoppt, _hinweis_ausstehend):
         ablage.clear()
+    while True:
+        try:
+            _hinweis_schlange.get_nowait()
+        except queue.Empty:
+            break
 
 
 def _h(uid) -> str:
@@ -157,11 +181,15 @@ def _senden(z: dict, ab: datetime | None, jetzt: datetime) -> bool:
     return True
 
 
-def _zustand(z: dict) -> dict | None:
+def _zustand(z: dict):
+    """Vom Bot bestaetigter Zustand (dict) oder None, wenn Vexa KEINE gueltige
+    Bestaetigung meldet - oder `_UNBEKANNT`, wenn das Lesen scheiterte (Zeitlimit,
+    Netz, 5xx). Das ist NICHT dasselbe (Review Important 2): ein Lesefehler aendert
+    an einem bestaetigten Zustand nichts."""
     try:
         return vexa.pause_zustand(int(z["vexa_meeting_id"]))
     except vexa.VexaFehler:
-        return None            # unbekannt: wie "keine Bestaetigung"
+        return _UNBEKANNT
 
 
 def _hinweis_text(z: dict, art: str, klick: datetime) -> str:
@@ -182,11 +210,13 @@ def _hinweis_text(z: dict, art: str, klick: datetime) -> str:
     return "\n".join(zeilen)
 
 
-def _nicht_bestaetigt(z: dict, art: str, klick: datetime, jetzt: datetime) -> None:
+def _nicht_bestaetigt(z: dict, art: str, klick: datetime) -> None:
     """Fehler setzen (nur beim Wechsel) und EIN Betreiber-Hinweis je Ereignis
-    (`art` 'pause' je Pausenklick, 'weiter' je Weiter-Klick). Nach einem Neustart
-    steht der Fehler schon - dann kein zweiter Hinweis. Ein Fehler der anderen Art
-    wird ueberschrieben: es zaehlt, was gerade gewuenscht ist."""
+    (`art` 'pause' je Pausenklick, 'weiter' je Weiter-Klick). Der Hinweis wird nur
+    EINGEREIHT - senden tut der Hinweis-Thread (Telegram darf den 2-s-Weg nicht
+    aufhalten). Nach einem Neustart steht der Fehler schon - dann kein zweiter
+    Hinweis. Ein Fehler der anderen Art wird ueberschrieben: es zaehlt, was gerade
+    gewuenscht ist."""
     uid, schluessel = z["uid"], (z["uid"], art, _ms(klick))
     bedingung = ("aufnahme_wunsch = 'pause' and aufnahme_pausiert_seit is null"
                  if art == "pause" else "aufnahme_wunsch = 'an'")
@@ -200,21 +230,8 @@ def _nicht_bestaetigt(z: dict, art: str, klick: datetime, jetzt: datetime) -> No
                     "Pause" if art == "pause" else "Weiter", _h(uid),
                     int(FRIST.total_seconds()))
         if schluessel not in _gemeldet:
-            _hinweis_offen.setdefault(schluessel, None)
-    if schluessel in _hinweis_offen:
-        letzter = _hinweis_offen[schluessel]
-        if letzter is not None and timedelta(0) <= jetzt - letzter < HINWEIS_NEU_NACH:
-            return
-        if betreiber_hinweis.senden(_hinweis_text(z, art, klick)) is True:
             _gemeldet.add(schluessel)
-            del _hinweis_offen[schluessel]
-        else:
-            _hinweis_offen[schluessel] = jetzt
-
-
-def _hinweise_erledigt(uid: str, art: str) -> None:
-    for k in [k for k in _hinweis_offen if k[0] == uid and k[1] == art]:
-        del _hinweis_offen[k]
+            _hinweis_schlange.put(_hinweis_text(z, art, klick))
 
 
 def _live_im_fenster_loeschen(uid: str, von: datetime) -> int:
@@ -231,11 +248,21 @@ def _live_im_fenster_loeschen(uid: str, von: datetime) -> int:
 def _pause(z: dict, jetzt: datetime) -> int:
     uid, von = z["uid"], z["von"]
     von_ms = _ms(von)
+    frist_schluessel = (uid, "pause", von_ms)
     acts = 0
     erstmals = (uid, f"pause:{von_ms}") not in _gesendet
     if erstmals:                         # erster Act ohne vorheriges Lesen: jede ms zaehlt
         acts += _senden(z, von, jetzt)
     zustand = _zustand(z)
+    if zustand is _UNBEKANNT:
+        if z["aufnahme_pausiert_seit"] is not None:
+            # Bestaetigt und nur gerade nicht lesbar: nichts aendern - kein Leeren,
+            # kein Fehler, kein Hinweis. Ein ausstehender Nachschuss (R11c) darf raus.
+            if (uid, von_ms) in _nachschuss and _senden(z, von, jetzt):
+                _nachschuss.discard((uid, von_ms))
+                acts += 1
+            return acts
+        zustand = None                   # nie bestaetigt: bleibt unbestaetigt
     seit_ms = zustand.get("seit_ms") if zustand else None
     seit = _aus_ms(seit_ms) if seit_ms is not None else None
     if (zustand and zustand["pausiert"] is True and seit is not None
@@ -256,18 +283,25 @@ def _pause(z: dict, jetzt: datetime) -> int:
         if (uid, von_ms) in _nachschuss and _senden(z, von, jetzt):
             _nachschuss.discard((uid, von_ms))
             acts += 1
-        _hinweise_erledigt(uid, "pause")
-        _hinweise_erledigt(uid, "weiter")
+        _frist_ab.pop(frist_schluessel, None)
         return acts
-    # Nicht (mehr) bestaetigt: Lobby-Rennen, Vexa-Neustart, Act verloren.
-    if z["aufnahme_pausiert_seit"] is not None:
+    # Vexa meldet die Pause (gelesen!) nicht: Lobby-Rennen, Bot-Neustart, Act verloren.
+    verloren = z["aufnahme_pausiert_seit"] is not None
+    if verloren:
         server._q("update termin_akten set aufnahme_pausiert_seit = null "
                   "where uid = %s returning uid", (uid,))
         LOG.warning("Pause bei Vexa nicht mehr bestaetigt uid=%s - sende erneut", _h(uid))
-    if not erstmals and _faellig((uid, f"pause:{von_ms}"), jetzt):
+        _frist_ab[frist_schluessel] = jetzt          # frische 10 s ab dem Verlust
+    if not erstmals and (verloren or _faellig((uid, f"pause:{von_ms}"), jetzt)):
         acts += _senden(z, von, jetzt)
-    if jetzt - von > FRIST:
-        _nicht_bestaetigt(z, "pause", von, jetzt)
+    if z["bestaetigt_am"] is not None:
+        # war schon bestaetigt: Frist ab dem Verlust (nach einem Neustart dieses
+        # Prozesses ab dem ersten Blick), nie ab `von`
+        beginn = _frist_ab.setdefault(frist_schluessel, jetzt)
+    else:
+        beginn = _frist_ab.get(frist_schluessel, von)
+    if jetzt - beginn > FRIST:
+        _nicht_bestaetigt(z, "pause", von)
     return acts
 
 
@@ -278,29 +312,46 @@ def _weiter(z: dict, jetzt: datetime) -> int:
     for schluessel in [k for k in _nachschuss if k[0] == uid]:
         _nachschuss.discard(schluessel)
     zustand = _zustand(z)
-    if zustand and zustand["pausiert"] is False:
+    if zustand is _UNBEKANNT:
+        zustand = None       # Lesefehler: nur die gespeicherten Spalten entscheiden
+    elif zustand and zustand["pausiert"] is False:
         server._q("update termin_akten set aufnahme_pausiert_seit = null, "
                   "aufnahme_pause_fehler = null where uid = %s and "
                   "(aufnahme_pausiert_seit is not null or aufnahme_pause_fehler is not null) "
                   "returning uid", (uid,))
         if _letzter_act.pop(uid, None) == "resume":
             LOG.info("Weiter bestaetigt uid=%s", _h(uid))
-        _hinweise_erledigt(uid, "weiter")
+        for k in [k for k in _frist_ab if k[0] == uid and k[1] == "weiter"]:
+            del _frist_ab[k]
         return 0
+    vexa_pausiert = zustand is not None and zustand["pausiert"] is True
     vielleicht_pausiert = (
-        (zustand is not None and zustand["pausiert"] is True)
+        vexa_pausiert
         or z["aufnahme_pausiert_seit"] is not None
         or z["aufnahme_pause_fehler"] is not None
         or _letzter_act.get(uid) == "pause")
     if not vielleicht_pausiert:
         return 0
-    acts = int(_senden(z, None, jetzt)) if _faellig((uid, "resume"), jetzt) else 0
     # R14: Klickzeit des Weiter = `bis` der zuletzt geschlossenen Pausenzeile (der
     # ERSTE Weiter-Klick; aufnahme_wunsch_am setzt ein Doppelklick neu). Ohne
     # geschlossene Zeile: aufnahme_wunsch_am.
     klick = z["weiter_am"] or z["aufnahme_wunsch_am"]
-    if klick is not None and jetzt - klick > FRIST:
-        _nicht_bestaetigt(z, "weiter", klick, jetzt)
+    frist_schluessel = (uid, "weiter", _ms(klick)) if klick is not None else None
+    neu_verloren = (vexa_pausiert and z["aufnahme_pausiert_seit"] is None
+                    and z["aufnahme_pause_fehler"] is None
+                    and frist_schluessel is not None and frist_schluessel not in _frist_ab)
+    if neu_verloren:
+        # Weiter war bestaetigt (Spalten leer), Vexa meldet wieder pausiert (Bot-
+        # Neustart, spaete alte Bestaetigung R8): sofort resume, frische 10 s.
+        _frist_ab[frist_schluessel] = jetzt
+        LOG.warning("Weiter bei Vexa nicht mehr bestaetigt uid=%s - sende erneut", _h(uid))
+    acts = 0
+    if neu_verloren or _faellig((uid, "resume"), jetzt):
+        acts = int(_senden(z, None, jetzt))
+    if klick is not None:
+        beginn = _frist_ab.get(frist_schluessel, klick)
+        if jetzt - beginn > FRIST:
+            _nicht_bestaetigt(z, "weiter", klick)
     return acts
 
 
@@ -339,8 +390,8 @@ def _vergessen(aktiv: set[str]) -> None:
     """Speicher fuer Akten, die nicht mehr laufen, freigeben."""
     for k in [k for k in _gesendet if k[0] not in aktiv]:
         del _gesendet[k]
-    for k in [k for k in _hinweis_offen if k[0] not in aktiv]:
-        del _hinweis_offen[k]
+    for k in [k for k in _frist_ab if k[0] not in aktiv]:
+        del _frist_ab[k]
     for ablage in (_nachschuss, _gemeldet):
         for k in [k for k in ablage if k[0] not in aktiv]:
             ablage.discard(k)
@@ -360,7 +411,7 @@ def wache_runde(jetzt: datetime) -> int:
     zeilen = server._q(
         "select a.uid, a.zeitzone, a.vexa_meeting_id, a.vexa_plattform, a.vexa_native_id, "
         "a.aufnahme_wunsch, a.aufnahme_wunsch_am, a.aufnahme_pausiert_seit, "
-        "a.aufnahme_pause_fehler, p.id as pause_id, p.von, "
+        "a.aufnahme_pause_fehler, p.id as pause_id, p.von, p.bestaetigt_am, "
         "exists (select 1 from termin_pausen q where q.uid = a.uid) as hatte_pause, "
         "(select max(q.bis) from termin_pausen q where q.uid = a.uid) as weiter_am "
         "from termin_akten a "
@@ -474,28 +525,74 @@ def live_runde(jetzt: datetime) -> int:
     return n
 
 
-# ---------- Thread ----------
+# ---------- Betreiber-Hinweise ----------
 
-def schleife(stopp: threading.Event) -> None:
-    """Schneller Weg: jede Sekunde `wache_runde`, alle 5 s `live_runde`. Fehler
-    einer Runde stehen mit Typname im Log; der Thread stirbt nie, er endet nur
-    mit `stopp`."""
-    letzte_live: datetime | None = None
-    LOG.info("Schneller Pausenweg startet (Wache %.0f s, Live %d s)",
-             WACHE_TAKT_S, int(LIVE_ALLE.total_seconds()))
+def hinweise_senden(jetzt: datetime) -> int:
+    """Eingereihte Hinweise senden (Hinweis-Thread). Ein gescheiterter Hinweis
+    bleibt stehen und wird fruehestens nach `HINWEIS_NEU_NACH` erneut versucht.
+    -> Anzahl gesendeter Hinweise."""
+    while True:
+        try:
+            _hinweis_ausstehend.append([None, _hinweis_schlange.get_nowait()])
+        except queue.Empty:
+            break
+    gesendet = 0
+    for eintrag in list(_hinweis_ausstehend):
+        zuletzt, text = eintrag
+        if zuletzt is not None and timedelta(0) <= jetzt - zuletzt < HINWEIS_NEU_NACH:
+            continue
+        if betreiber_hinweis.senden(text) is True:
+            _hinweis_ausstehend.remove(eintrag)
+            gesendet += 1
+        else:
+            eintrag[0] = jetzt
+    return gesendet
+
+
+# ---------- Threads ----------
+
+def _takt(stopp: threading.Event, name: str, runde, takt_name: str) -> None:
+    """Gemeinsame Schleife: `runde(jetzt)` je Takt. Fehler stehen mit Typname im
+    Log; der Thread stirbt nie, er endet nur mit `stopp`. Den Takt liest jede
+    Runde neu aus dem Modul (Tests verkuerzen ihn)."""
     while not stopp.is_set():
         try:
-            jetzt = datetime.now(timezone.utc)
             try:
-                wache_runde(jetzt)
+                runde(datetime.now(timezone.utc))
             except Exception as e:  # noqa: BLE001
-                LOG.warning("Pausen-Wache fehlgeschlagen (%s)", type(e).__name__)
-            if letzte_live is None or not timedelta(0) <= jetzt - letzte_live < LIVE_ALLE:
-                letzte_live = jetzt
-                try:
-                    live_runde(jetzt)
-                except Exception as e:  # noqa: BLE001
-                    LOG.warning("Live-Transkript fehlgeschlagen (%s)", type(e).__name__)
+                LOG.warning("%s fehlgeschlagen (%s)", name, type(e).__name__)
         except Exception:  # noqa: BLE001 - auch ein Log-Fehler beendet den Thread nicht
             pass
-        stopp.wait(WACHE_TAKT_S)
+        stopp.wait(globals()[takt_name])
+
+
+def schleife(stopp: threading.Event) -> None:
+    """Wach-Thread (2-s-Weg): jede Sekunde nur `wache_runde` - Acts, Bot-Stopp und
+    Zustand lesen, alles mit dem kurzen Pausen-Zeitlimit von vexa."""
+    _takt(stopp, "Pausen-Wache", lambda j: wache_runde(j), "WACHE_TAKT_S")
+
+
+def live_schleife(stopp: threading.Event) -> None:
+    """Live-Thread: alle 5 s `live_runde` (Vexa-Abruf darf hier haengen)."""
+    _takt(stopp, "Live-Transkript", lambda j: live_runde(j), "LIVE_TAKT_S")
+
+
+def hinweis_schleife(stopp: threading.Event) -> None:
+    """Hinweis-Thread: Telegram (bis 10 s) haelt nie einen Act auf."""
+    _takt(stopp, "Betreiber-Hinweis", lambda j: hinweise_senden(j), "HINWEIS_TAKT_S")
+
+
+def starten(stopp: threading.Event) -> list[threading.Thread]:
+    """Die drei Daemon-Threads starten; sie enden mit `stopp`."""
+    LOG.info("Schneller Pausenweg startet (Wache %.0f s, Live %.0f s, Hinweise getrennt)",
+             WACHE_TAKT_S, LIVE_TAKT_S)
+    threads = [
+        threading.Thread(target=schleife, args=(stopp,), name="pausen-wache", daemon=True),
+        threading.Thread(target=live_schleife, args=(stopp,), name="live-transkript",
+                         daemon=True),
+        threading.Thread(target=hinweis_schleife, args=(stopp,), name="betreiber-hinweise",
+                         daemon=True),
+    ]
+    for th in threads:
+        th.start()
+    return threads

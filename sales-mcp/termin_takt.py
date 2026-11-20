@@ -17,9 +17,9 @@ Alle `TERMIN_TAKT_S` Sekunden (Vorgabe 30) eine Runde, jeder Schritt mit eigenem
      (gleiche Pause wie 6), einen Bericht (neu) ablegen, hoechstens stuendlich
      Dateien und Buchungen abgleichen (`mitschrift_bericht.abgleichen`)
 
-Daneben laeuft ein Thread mit dem schnellen Pausenweg der Meeting-Steuerseite
-(`termin_pause.schleife`: Pause/Weiter/Notbremse jede Sekunde, Live-Transkript
-alle 5 s).
+Daneben laufen die Threads des schnellen Pausenwegs der Meeting-Steuerseite
+(`termin_pause.starten`: Pause/Weiter/Notbremse jede Sekunde, Live-Transkript
+alle 5 s und Betreiber-Hinweise - je ein eigener Thread).
 
 NUR DER TAKTGEBER SPRICHT MIT VEXA (Final-Review C1): Oberflaeche und MCP haben
 keinen VEXA_API_KEY; sie setzen nur Status und lassen die Vexa-Ids stehen.
@@ -1072,9 +1072,9 @@ def main() -> int:
     LOG.info("sales-termine startet (Takt %.0f s%s)", _takt(), ", einmalig" if einmal else "")
     if not einmal:
         # Meeting-Steuerseite: Pause/Weiter/Notbremse binnen 2 s und das
-        # Live-Transkript laufen neben dem 30-s-Takt (termin_pause.schleife).
-        threading.Thread(target=termin_pause.schleife, args=(_STOPP,),
-                         name="pausen-weg", daemon=True).start()
+        # Live-Transkript und Betreiber-Hinweise laufen in eigenen Threads neben
+        # dem 30-s-Takt (termin_pause.starten).
+        termin_pause.starten(_STOPP)
     while not _STOPP.is_set():
         try:
             runde(datetime.now(timezone.utc))
