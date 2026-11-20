@@ -38,6 +38,7 @@ import { createSttFaultReporter } from './stt-faults.js';
 import { launchBrowser, startCaptureBridge, startRecording, restartMixedCapture, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
 import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneSilenceWindowMs } from './aloneness.js';
 import { installSignalHandlers } from './signals.js';
+import { PauseGate, gateTranscriptSink } from './pause-gate.js'; // sales-claw pause patch
 import type {
   JoinDriver,
   Pipeline,
@@ -230,6 +231,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   });
   console.log(`[bot] aloneness: silence adapter + deaf-capture guard enabled (window_ms=${aloneSilenceWindowMs})`);
   if (speakerStreamConfig) console.log(`[bot] speaker-stream tuning enabled: ${JSON.stringify(speakerStreamConfig)}`);
+  // sales-claw pause patch: ONE gate, built before the join, shared by the orchestrator (acts →
+  // gate → lifecycle confirmation), the pipeline (stt, egress, feed) and the chat publisher.
+  const pauseGate = new PauseGate();
 
   try {
     session = await launchBrowser(inv);                                   // L4 (O6/VM)
@@ -251,6 +255,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
           });
         } catch { /* an observation must never disturb the meeting */ }
       },
+      pauseGate, // sales-claw pause patch
     });
     // Defer the page-side capture start to pipeline.start(): the orchestrator calls it AFTER
     // admission (orchestrator.ts:125), on the LIVE meeting page — where addInitScript has injected
@@ -267,9 +272,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // speaker, the wall clock is the timing (epoch seconds, like the audio lanes), and
     // `completed` is immediate — a chat line has no draft phase.
     let chatSeq = 0;
+    const chatTranscript = gateTranscriptSink(transcript, pauseGate); // sales-claw pause patch: no chat text from a pause
     const publishChat = (sender: string, text: string): void => {
       const nowMs = Date.now();
-      void transcript.publish({
+      void chatTranscript.publish({
         segment_id: `${inv.connectionId ?? 'session'}:chat:${nowMs}:${chatSeq++}`,
         speaker: sender,
         speaker_key: `chat:${sender}`,
@@ -320,6 +326,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     recording: recording as RecordingSink | undefined,
     reachability,
     degraded: () => sttFaults.report(),
+    pauseGate, // sales-claw pause patch
   });
 
   // Disposability (P7): a termination signal ends the active phase gracefully (leave → flush →

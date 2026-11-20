@@ -36,6 +36,7 @@ import type {
   RecordingSink,
   ControlPlaneProbe,
 } from './ports.js';
+import type { PauseGate } from './pause-gate.js'; // sales-claw pause patch
 
 export interface OrchestratorDeps {
   lifecycle: LifecycleSink;
@@ -62,6 +63,10 @@ export interface OrchestratorDeps {
   /** Producer clock for lifecycle facts. Injected by tests; each logical event is stamped once
    *  before the lifecycle adapter performs any HTTP retry. */
   now?: () => string;
+  /** sales-claw pause patch — the gate shared with the pipeline. `pause`/`resume` acts drive it and
+   *  the result is confirmed on lifecycle.v1 (`aufnahme_pause`). ABSENT ⇒ the acts are ignored and
+   *  never confirmed (a bot that cannot pause must not report a pause). */
+  pauseGate?: PauseGate;
 }
 
 /** The dedicated non-zero exit code for a pre-join control-plane-unreachable abort (#530). On
@@ -225,6 +230,19 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
   // (no-op for the machine; voice agent is DEFERRED this increment).
   async function handle(act: Act): Promise<void> {
     if (act.action === 'leave') stop('stopped');
+    else if (act.action === 'pause' || act.action === 'resume') await applyPause(act); // sales-claw pause patch
+  }
+
+  // sales-claw pause patch: apply to the shared gate in ANY phase (acts are subscribed before the
+  // join race, so a lobby pause is in effect when the pipeline starts), then confirm the state on
+  // lifecycle.v1 under the CURRENT status (the meeting-api treats a same-status event as a no-op).
+  async function applyPause(act: Extract<Act, { action: 'pause' | 'resume' }>): Promise<void> {
+    const gate = deps.pauseGate;
+    if (!gate) return;
+    if (act.action === 'pause') gate.pause(typeof act.at === 'number' ? act.at : Number.NaN);
+    else gate.resume();
+    if (isTerminal(cur)) return;
+    await emit(cur, { aufnahme_pause: { pausiert: gate.pausedSince !== null, seit_ms: gate.pausedSince } });
   }
 
   async function run(opts: RunOptions = {}): Promise<MeetingResult> {

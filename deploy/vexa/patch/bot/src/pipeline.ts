@@ -41,6 +41,7 @@ import { TranscriptionClient, type TranscriptionResult } from '@vexa/transcribe-
 import { isMixedLanePlatform, isPerTrackLanePlatform, type Invocation, type Platform } from './config.js';
 import type { TranscriptSegment } from './contracts.js';
 import type { Pipeline, TranscriptSink } from './ports.js';
+import { gateBotPipeline, gateTranscribe, gateTranscriptSink, type PauseGate } from './pause-gate.js'; // sales-claw pause patch
 
 /** stt.v1 round-trip — real adapter = TranscriptionClient.transcribe; L2/L3 = a mock. The
  *  lane bakes language/prompt at the call site, so the closure carries the configured language. */
@@ -456,8 +457,21 @@ export function createBotPipeline(
     /** Where the lane's own typed observations go (the turn-spine switch). Wired at the
      *  composition root to the capture-signal recorder's observations sidecar. */
     onObservation?: (source: string, obs: Record<string, unknown>, tMs?: number) => void;
+    /** sales-claw pause patch — the recording pause gate (see pause-gate.ts). */
+    pauseGate?: PauseGate;
   } = {},
 ): BotPipeline {
+  // sales-claw pause patch: one gate for every lane — the stt seam, the transcript egress and the
+  // audio feed. Build the ungated lane over the gated transcribe + sink, then gate its feed.
+  if (opts.pauseGate) {
+    const gate = opts.pauseGate;
+    const lane = createBotPipeline(inv, gateTranscriptSink(sink, gate), {
+      ...opts,
+      pauseGate: undefined,
+      transcribe: gateTranscribe(opts.transcribe ?? createTranscribe(inv), gate, inv.language),
+    });
+    return gateBotPipeline(lane, gate);
+  }
   const transcribe = opts.transcribe ?? createTranscribe(inv);
   if (inv.platform === 'teams') {
     return createTeamsBotPipeline(

@@ -72,6 +72,10 @@ export interface LifecycleEvent {
     timings?: { time_to_lobby_ms?: number; time_in_lobby_ms?: number; total_ms?: number };
     lobby_budget_ms?: number;
   };
+  // sales-claw pause patch: the bot's CONFIRMED pause state after a `pause`/`resume` act. Additive
+  // on lifecycle.v1 like `infra_fault` (additionalProperties:true); the meeting-api stores it at
+  // `meeting.data.aufnahme_pause`. `seit_ms` = the click time (epoch ms) of the running pause.
+  aufnahme_pause?: { pausiert: boolean; seit_ms: number | null };
 }
 
 /** The legal transitions — the machine the bot MUST obey (lifecycle.v1/README.md). */
@@ -109,7 +113,10 @@ export type Act =
   | { action: 'screen_show'; imageUrl?: string; text?: string }
   | { action: 'screen_stop' }
   | { action: 'avatar_set'; url: string }
-  | { action: 'avatar_reset' };
+  | { action: 'avatar_reset' }
+  // sales-claw pause patch: pause transcription from the click time `at` (epoch ms); resume.
+  | { action: 'pause'; at: number }
+  | { action: 'resume' };
 
 export type ActAction = Act['action'];
 
@@ -118,6 +125,7 @@ export const ACT_ACTIONS: readonly ActAction[] = [
   'speak', 'speak_audio', 'speak_stop',
   'chat_send', 'chat_read',
   'screen_show', 'screen_stop', 'avatar_set', 'avatar_reset',
+  'pause', 'resume', // sales-claw pause patch
 ];
 
 /** The redis pub/sub channel carrying a meeting's command bus (acts.v1). */
