@@ -153,10 +153,46 @@ def _kopf(akte: dict, kunden: list[dict], schreiben: bool) -> str:
     status = STATUS_TEXT.get(akte["status"], akte["status"])
     grund = f" – {_e(akte['status_grund'])}" if akte["status_grund"] else ""
     abgesagt = '<p class="fehler">Dieser Termin wurde abgesagt.</p>' if akte["abgesagt"] else ""
+    live = ""
+    if akte["status"] in _BILDSTATUS_LIVE:
+        live = (f'<a class="knopf sek" href="{_e(_pfad(akte["uid"]))}/live">Live-Ansicht</a>')
     return (f'<h1>{_e(titel)}</h1>{abgesagt}<p class="termin-wer">{wer}</p>'
-            f'<p class="meta">{_e(_zeit(akte))}</p>{beitreten}'
+            f'<p class="meta">{_e(_zeit(akte))}</p>{beitreten}{live}'
             f'<p class="termin-status">Mitschrift-Bot: <b>{_e(status)}</b>{grund}</p>'
+            + _pausen_kopf(akte)
             + (_schalter(akte) if schreiben else ""))
+
+
+def _uhr(wert, zone) -> str:
+    return wert.astimezone(zone).strftime("%H:%M")
+
+
+def pause_zeile(p: dict, zone) -> str:
+    """„Pause HH:MM–HH:MM“ (offen: „Pause seit HH:MM“) - nie mit Inhalt."""
+    if p["bis"] is None:
+        return f"Pause seit {_uhr(p['von'], zone)}"
+    return f"Pause {_uhr(p['von'], zone)}–{_uhr(p['bis'], zone)}"
+
+
+def _pausen_kopf(akte: dict) -> str:
+    pausen = termin_akte.pausen(akte["uid"])
+    if not pausen:
+        return ""
+    zone = _zone_der(akte)
+    punkte = "".join(
+        f"<li>{_e(pause_zeile(p, zone))}"
+        + (f' <span class="meta">(angefordert von {_e(p["angefordert_von"])})</span>'
+           if p.get("angefordert_von") else "") + "</li>" for p in pausen)
+    return f'<h2>Pausen</h2><ul class="termin-pausen">{punkte}</ul>'
+
+
+def _segment_zeit(s: dict):
+    from datetime import datetime, timezone
+    try:
+        t = datetime.fromisoformat(str(s.get("beginn")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def _knopf(uid: str, aktion: str, text: str, klasse: str = "", extra: str = "") -> str:
@@ -300,12 +336,37 @@ def _mitschrift(akte: dict, schreiben: bool) -> str:
     teile.append(_bilder_je_thema(akte))
     segmente = m["segmente"] if isinstance(m["segmente"], list) else []
     if segmente:
-        zeilen = "".join(f'<p><b>{_e(s.get("sprecher") or "?")}:</b> {_e(s.get("text"))}</p>'
-                         for s in segmente if isinstance(s, dict))
-        teile.append(f'<h2>Mitschrift</h2><div class="termin-md">{zeilen}</div>')
+        teile.append(f'<h2>Mitschrift</h2><div class="termin-md">'
+                     f'{_segmente_mit_pausen(akte, segmente)}</div>')
     if schreiben:
         teile.append(_knopf(uid, "mitschrift_verwerfen", "Mitschrift verwerfen", "gefahr"))
     return "".join(teile)
+
+
+def _segmente_mit_pausen(akte: dict, segmente: list) -> str:
+    """Segmente in Reihenfolge; vor dem ersten Segment nach einer Pause steht
+    „Pause HH:MM–HH:MM“. Ein Segment, das in einem Pausenfenster beginnt, wird
+    nicht gezeigt (die Pause bleibt ohne Inhalt)."""
+    pausen = termin_akte.pausen(akte["uid"])
+    zone = _zone_der(akte)
+    offen = list(pausen)
+    aus = []
+
+    def pausen_bis(zeit):
+        while offen and (zeit is None or offen[0]["von"] <= zeit):
+            aus.append(f'<p class="meta pause-zeile">{_e(pause_zeile(offen.pop(0), zone))}</p>')
+
+    for s in segmente:
+        if not isinstance(s, dict):
+            continue
+        zeit = _segment_zeit(s)
+        if zeit is not None:
+            pausen_bis(zeit)
+            if termin_akte.in_pause(zeit, pausen):
+                continue
+        aus.append(f'<p><b>{_e(s.get("sprecher") or "?")}:</b> {_e(s.get("text"))}</p>')
+    pausen_bis(None)
+    return "".join(aus)
 
 
 def _bildschirm_sichtbar(akte: dict) -> bool:
@@ -391,6 +452,9 @@ def _bildschirm(akte: dict, schreiben: bool) -> str:
     # Immer da (bei 0 versteckt), damit bilder.js den Hinweis live auffrischen kann.
     kopf += (f'<p class="meta bild-heikel" id="bild-heikel"{"" if satz else " hidden"}>'
              f'{_e(satz)}</p>')
+    pausen_zeilen = "".join(f'<p class="meta pause-zeile">{_e(pause_zeile(p, zone))}</p>'
+                            for p in termin_akte.pausen(uid))
+    kopf += pausen_zeilen
     karten = "".join(_karte(uid, b, schreiben) for b in reversed(bilder))
     leer = "" if bilder else '<p class="meta bild-leer">Noch keine Bilder.</p>'
     vorlage = ""

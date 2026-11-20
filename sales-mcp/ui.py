@@ -225,6 +225,7 @@ import ui_empfehlungen
 import ui_newsletter_einwilligung
 import ui_kalender
 import ui_termin
+import ui_termin_live
 import ui_mitschriften
 import ui_marketing
 import ui_muster
@@ -1559,6 +1560,16 @@ a.knopf.gross { display: flex; align-items: center; justify-content: center;
                 min-height: 56px; font-size: 1.25rem; margin: .6rem 0; }
 .termin-wer { font-size: 1.1rem; margin: .2rem 0; }
 .termin-status { margin: .6rem 0; }
+/* Steuerseite /termine/{uid}/live: Zustand gross, nur der bestaetigte. */
+.live-zustand { font-size: 1.8rem; font-weight: 700; margin: .6rem 0; }
+.live-zustand[data-zustand=wird_pausiert], .live-zustand[data-zustand=pausiert],
+.live-zustand[data-zustand=wird_fortgesetzt] { color: var(--gedaempft); }
+.live-zustand[data-zustand=nicht_bestaetigt], .live-zustand[data-zustand=weiter_nicht_bestaetigt],
+.live-zustand[data-zustand=notbremse] { color: var(--fehler); }
+.live-knoepfe button { min-height: 56px; font-size: 1.1rem; }
+.live-text { overflow-wrap: anywhere; max-height: 60vh; overflow: auto; }
+.live-text p { margin: .3rem 0; }
+.live-pause, .pause-zeile { color: var(--gedaempft); font-style: italic; }
 .termin-aktionen { display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0 .8rem; }
 .termin-aktionen form.aktion { margin: 0; }
 .termin-aktionen button { min-height: 44px; }
@@ -10339,6 +10350,8 @@ app = Starlette(routes=[
     Route("/mehr", mehr),
     # Seite /kalender, JSON-Schnittstelle und Paketdateien (14.10.2026).
     *ui_kalender.routen(sys.modules[__name__]),
+    # Steuerseite /termine/{uid}/live: VOR dem Catch-all von ui_termin.
+    *ui_termin_live.routen(sys.modules[__name__]),
     # Termin-Seite /termine/{uid} und /termine/{uid}.json (Meeting-Mittelpunkt).
     *ui_termin.routen(sys.modules[__name__]),
     # Hauptpunkt Mitschriften (Berichte nach Rubrik, Mitschriften-Ablage).
