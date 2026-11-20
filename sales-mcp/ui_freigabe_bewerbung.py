@@ -55,7 +55,6 @@ from starlette.routing import Route
 
 import bewerbung_pult
 import pult_cache
-import ui_portal_fenster
 from ui_freigabe_newsletter import _vor
 
 ADMIN_PFAD = "/freigaben/bewerbung"
@@ -193,64 +192,29 @@ _HINWEISE = {
     "not_aus_bot_env": ("warnung", "Der Not-Aus steht in bot.env und lässt sich im Pult nicht lösen."),
     "gestoppt": ("hinweis", "Gestoppt – die Zentrale hat die Entscheidung verbucht. Die Bewerbung geht nicht raus."),
     "grund_fehlt": ("warnung", "Kein Grund eingegeben – zum Stoppen ist ein Grund nötig. Nichts wurde gesendet."),
-    # Portal-Abgabe: Fenster, Fragen und Ausgang der Portal-Karte.
-    "fenster_angefragt": ("hinweis", "Das Fenster wird vorbereitet – gleich oben im Reiter."),
-    "fenster_belegt": ("warnung", "Im Fenster läuft schon eine Bewerbung. Erst dort fertig machen oder die "
-                                  "Sitzung beenden."),
-    "feldtabelle_veraltet": ("warnung", "Die Angaben haben sich geändert – bitte die Karte neu ansehen."),
+    # Portal-Abgabe: Fragen und Ausgang der Portal-Karte.
     "not_aus": ("warnung", "Not-Aus ist an – nichts wird abgeschickt."),
     "portal_erfasst": ("hinweis", "Gespeichert."),
     "abgeschickt": ("hinweis", "Als abgeschickt vermerkt."),
     "portal_aus": ("warnung", "Die Portal-Abgabe ist ausgeschaltet."),
     "zustand_veraltet": ("warnung", "Der Stand hat sich geändert – Seite neu laden."),
     "nicht_offen": ("warnung", "Nicht mehr offen – Seite neu laden."),
-    # Selbst-Fenster: der Bot fuellt auf Knopfdruck, abschicken tut Felix.
-    "fuellen_angefragt": ("hinweis", "Der Bot füllt gleich aus – im Fenster oben zusehen."),
-    "schon_gefuellt": ("warnung", "Schon ausgefüllt – im Fenster prüfen und selbst abschicken."),
-    "fuellen_laeuft": ("hinweis", "Der Bot füllt gerade aus."),
-    "kein_selbst_fenster": ("warnung", "Für diese Bewerbung gibt es kein Fenster – bitte selbst bewerben."),
-    # Kein Code der Zentrale zum Weiterreichen: 503 auf `fenster`, wenn der Befehl nicht ins Auftragsverzeichnis
-    # ging. Die Zentrale hat den Lauf schon zurueckgesetzt - nichts angefordert (sonst bliebe nur "unklar").
-    "befehl_nicht_geschrieben": ("warnung", "Das Fenster ließ sich nicht anfordern – nichts geändert, "
-                                            "bitte nochmal versuchen."),
 }
 _ABLEHNUNGEN = ("fassung_veraltet", "schon_entschieden", "wartet_auf_durchsicht",
                 "versandziel_geaendert", "lauf_laeuft", "lauf_unbekannt", "lauf_nicht_offen",
-                "antwort_ungueltig", "frage_unbekannt", "fenster_belegt", "feldtabelle_veraltet",
-                "zustand_veraltet", "not_aus", "portal_aus", "nicht_offen",
-                "fuellen_laeuft", "schon_gefuellt", "kein_selbst_fenster",
-                "ueberarbeitung_laeuft", "nicht_mehr_offen")
+                "antwort_ungueltig", "frage_unbekannt", "zustand_veraltet", "not_aus", "portal_aus",
+                "nicht_offen", "ueberarbeitung_laeuft", "nicht_mehr_offen")
 
-# Portal-Abgabe (Plan 2026-11-09, Task 12): die Portal-Karte. Die Zentrale liefert `portal` (Lauf, Zustand,
-# Feldtabelle, Fragen); Felix macht im Fenster oder von Hand weiter. Ins Protokoll kommen nur Bewerbung, Lauf
-# und Code - nie ein Feldwert, eine Antwort oder ein Grund.
+# Portal-Abgabe (Plan 2026-11-09, Task 12; Direktlink statt Fenster: Plan 2026-11-20, Task 10): die Portal-Karte.
+# Die Zentrale liefert `portal` (Lauf, Zustand, Feldtabelle, Fragen, Adresse des Formulars, Grund, Angaben); Felix
+# macht auf der Seite des Portals von Hand weiter. Ins Protokoll kommen nur Bewerbung, Lauf und Code - nie ein
+# Feldwert, eine Antwort oder ein Grund.
 _LAUF_ID = re.compile(r"pl-[A-Za-z0-9_-]{16,64}")
-_BILD_VERSION = re.compile(r"[0-9]{1,9}")
-# Aktion -> Zeitlimit. Fenster, Ausgang und Ablehnen verbucht die Zentrale samt Befehl, die anderen setzen nur Felder.
-PORTAL_ZEITLIMITS = {"fenster": 30, "fenster-selbst": 30, "fuellen": 8, "beenden": 8, "antworten": 8,
-                     "ausgang": 30, "selbst": 8, "am-pc": 8, "nicht-bewerben": 30}
+# Aktion -> Zeitlimit. Ausgang und Ablehnen verbucht die Zentrale samt Befehl, die anderen setzen nur Felder.
+PORTAL_ZEITLIMITS = {"antworten": 8, "ausgang": 30, "selbst": 8, "am-pc": 8, "nicht-bewerben": 30}
 # Status der Zentrale, an dem eine Aktion als gelungen gilt (`ausgang` je nach Wert, siehe Route).
-_PORTAL_STATUS = {"fenster": "angefragt", "fenster-selbst": "angefragt", "fuellen": "angefragt",
-                  "beenden": "beendet", "antworten": "erfasst", "selbst": "selbst_bewerben",
-                  "am-pc": "gesetzt", "nicht-bewerben": "abgelehnt"}
-# Selbst-Fenster: Hinweis je `fuell_fehler` der Karte; ein anderer Code wird mit Klammer genannt.
-_FUELL_FEHLER = {
-    "formular_nicht_gefunden": "Kein Bewerbungsformular auf der Seite gefunden. Im Fenster bis zum Formular "
-                               "klicken, dann noch einmal „Jetzt ausfüllen“.",
-    "fuellen_fehlgeschlagen": "Ausfüllen hat nicht geklappt. Noch einmal versuchen oder im Fenster selbst "
-                              "ausfüllen.",
-    "befehl_nicht_geschrieben": "Der Auftrag kam nicht beim Bot an. Noch einmal versuchen.",
-    "absenden_offen": "Möglicherweise wurde schon abgeschickt – der Bot füllt nicht noch einmal aus. "
-                      "Im Fenster prüfen.",
-}
-# `fehler` eines Laufs in `selbst_bewerben`, der das Selbst-Fenster schliesst (bewerbung portal_weg.py
-# `_SELBST_FENSTER_ZU`): ein Satz statt des Codes, sonst verschwaende der Fenster-Knopf ohne Grund.
-_SELBST_FENSTER_ZU = {
-    "sperre_beim_laden": "Die Seite hat den Bot gesperrt. Ein Fenster ist hier nicht möglich – bitte selbst "
-                         "bewerben.",
-    "http_404": "Die Anzeige ist nicht mehr online. Ein Fenster ist hier nicht möglich.",
-    "http_410": "Die Anzeige ist nicht mehr online. Ein Fenster ist hier nicht möglich.",
-}
+_PORTAL_STATUS = {"antworten": "erfasst", "selbst": "selbst_bewerben", "am-pc": "gesetzt",
+                  "nicht-bewerben": "abgelehnt"}
 PORTAL_MAX_ANTWORTEN = 20
 PORTAL_DATEI_ZEITLIMIT_S = 8
 BRIEFDATUM_HINWEIS_AB_TAGE = 8
@@ -259,18 +223,29 @@ HINDERNISSE = {"keins": "kein Hindernis erkannt", None: "kein Hindernis erkannt"
                "anmeldung": "Anmeldung nötig", "bot_falle": "Bot-Falle", "unbekannt": "unklar"}
 _KEIN_HINDERNIS = ("keins", None)
 PORTAL_QUELLEN = {"profil": "Profil", "standardwert": "Standardwert", "keine_angabe": "keine Angabe",
-                  "antwort": "deine Antwort", "datei": "Datei", "leer": "leer"}
-PORTAL_ZUSTAENDE = {"wartet_auf_worker": "Bot bereitet vor", "frage_offen": "Fragen offen", "bereit": "bereit",
+                  "antwort": "deine Antwort", "pruefnotiz": "deine Antwort (Prüfnotiz)", "datei": "Datei",
+                  "leer": "leer"}
+# `grund` der Portal-Karte (Code der Zentrale, Task 8) -> (Klasse, Satz). Jeder andere Code gilt als `unbekannt`.
+PORTAL_GRUENDE = {
+    "captcha": ("warnung", "Formular nicht gelesen: CAPTCHA."),
+    "anmeldung": ("warnung", "Formular nicht gelesen: Anmeldung nötig."),
+    "bot_falle": ("warnung", "Formular nicht gelesen: Bot-Falle."),
+    "seite_laedt_nicht": ("warnung", "Formular nicht gelesen: Seite lädt nicht."),
+    "formular_nicht_gefunden": ("warnung", "Formular nicht gelesen: kein Formular gefunden."),
+    "browser_absturz": ("warnung", "Formular nicht gelesen: Browser abgestürzt."),
+    "felix": ("hinweis", "Selbst bewerben – von dir gewählt."),
+    "unbekannt": ("warnung", "Formular nicht gelesen: Grund unbekannt."),
+}
+PORTAL_ZUSTAENDE = {"wartet_auf_worker": "Bot liest das Formular", "frage_offen": "Fragen offen", "bereit": "bereit",
                     "fenster_angefragt": "Fenster angefragt", "im_fenster": "im Fenster",
                     "unklar": "unklar, ob abgeschickt", "selbst_bewerben": "selbst bewerben",
                     "offline": "Anzeige offline"}
 _PORTAL_CSS = ("<style>@media (max-width: 899px) { .nur-pc { display: none } } "
                "@media (min-width: 900px) { .nur-handy { display: none } } "
-               "iframe.fenster { width: 100%; height: 70vh; border: 0; } "
                "table.feldtabelle { border-collapse: collapse; width: 100%; } "
                "table.feldtabelle th, table.feldtabelle td { text-align: left; padding: .2rem .5rem; "
                "vertical-align: top; } "
-               "table.feldtabelle input { width: 100%; } img.portal-bild { max-width: 100%; height: auto; }"
+               "table.feldtabelle input { width: 100%; }"
                "</style>")
 _WEG = "Die Bewerbungs-Zentrale ist gerade nicht erreichbar."
 _NICHT_VERBUNDEN = "Die Bewerbungs-Zentrale ist nicht verbunden."
@@ -582,10 +557,11 @@ def _abweichungen(ui, k: dict) -> str:
             f'</ul></div>')
 
 
-def _feedback_formular(ui, k: dict, basis: str, nr) -> str:
+def _feedback_formular(ui, k: dict, basis: str, nr, *, unterlagen: bool) -> str:
     """Der Feedback-Block beider Karten: bei offenem Feedback die Zeile "erfasst am", dann je nach Stand der
     Überarbeitung der Stand-Text (wartet, läuft: statt des Formulars) oder das Formular (sonst; bei gescheitert
-    und abgelehnt mit dem Grund davor). Alles aus der Zentrale maskiert."""
+    und abgelehnt mit dem Grund davor). Alles aus der Zentrale maskiert. `unterlagen`: die Karte der Unterlagen
+    (nicht die des Portals) - nur dort sagt ein Satz, was Freigeben waehrend der Ueberarbeitung tut."""
     e = ui._e
     teile = []
     if (am := _erfasst_am(ui, k.get("feedback_offen_seit"))):
@@ -600,7 +576,10 @@ def _feedback_formular(ui, k: dict, basis: str, nr) -> str:
         if stand == "wartet":
             teile.append('<div class="meta">' + ("Hermes pausiert (Kontingent)" if grund == "hermes_pausiert"
                                                    else "wartet auf Hermes") + "</div>")
-        teile.append('<p class="meta">Freigeben beendet die Überarbeitung</p>')
+        if unterlagen:
+            # Ein Literal, nicht durch `_e`: `nr` ist eine geprüfte Zahl, der Rest fester Text.
+            teile.append(f'<p class="meta">Gibst du jetzt frei, gilt Fassung {nr if nr else "?"}. '
+                         f"Hermes' neue Fassung wird dann verworfen.</p>")
         return "".join(teile)
     if stand == "gescheitert":
         teile.append('<div class="warnung">Überarbeitung gescheitert</div>')
@@ -723,8 +702,24 @@ def _fragefelder(ui, fragen, antworten) -> str:
     return "".join(felder)
 
 
-def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: bool) -> str:
-    """Der Teil der Portal-Karte, der vom Zustand des Laufs abhaengt (Texte wie in Task 12)."""
+def _direktlink(ui, p: dict) -> str:
+    """Der Link auf die Adresse des Bewerbungsformulars, die der Bot gefunden hat (Spec §4). Nur eine https-Adresse
+    kommt auf die Karte, bei jeder Art: `formular` und `system` heissen "Zum Bewerbungsformular", `link` nennt den
+    Host dazu. Ohne Adresse oder mit unbekannter Art: "" (dann steht nur "Anzeige" im Kopf der Karte)."""
+    adresse = _https(p.get("formular_adresse"))
+    art = p.get("formular_adresse_art")
+    if adresse is None or not isinstance(art, str):
+        return ""
+    e = ui._e
+    if art in ("formular", "system"):
+        return _link(e(adresse), "Zum Bewerbungsformular ↗")
+    if art == "link":
+        return _link(e(adresse), f"Bewerbungslink der Anzeige ↗ ({e(urllib.parse.urlsplit(adresse).hostname)})")
+    return ""
+
+
+def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str) -> str:
+    """Der Teil der Portal-Karte, der vom Zustand des Laufs abhaengt (Spec 2026-11-19 §4)."""
     e = ui._e
     zustand = p.get("zustand")
     sicher = urllib.parse.quote(lauf_id, safe="")
@@ -742,23 +737,17 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
                     f'Nicht bewerben bestätigen</label><button class="gefahr">Nicht bewerben</button>',
                     "aktion gefahr")
 
-    def fenster_selbst(klasse: str) -> str:
-        if not nr:
-            return ""
-        return form("fenster-selbst", lauf_id, nr, '<button class="primaer">Im Fenster selbst bewerben</button>',
-                    klasse)
+    def links() -> str:
+        pdf = _link(f"{basis}/portal/bewerbung.pdf?lauf={sicher}", "Bewerbung als PDF")
+        return f'<p class="meta">{" · ".join(x for x in (_direktlink(ui, p), pdf) if x)}</p>'
 
-    def fenster(klasse: str) -> str:
-        sha = _bindung(p.get("feldtabelle_sha256"))
-        if not nr or sha is None:
-            return ""
-        return form("fenster", lauf_id, nr,
-                    f'<input type="hidden" name="feldtabelle_sha256" value="{e(sha)}">'
-                    f'<button class="primaer">Am PC im Fenster erledigen</button>', klasse)
-
-    def formular_link() -> str:
-        url = _https(p.get("formular_url"))
-        return f'<p class="meta">{_link(e(url), "Originalseite ↗")}</p>' if url else ""
+    def abgeschickt() -> str:
+        # "Habe ich selbst abgeschickt": raus aus `bereit`, `selbst_bewerben` und `unklar`; der Haken schuetzt.
+        return knopf("ausgang", "Habe ich selbst abgeschickt",
+                     '<input type="hidden" name="ausgang" value="raus">'
+                     '<input type="hidden" name="selbst" value="ja">'
+                     '<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
+                     'Ja, ich habe mich selbst beworben</label>')
 
     def ausgang() -> str:
         # Die Zentrale nimmt `selbst` aus wartet_auf_worker, frage_offen und bereit an, `nicht-bewerben` in jedem Zustand.
@@ -769,93 +758,59 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
         return f'<div class="meta">Letzter Versuch: {e(fehler)}</div>' if fehler else ""
 
     if zustand == "wartet_auf_worker":
-        return '<p class="meta">Bot bereitet vor …</p>' + ausgang()
+        worker = p.get("worker")
+        if isinstance(worker, dict) and worker.get("laeuft") is False:
+            seit = _in_ortszeit(worker.get("seit"), ui._zeit)
+            status = f'<div class="warnung">Bot läuft nicht{f" (seit {e(seit)})" if seit else ""}</div>'
+        else:
+            status = '<p class="meta">Bot liest das Formular …</p>'
+        return status + links() + ausgang()
     if zustand == "frage_offen":
         felder = _fragefelder(ui, p.get("fragen"), p.get("antworten"))
         antworten = (form("antworten", lauf_id, nr, f'{felder}<button>Antworten speichern</button>')
                      if felder else "")
-        return f'<div><b>Offene Fragen</b></div>{_feldtabelle(ui, p.get("feldtabelle"))}{antworten}{ausgang()}'
+        return (f'<div><b>Offene Fragen</b></div>{links()}{_feldtabelle(ui, p.get("feldtabelle"))}'
+                f'{antworten}{ausgang()}')
     if zustand == "bereit":
         teile = ['<div><b>Bereit</b></div>']
-        if not_aus:
-            teile.append(f'<div class="warnung">{_HINWEISE["not_aus"][1]}</div>')
         hindernis = p.get("hindernis") if isinstance(p.get("hindernis"), str) else None
         text = HINDERNISSE.get(hindernis, HINDERNISSE["unbekannt"])
         teile.append(f'<div class="{"hinweis" if hindernis in _KEIN_HINDERNIS else "warnung"}">Hindernis: {text}</div>')
-        bild = _nr(p.get("bild_version"))
-        if bild:
-            teile.append(f'<p><img src="{basis}/portal/bild.png?lauf={sicher}&v={bild}" class="portal-bild" '
-                         f'alt="Bild des ausgefüllten Formulars"></p>')
+        teile.append(links())
         teile.append(_feldtabelle(ui, p.get("feldtabelle")))
-        if p.get("rest_nach_freigabe"):
-            teile.append('<div class="hinweis">Rest wird nach der Freigabe ausgefüllt</div>')
         tage = p.get("briefdatum_alter_tage")
         if isinstance(tage, int) and not isinstance(tage, bool) and tage >= BRIEFDATUM_HINWEIS_AB_TAGE:
             teile.append(f'<div class="warnung">Datum im Anschreiben ist {tage} Tage alt</div>')
         teile.append(letzter_versuch())
-        teile.append(formular_link())
+        teile.append('<p class="meta">Der Bot schickt hier nichts ab.</p>')
         am_pc = p.get("am_pc") is True
         teile.append('<div class="aktionen">')
-        teile.append(fenster("nur-pc"))
         teile.append(knopf("am-pc", "Doch nicht am PC" if am_pc else "Am PC erledigen",
-                           f'<input type="hidden" name="am_pc" value="{"false" if am_pc else "true"}">',
-                           "nur-handy"))
-        drin = fenster("aktion")
-        if drin:
-            teile.append(f'<details class="nur-handy"><summary>Fenster trotzdem hier öffnen</summary>'
-                         f'{drin}</details>')
+                           f'<input type="hidden" name="am_pc" value="{"false" if am_pc else "true"}">'))
+        teile.append(abgeschickt())
         teile.append(knopf("selbst", "Selbst bewerben"))
         teile.append(ablehnen())
         teile.append("</div>")
         return "".join(teile)
-    if zustand in ui_portal_fenster.ZUSTAENDE:
-        phase = p.get("fenster_phase") if p.get("modus") == "selbst" else None
-        beenden = knopf("beenden", "Sitzung beenden")
-        if phase == "seite":
-            code = p.get("fuell_fehler") if isinstance(p.get("fuell_fehler"), str) else None
-            hinweis = ""
-            if code:
-                text = _FUELL_FEHLER.get(code) or f"Ausfüllen nicht möglich ({e(code)})."
-                hinweis = f'<div class="warnung">{text}</div>'
-            return ('<div><b>Du bist dran – im Fenster oben: CAPTCHA oder Anmeldung lösen, bis das '
-                    f'Bewerbungsformular zu sehen ist.</b></div>{hinweis}<div class="aktionen">'
-                    + knopf("fuellen", "Jetzt ausfüllen") + beenden + "</div>")
-        if phase == "fuellt":
-            return f'<div><b>Der Bot füllt aus …</b></div><div class="aktionen">{beenden}</div>'
-        if phase == "gefuellt":
-            return ('<div><b>Du bist dran – im Fenster oben: prüfen, Häkchen setzen, selbst abschicken.</b>'
-                    f'</div><div class="aktionen">{beenden}</div>')
-        return f'<div><b>Du bist dran – im Fenster oben</b></div><div class="aktionen">{beenden}</div>'
+    if zustand in ("fenster_angefragt", "im_fenster"):
+        # Nur alte Laeufe, kurz: der Worker raeumt sie im naechsten Tick ab.
+        return '<p class="meta">Fenster entfernt – der Stand wird gleich aktualisiert. Seite neu laden.</p>'
     if zustand == "unklar":
         return ('<div class="warnung">Unklar, ob abgeschickt</div><div class="aktionen">'
                 + knopf("ausgang", "Ist raus", '<input type="hidden" name="ausgang" value="raus">')
                 + knopf("ausgang", "Ist nicht raus", '<input type="hidden" name="ausgang" value="nicht_raus">')
                 + "</div>")
     if zustand == "selbst_bewerben":
-        pdf = _link(f"{basis}/portal/bewerbung.pdf?lauf={sicher}", "Bewerbung als PDF")
-        # Der letzte Fehlversuch wie in `bereit`; schloss er das Fenster, ein Satz statt des Codes (Spec §6.4).
-        zu = _SELBST_FENSTER_ZU.get(_nur_text(p.get("fehler")))
-        teile = [f'<div class="warnung">{zu}</div>' if zu else letzter_versuch(),
-                 f'<p class="meta">{pdf}</p>{formular_link()}'
-                 f'{_feldtabelle(ui, p.get("feldtabelle"), lesbar=True)}<div class="aktionen">']
-        if p.get("selbst_fenster") is True and nr:
-            if not_aus:
-                teile.append(f'<div class="warnung">{_HINWEISE["not_aus"][1]}</div>')
-            teile.append('<p class="meta">Der Bot öffnet die Seite im Fenster. Du löst CAPTCHA oder Anmeldung, '
-                         'dann füllt der Bot auf Knopfdruck aus. Abschicken tust du.</p>')
-            teile.append(fenster_selbst("nur-pc"))
-            drin = fenster_selbst("aktion")
-            teile.append(f'<details class="nur-handy"><summary>Fenster trotzdem hier öffnen</summary>'
-                         f'{drin}</details>')
+        grund = p.get("grund")
+        klasse, satz = PORTAL_GRUENDE.get(grund if isinstance(grund, str) else "", PORTAL_GRUENDE["unbekannt"])
+        teile = [f'<div class="{klasse}">{satz}</div>', links()]
+        if _dicts(p.get("feldtabelle")):
+            teile.append(_feldtabelle(ui, p.get("feldtabelle"), lesbar=True))
+        if (angaben := _dicts(p.get("angaben"))):
+            teile.append(f'<div><b>Deine Angaben</b></div>{_feldtabelle(ui, angaben, lesbar=True)}')
         teile.append('<p class="meta">Der Bot schickt hier nichts ab. Nur bestätigen, wenn du dich selbst auf '
                      'der Seite beworben hast.</p>')
-        teile.append(knopf("ausgang", "Habe ich selbst abgeschickt",
-                           '<input type="hidden" name="ausgang" value="raus">'
-                           '<input type="hidden" name="selbst" value="ja">'
-                           '<label class="haken"><input type="checkbox" name="bestaetigt" value="ja"> '
-                           'Ja, ich habe mich selbst beworben</label>'))
-        teile.append(ablehnen())
-        teile.append("</div>")
+        teile.append(f'<div class="aktionen">{abgeschickt()}{ablehnen()}</div>')
         return "".join(teile)
     if zustand == "offline":
         return ('<div class="warnung">Anzeige offline – archivieren?</div><div class="aktionen">'
@@ -867,9 +822,9 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str, not_aus: 
 _PORTAL_FEEDBACK_ZUSTAENDE = ("selbst_bewerben", "bereit", "frage_offen", "wartet_auf_worker", "offline")
 
 
-def _portal_karte(ui, k: dict, not_aus: bool = False) -> str:
+def _portal_karte(ui, k: dict) -> str:
     """Die Karte einer Portal-Bewerbung (`k["portal"]` ist ein dict): Kopf wie bei den Unterlagen, darunter je
-    nach Zustand des Laufs Feldtabelle, Fragen, Bild und Knoepfe. Kein Freigeben der Unterlagen."""
+    nach Zustand des Laufs Direktlink, Feldtabelle, Fragen und Knoepfe. Kein Freigeben der Unterlagen."""
     e = ui._e
     p = k["portal"]
     basis = _basis(k)
@@ -882,28 +837,23 @@ def _portal_karte(ui, k: dict, not_aus: bool = False) -> str:
     verweise = f'<p class="meta">{_link(e(anzeige), "Anzeige ↗")}</p>' if anzeige else ""
     lauf_id = p.get("lauf_id")
     if isinstance(lauf_id, str) and _LAUF_ID.fullmatch(lauf_id):
-        inhalt = _portal_inhalt(ui, k, p, basis, nr, lauf_id, not_aus)
+        inhalt = _portal_inhalt(ui, k, p, basis, nr, lauf_id)
     else:
         inhalt = '<p class="meta">Lauf unbekannt – Seite neu laden.</p>'
     if p.get("zustand") in _PORTAL_FEEDBACK_ZUSTAENDE and not inhalt.startswith('<p class="meta">Lauf unbekannt'):
-        inhalt += _feedback_formular(ui, k, basis, nr)
+        inhalt += _feedback_formular(ui, k, basis, nr, unterlagen=False)
     return (f'<details class="karte" open><summary><span class="badge">Portal</span>'
             f'<b>{e(k.get("firma"))} – {e(k.get("rolle"))}</b></summary>'
             f'<div class="meta">{" · ".join(angaben)}</div>{verweise}{_abweichungen(ui, k)}{inhalt}</details>')
 
 
 def _portal_kopf(ui, karten: list[dict]) -> str:
-    """Oben im Reiter: der Fenster-Rahmen, solange eine Karte `fenster_angefragt` oder `im_fenster` ist und das
-    Fenster eingerichtet ist (sonst nie), danach die Liste "Am PC" mit den vorgemerkten Portal-Karten. Ohne
-    Portal-Karte steht hier nichts."""
+    """Oben im Reiter: die Liste "Am PC" mit den vorgemerkten Portal-Karten. Ohne Portal-Karte steht hier nichts."""
     e = ui._e
     portale = [(k, k["portal"]) for k in karten if isinstance(k.get("portal"), dict)]
     if not portale:
         return ""
     teile = [_PORTAL_CSS]
-    if ui_portal_fenster.eingerichtet() and any(p.get("zustand") in ui_portal_fenster.ZUSTAENDE
-                                                for _, p in portale):
-        teile.append(ui_portal_fenster.fenster_rahmen(ui))
     am_pc = [(k, p) for k, p in portale if p.get("am_pc") is True]
     if am_pc:
         def stand(p: dict) -> str:
@@ -918,7 +868,7 @@ def _portal_kopf(ui, karten: list[dict]) -> str:
 
 def _karte(ui, k: dict, not_aus: bool = False) -> str:
     if isinstance(k.get("portal"), dict):
-        return _portal_karte(ui, k, not_aus)
+        return _portal_karte(ui, k)
     e = ui._e
     basis = _basis(k)
     nr = _nr(k.get("fassung"))
@@ -977,7 +927,7 @@ def _karte(ui, k: dict, not_aus: bool = False) -> str:
             f'Fassung {nr} freigeben bestätigen</label>'
             f'<button class="primaer">{freigeben}</button></form>'
             f'{ablehnen}</div>')
-    feedback = _feedback_formular(ui, k, basis, nr)
+    feedback = _feedback_formular(ui, k, basis, nr, unterlagen=True)
     # Das Etikett folgt dem Versandweg wie die Versandzeile; ohne `versand` (Zentrale vor H4)
     # der Kanal der Aufnahme.
     weg = k.get("versand") if isinstance(k.get("versand"), dict) else {}
@@ -1355,10 +1305,6 @@ def routen(ui) -> list:
                 if f.grund in _ABLEHNUNGEN:
                     return ziel(f.grund)
                 return ziel("abgelehnt", f.grund if _CODE.fullmatch(f.grund) else "")
-            if (f.art == "nicht_erreichbar"
-                    and pfad.endswith(("/portal/fenster", "/portal/fenster-selbst", "/portal/fuellen"))
-                    and isinstance(f.koerper, dict) and f.koerper.get("detail") == "befehl_nicht_geschrieben"):
-                return ziel("befehl_nicht_geschrieben")
             return unklar_protokolliert("%s: %r", f.art, f.grund)
         _cache_leeren()
         if not (isinstance(r, dict) and gelungen(r)):
@@ -1632,21 +1578,12 @@ def routen(ui) -> list:
             return ungueltig("Der Lauf fehlt oder ist ungültig – Seite neu laden.")
         daten = {"lauf_id": lauf_id, "von": _von(ui._ui_akteur(request))}
         status, erfolg = _PORTAL_STATUS.get(aktion), "portal_erfasst"
-        if aktion in ("fenster", "fenster-selbst", "nicht-bewerben"):
+        if aktion == "nicht-bewerben":
             fassung = _fassung(form.get("fassung"))
             if fassung is None:
                 return ungueltig("Welche Fassung gemeint ist, fehlt – Seite neu laden.")
             daten["fassung"] = fassung
-        if aktion == "fenster-selbst":
-            erfolg = "fenster_angefragt"
-        elif aktion == "fuellen":
-            erfolg = "fuellen_angefragt"
-        elif aktion == "fenster":
-            sha = _bindung(form.get("feldtabelle_sha256"))
-            if sha is None:
-                return ungueltig("Die Prüfsumme der Feldtabelle fehlt oder ist ungültig – Seite neu laden.")
-            daten["feldtabelle_sha256"], erfolg = sha, "fenster_angefragt"
-        elif aktion == "antworten":
+        if aktion == "antworten":
             eintraege, gesehen = [], set()
             for name, wert in form.multi_items():
                 text = _text(wert)
@@ -1700,17 +1637,13 @@ def routen(ui) -> list:
             f"Bewerbung {kennung!r} Lauf {lauf_id!r}: Ausgang von portal/{aktion}")
 
     async def portal_datei(request, name: str):
-        """Bild oder Unterlagen eines Portal-Laufs, als Rohbytes durchgereicht (nichts wird verarbeitet)."""
+        """Die Unterlagen eines Portal-Laufs, als Rohbytes durchgereicht (nichts wird verarbeitet)."""
         if not _darf(ui):
             return verboten()
         lauf = request.query_params.get("lauf")
         if lauf is None or _LAUF_ID.fullmatch(lauf) is None:
             return ui._fehlerseite(422, "Ungültiger Lauf", "Welcher Lauf gemeint ist, fehlt – Seite neu laden.")
         abfrage = {"lauf": lauf}
-        if name == "bild.png" and (version := request.query_params.get("v")) is not None:
-            if _BILD_VERSION.fullmatch(version) is None:
-                return ui._fehlerseite(422, "Ungültige Version", "Die Bildversion ist ungültig – Seite neu laden.")
-            abfrage["v"] = version
         bid = urllib.parse.quote(request.path_params["bid"], safe="")
         try:
             inhalt, typ = await run_in_threadpool(partial(
@@ -1730,13 +1663,13 @@ def routen(ui) -> list:
 
     @ui._gesichert_seite
     async def portal_bild(request):
-        antwort = await portal_datei(request, "bild.png")
-        if isinstance(antwort, Response):
-            return antwort
-        inhalt, typ = antwort
-        if not typ.startswith("image/png"):
-            return ui._fehlerseite(502, "Unklare Antwort", "Die Zentrale lieferte kein Bild.")
-        return Response(inhalt, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+        # Das Bild des ausgefuellten Formulars gibt es nicht mehr (der Bot fuellt nichts aus): 410, ohne die
+        # Zentrale zu fragen. Die Adresse bleibt fuer alte Seiten und Lesezeichen.
+        if not _darf(ui):
+            return verboten()
+        return ui._fehlerseite(410, "Fenster entfernt",
+                               "Das Bild des ausgefüllten Formulars gibt es nicht mehr – der Bot füllt nichts "
+                               "mehr aus. Seite neu laden.")
 
     @ui._gesichert_seite
     async def portal_pdf(request):
