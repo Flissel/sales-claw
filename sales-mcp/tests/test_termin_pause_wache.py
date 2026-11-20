@@ -167,12 +167,36 @@ def test_bestaetigung_setzt_pausiert_seit(fake):
     assert _zeile()["aufnahme_pause_fehler"] is None and HINWEISE == []
 
 
-def test_bestaetigung_ohne_seit_ms_nimmt_von(fake):
+def test_r15_ohne_seit_ms_nicht_bestaetigt(fake):
+    """R15: pausiert:true ohne seit_ms ist keine Bestaetigung - weiter senden."""
     _akte()
     termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
     fake.zustand[MID] = {"pausiert": True, "seit_ms": None}
     termin_pause.wache_runde(T0 + s(0.5))
-    assert _zeile()["aufnahme_pausiert_seit"] == T0
+    termin_pause.wache_runde(T0 + s(4))
+    assert _zeile()["aufnahme_pausiert_seit"] is None
+    assert termin_akte.pausen("w1")[0]["bestaetigt_am"] is None
+    assert fake.pausen_abs() == [T0, T0]                      # Wiederholung, kein Nachschuss
+    for i in range(5, 12):
+        termin_pause.wache_runde(T0 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] == "nicht_bestaetigt"
+
+
+@pytest.mark.parametrize("abstand_ms,bestaetigt", [
+    (-5000, False), (-1001, False), (-1000, True), (0, True), (2000, True), (2001, False)])
+def test_r15_fenster_fuer_seit_ms(fake, abstand_ms, bestaetigt):
+    """R15: nur von - 1 s <= seit_ms <= von + 2 s; aelter = Bestaetigung einer frueheren Pause."""
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    fake.zustand[MID] = {"pausiert": True, "seit_ms": ms(T0) + abstand_ms}
+    termin_pause.wache_runde(T0 + s(0.5))
+    termin_pause.wache_runde(T0 + s(4))
+    z = _zeile()
+    if bestaetigt:
+        assert z["aufnahme_pausiert_seit"] == T0 + timedelta(milliseconds=abstand_ms)
+    else:
+        assert z["aufnahme_pausiert_seit"] is None
+        assert fake.pausen_abs() == [T0, T0]                  # erneut gesendet
 
 
 def test_bestaetigung_mit_seit_ms_vom_bot(fake):
@@ -327,11 +351,11 @@ def test_live_runde_laesst_pausensegmente_weg(fake):
         _seg("offen", T0 + s(310), T0 + s(311)),           # offene Pause: weg
         _seg("ueber_offen", T0 + s(299), T0 + s(301)),     # R4 an der offenen Pause
         _seg("ohne_zeit", None),                           # nicht einzuordnen: weg
-        {**_seg("ohne_ende", T0 + s(140)), "ende": ""},
+        {**_seg("ohne_ende", T0 + s(140)), "ende": ""},       # R16: Pause danach -> weg
     ]
-    assert termin_pause.live_runde(T0 + s(400)) == 5
+    assert termin_pause.live_runde(T0 + s(400)) == 4
     assert [z["segment_id"] for z in _live()] == [
-        "vor", "endet_bei_von", "bei_bis", "nach", "ohne_ende"]
+        "vor", "endet_bei_von", "bei_bis", "nach"]
     # Upsert: geaenderter Text, ein von Vexa zurueckgezogenes Segment verschwindet
     fake.segmente[MID] = [_seg("vor", T0 + s(10), T0 + s(15), text="neu"),
                           _seg("nach", T0 + s(130), T0 + s(131))]
@@ -388,14 +412,83 @@ def test_ende_waehrend_pause_schliesst_pause_und_mitschrift_ohne_fenster(fake):
         _seg("drin", von + s(30), von + s(33), text="GEHEIM in der Pause"),
         _seg("ohne_zeit", None, text="ohne Zeit"),
     ]
-    assert termin_takt._mitschrift_ablegen("w1", segmente) is True
+    ist_ende = T0 + timedelta(minutes=40)                    # frueher als geplant
+    assert termin_takt._mitschrift_ablegen("w1", segmente, ende_am=ist_ende) is True
     m = server._q("select segmente from termin_mitschriften where uid = 'w1'")[0]["segmente"]
     assert [x["text"] for x in m] == ["vor der Pause"]
     assert set(m[0]) == {"sprecher", "beginn", "text", "sprache"}   # Schema unveraendert
     p = termin_akte.pausen("w1")
-    assert len(p) == 1 and p[0]["von"] == von and p[0]["bis"] == ende   # bis = Terminende
+    assert len(p) == 1 and p[0]["von"] == von and p[0]["bis"] == ist_ende   # R12: echtes Ende
     assert _live() == []
     assert _zeile()["status"] == "fertig"
+
+
+def test_r12_ueberzogen_waehrend_pause_bis_ist_tatsaechliches_ende(fake, monkeypatch):
+    """R12: Meeting ueberzieht das geplante Ende in der Pause -> bis = Erkennung des Endes."""
+    geplant = T0 + timedelta(hours=1)
+    _akte(ende=geplant)
+    von = geplant - timedelta(minutes=5)
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", von)
+    fake.segmente[MID] = [_seg("a", T0 + s(60), T0 + s(62)),
+                          _seg("spaet", geplant + timedelta(minutes=10), text="GEHEIM")]
+    monkeypatch.setattr(vexa, "meeting_lesen",
+                        lambda mid: {"status": "completed", "grund": "", "ende_grund": ""})
+    monkeypatch.setattr(vexa, "meeting_loeschen", lambda mid: None)
+    erkannt = geplant + timedelta(minutes=20)
+    z = server._q("select uid, status, ende, vexa_meeting_id, vexa_plattform, vexa_native_id "
+                  "from termin_akten where uid = 'w1'")[0]
+    assert termin_takt._verfolgen_eine(z, erkannt) == 1
+    p = termin_akte.pausen("w1")[0]
+    assert p["bis"] >= erkannt and p["bis"] > geplant
+    m = server._q("select segmente from termin_mitschriften where uid = 'w1'")[0]["segmente"]
+    assert "GEHEIM" not in json.dumps(m)
+
+
+def test_r12_offene_pause_nie_vor_von(fake):
+    _akte()
+    von = T0 + timedelta(minutes=10)
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", von)
+    assert termin_takt._mitschrift_ablegen("w1", [], ende_am=von - s(30)) is True
+    assert termin_akte.pausen("w1")[0]["bis"] == von
+
+
+# ---------- R16: fehlendes Segment-Ende ----------
+
+def test_r16_ohne_ende_vor_spaeterer_pause_weg():
+    p = [{"von": T0 + s(60), "bis": T0 + s(120)}]
+    assert termin_pause.beruehrt_pause(T0 + s(10), None, p) is True
+    offen = [{"von": T0 + s(60), "bis": None}]
+    assert termin_pause.beruehrt_pause(T0 + s(10), None, offen) is True
+
+
+def test_r16_ohne_ende_nach_allen_geschlossenen_pausen_bleibt():
+    p = [{"von": T0 + s(60), "bis": T0 + s(120)}, {"von": T0, "bis": T0 + s(5)}]
+    assert termin_pause.beruehrt_pause(T0 + s(130), None, p) is False
+    assert termin_pause.beruehrt_pause(T0 + s(120), None, p) is False   # bis exklusiv
+    assert termin_pause.beruehrt_pause(T0 + s(90), None, p) is True     # in der Pause
+
+
+def test_r16_ohne_ende_mit_offener_pause_weg():
+    p = [{"von": T0 + s(60), "bis": T0 + s(120)}, {"von": T0 + s(300), "bis": None}]
+    assert termin_pause.beruehrt_pause(T0 + s(130), None, p) is True    # offene Pause spaeter
+    assert termin_pause.beruehrt_pause(T0 + s(400), None, p) is True    # in offener Pause
+
+
+def test_r16_mitschrift_ohne_oder_kaputtes_ende(fake):
+    _akte()
+    server._q("insert into termin_pausen (uid, von, bis, angefordert_von) "
+              "values ('w1', %s, %s, 'felix') returning id", (T0 + s(60), T0 + s(120)))
+    segmente = [
+        {**_seg("vor_ohne_ende", T0 + s(10), text="GEHEIM-A"), "ende": ""},
+        {**_seg("vor_kaputt", T0 + s(20), text="GEHEIM-B"), "ende": "kaputt"},
+        {**_seg("vor_mit_ende", T0 + s(30), T0 + s(31), text="eins")},
+        {**_seg("nach_ohne_ende", T0 + s(200), text="zwei"), "ende": ""},
+        {**_seg("ohne_beginn", None, text="GEHEIM-C")},   # fehlender Beginn: weiter weg
+    ]
+    assert termin_takt._mitschrift_ablegen("w1", segmente, ende_am=T0 + s(300)) is True
+    m = json.dumps(server._q("select segmente from termin_mitschriften "
+                             "where uid = 'w1'")[0]["segmente"])
+    assert "GEHEIM" not in m and "eins" in m and "zwei" in m
 
 
 def test_mitschrift_mit_geschlossener_pause_behaelt_danach(fake):
@@ -515,6 +608,104 @@ def test_bestaetigung_loescht_live_segmente_im_fenster(fake):
     assert [z["segment_id"] for z in _live()] == ["a"]
 
 
+def test_r13_live_ende_gespeichert_und_loeschen_nach_neustart(fake):
+    """R13: Ende steht in der Tabelle; die Loeschung bei Bestaetigung braucht keinen
+    Prozess-Speicher (Neustart zwischen live_runde und Bestaetigung)."""
+    _akte()
+    fake.segmente[MID] = [_seg("a", T0 - s(10), T0 - s(6)),
+                          _seg("ueber", T0 - s(3), T0 + s(1)),
+                          _seg("bis_von", T0 - s(4), T0),         # endet genau bei von: bleibt
+                          {**_seg("ohne_ende", T0 - s(2)), "ende": ""}]
+    termin_pause.live_runde(T0 - s(1))
+    enden = {z["segment_id"]: z["ende"] for z in server._q(
+        "select segment_id, ende from termin_live_segmente where uid = 'w1'")}
+    assert enden == {"a": T0 - s(6), "ueber": T0 + s(1), "bis_von": T0, "ohne_ende": None}
+    termin_pause._zuruecksetzen()                              # "Neustart"
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    # ohne Ende und vor von: R16 - koennte das Fenster beruehren -> weg
+    assert sorted(z["segment_id"] for z in _live()) == ["a", "bis_von"]
+
+
+def test_r13_live_upsert_aktualisiert_ende(fake):
+    _akte()
+    fake.segmente[MID] = [_seg("a", T0, T0 + s(1))]
+    termin_pause.live_runde(T0 + s(2))
+    fake.segmente[MID] = [_seg("a", T0, T0 + s(4))]
+    termin_pause.live_runde(T0 + s(7))
+    assert server._q("select ende from termin_live_segmente where uid = 'w1'")[0]["ende"] \
+        == T0 + s(4)
+
+
+# ---------- R14: unbestaetigtes Weiter ----------
+
+def test_r14_weiter_ohne_bestaetigung_nach_10s_fehler_und_ein_hinweis(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(1.5))
+    t1 = T0 + s(60)
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", t1)
+    # Doppelklick setzt aufnahme_wunsch_am neu - die Frist zaehlt ab dem ersten Klick (bis)
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", t1 + s(5))
+    for i in range(1, 11):
+        termin_pause.wache_runde(t1 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] is None
+    assert HINWEISE == []
+    for i in range(11, 40):
+        termin_pause.wache_runde(t1 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] == "weiter_nicht_bestaetigt"
+    assert len(HINWEISE) == 1
+    assert "Weiter" in HINWEISE[0] and "/termine/w1/live" in HINWEISE[0]
+    assert TITEL not in HINWEISE[0] and NATIVE not in HINWEISE[0]
+    assert [a[0] for a in fake.acts].count("resume") >= 3     # Wiederholungen
+    fake.zustand[MID] = {"pausiert": False, "seit_ms": None}
+    termin_pause.wache_runde(t1 + s(41))
+    z = _zeile()
+    assert z["aufnahme_pause_fehler"] is None and z["aufnahme_pausiert_seit"] is None
+    for i in range(42, 60):
+        termin_pause.wache_runde(t1 + s(i))
+    assert len(HINWEISE) == 1
+
+
+def test_r14_weiter_bestaetigt_rechtzeitig_kein_fehler(fake):
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(1.5))
+    t1 = T0 + s(60)
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", t1)
+    termin_pause.wache_runde(t1 + s(0.5))
+    fake.zustand[MID] = {"pausiert": False, "seit_ms": None}
+    for i in range(1, 30):
+        termin_pause.wache_runde(t1 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] is None and HINWEISE == []
+
+
+def test_r14_neue_pause_ersetzt_weiter_fehler(fake):
+    """Nach weiter_nicht_bestaetigt eine neue unbestaetigte Pause: Fehler wird nicht_bestaetigt."""
+    _akte()
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", T0)
+    termin_pause.wache_runde(T0 + s(0.5))
+    _bestaetigt(fake, T0)
+    termin_pause.wache_runde(T0 + s(1.5))
+    t1 = T0 + s(60)
+    termin_akte.aufnahme_wuenschen("w1", "an", "felix", t1)
+    for i in range(1, 13):
+        termin_pause.wache_runde(t1 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] == "weiter_nicht_bestaetigt"
+    t2 = t1 + s(20)
+    termin_akte.aufnahme_wuenschen("w1", "pause", "felix", t2)
+    fake.zustand[MID] = None
+    for i in range(1, 13):
+        termin_pause.wache_runde(t2 + s(i))
+    assert _zeile()["aufnahme_pause_fehler"] == "nicht_bestaetigt"
+    assert len(HINWEISE) == 2                                  # je Ereignis einer
+
+
 def test_aufraeumen_nach_ende_ausserhalb_der_mitschrift(fake):
     """Akte endet fehlgeschlagen/ohne Aufnahme waehrend einer Pause: Pause zu, Live leer."""
     ende = T0 + timedelta(hours=1)
@@ -523,7 +714,7 @@ def test_aufraeumen_nach_ende_ausserhalb_der_mitschrift(fake):
     _live_einfuegen("w1", "s1", T0 - s(5))
     termin_akte.status_wechseln("w1", ("laeuft",), "fehlgeschlagen", "Bot ist gescheitert")
     termin_pause.live_runde(T0 + s(5))
-    assert termin_akte.pausen("w1")[0]["bis"] == ende
+    assert termin_akte.pausen("w1")[0]["bis"] == T0 + s(5)  # R12: Erkennung, nicht Plan
     assert _live() == []
 
 

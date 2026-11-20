@@ -442,6 +442,9 @@ begin
         sprecher text null,
         text text not null,
         primary key (uid, segment_id))$ddl$, s, s);
+    -- Ruling R13 (20.11.2026): Segment-Ende fuer die Pausen-Loeschung (Beginn < von < Ende)
+    -- direkt in der DB; null = Ende unbekannt (gilt als beruehrend, R16).
+    execute format('alter table %I.termin_live_segmente add column if not exists ende timestamptz null', s);
     -- Kursmitschrift und Kurs-Handbuch (16.11.2026): je Kurs-Mitschrift eine Auswertung
     -- (kurs_*), je Lernender ein Handbuch aus Kapiteln, Fassungen und Quellen.
     -- kurs_pfad/kurs_pfad_lernend/kurs_pdf sind relativ zum Ablage-Ordner.

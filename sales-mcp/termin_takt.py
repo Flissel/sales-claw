@@ -264,7 +264,8 @@ def _vexa_loeschen(uid: str, meeting_id: int) -> bool:
     return True
 
 
-def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
+def _mitschrift_ablegen(uid: str, segmente: list[dict],
+                        ende_am: datetime | None = None) -> bool:
     """Mitschrift und Status `fertig` gemeinsam oder gar nicht -> abgelegt?
 
     Die Akte ist in der Transaktion gesperrt (`for update`): steht sie nicht
@@ -279,8 +280,10 @@ def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
     Pausen (Meeting-Steuerseite, R4/R11): unter der Sperre fallen erst alle
     Segmente weg, die ein Pausenfenster beruehren (`termin_pause.pausen_filtern`,
     VOR dem Bereinigen - das verbindet Bruchstuecke). Eine noch offene Pause
-    (Ende waehrend der Pause, auch nach Notbremse) schliesst mit bis = Terminende
-    (nie vor `von`); die Live-Ablage der Akte wird mit `fertig` geleert."""
+    (Ende waehrend der Pause, auch nach Notbremse) schliesst mit bis =
+    TATSAECHLICHES Ende `ende_am` (R12: Erkennung des Endes, Vorgabe jetzt; nie
+    vor `von`); die Live-Ablage der Akte wird mit `fertig` geleert."""
+    ende_am = ende_am or _uhr()
     roh = len(segmente)
     with server.pool.connection() as conn:
         with conn.transaction():
@@ -306,7 +309,7 @@ def _mitschrift_ablegen(uid: str, segmente: list[dict]) -> bool:
                     "and status in ('wartet_auf_einlass', 'laeuft')", (uid,)).rowcount != 1:
                 raise RuntimeError("Status inzwischen geaendert")   # rollt den Insert zurueck
             conn.execute("update termin_pausen set bis = greatest(%s::timestamptz, von) "
-                         "where uid = %s and bis is null", (z["ende"], uid))
+                         "where uid = %s and bis is null", (ende_am, uid))
             conn.execute("delete from termin_live_segmente where uid = %s", (uid,))
     return True
 
@@ -379,7 +382,9 @@ def _verfolgen_eine(z: dict, jetzt: datetime | None = None) -> int:
             segmente = vexa.segmente_holen(mid)
         except vexa.VexaFehler:
             return 0                              # nichts geaendert, Wiederholung
-        if not _mitschrift_ablegen(uid, segmente):
+        # R12: Ende = jetzt erkannt; die Runde kann Minuten alt sein -> frische Uhr
+        ende_am = max(jetzt, _uhr()) if jetzt is not None else _uhr()
+        if not _mitschrift_ablegen(uid, segmente, ende_am=ende_am):
             LOG.info("Mitschrift verworfen uid=%s (Status inzwischen geaendert)", _h(uid))
             return 1                              # Schritt 5 raeumt bei Vexa auf
         LOG.info("Mitschrift abgelegt uid=%s segmente=%d", _h(uid), len(segmente))

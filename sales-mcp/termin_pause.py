@@ -7,8 +7,9 @@ VEXA_API_KEY) und fuehrt den Wunsch gegen Vexa aus:
 
   * `wache_runde` jede Sekunde: Pause/Weiter senden, die Bot-Bestaetigung aus
     `GET /meetings/{id}` (`data.aufnahme_pause`) in die Akte tragen, nach 10 s
-    ohne Bestaetigung `aufnahme_pause_fehler = 'nicht_bestaetigt'` plus EIN
-    Betreiber-Hinweis je Pause; Notbremse stoppt den Bot sofort.
+    ohne Bestaetigung `aufnahme_pause_fehler = 'nicht_bestaetigt'` (Pause) bzw.
+    `'weiter_nicht_bestaetigt'` (Weiter, R14) plus EIN Betreiber-Hinweis je
+    Klick; Notbremse stoppt den Bot sofort.
   * `live_runde` alle 5 s: Segmente laufender Akten in `termin_live_segmente`
     spiegeln - nie ein Segment, das ein Pausenfenster beruehrt.
 
@@ -21,7 +22,8 @@ nacheinander: eine pause aus Runde n kommt immer vor dem resume aus Runde n+1.
 
 BERUEHREN (R4/R11): ein Segment beruehrt ein Fenster [von, bis), wenn sein Beginn
 darin liegt oder es vor `von` beginnt und nach `von` endet. Ohne einordenbaren
-Beginn gilt es bei vorhandenen Pausen als beruehrend ("im Zweifel weg").
+Beginn gilt es bei vorhandenen Pausen als beruehrend ("im Zweifel weg"), ohne
+Ende, sobald irgendeine Pause nach seinem Beginn anfaengt (R16).
 
 LOGS: nur uid-Hash, Zaehler und Typnamen - nie Text, Namen, Raum-Ids, Schluessel.
 """
@@ -48,25 +50,28 @@ NEU_SENDEN_NACH = timedelta(seconds=3)   # unbestaetigte Acts hoechstens alle 3 
 HINWEIS_NEU_NACH = timedelta(seconds=60)  # gescheiterter Betreiber-Hinweis: Neuversuch
 LIVE_ALLE = timedelta(seconds=5)
 WACHE_TAKT_S = 1.0
-# seit_ms des Bots darf so weit NACH `von` liegen und gilt noch als diese Pause
-# (Uhren von sales-termine und Bot). Der Bot klemmt eine Klickzeit in der Zukunft
-# auf seine Uhr - seit_ms liegt dann VOR `von` und die Pause deckt den Klick ab.
-TOLERANZ = timedelta(seconds=2)
+# R15: eine Bestaetigung gehoert zu DIESER Pause nur mit von - 1 s <= seit_ms <=
+# von + 2 s (Uhren von sales-termine und Bot; der Bot klemmt eine Klickzeit in der
+# Zukunft auf seine Uhr). Aelter = eine fruehere Pause, ohne seit_ms = unklar:
+# beides zaehlt nicht, es wird weiter gesendet.
+SEIT_VOR = timedelta(seconds=1)
+SEIT_NACH = timedelta(seconds=2)
+FEHLER = {"pause": "nicht_bestaetigt", "weiter": "weiter_nicht_bestaetigt"}
 
 # Speicher dieses Prozesses (nach einem Neustart leer - siehe die Funktionen).
 _gesendet: dict[tuple[str, str], datetime] = {}   # (uid, "pause:<ms>"|"resume") -> letzter Versuch
 _letzter_act: dict[str, str] = {}                  # uid -> "pause" | "resume"
 _nachschuss: set[tuple[str, int]] = set()          # (uid, von_ms): R11c-Aufruf steht aus
-_gemeldet: set[tuple[str, int]] = set()            # (uid, von_ms): Betreiber-Hinweis raus
-_hinweis_offen: dict[tuple[str, int], datetime | None] = {}
+# (uid, "pause"|"weiter", Klick-ms): Betreiber-Hinweis raus bzw. noch offen
+_gemeldet: set[tuple[str, str, int]] = set()
+_hinweis_offen: dict[tuple[str, str, int], datetime | None] = {}
 _gestoppt: set[str] = set()                        # Notbremse: Bot gestoppt
-_enden: dict[str, dict[str, datetime]] = {}        # uid -> segment_id -> Ende (letzte live_runde)
 
 
 def _zuruecksetzen() -> None:
-    """Speicher leeren (Tests)."""
+    """Speicher leeren (Tests, "Neustart")."""
     for ablage in (_gesendet, _letzter_act, _nachschuss, _gemeldet, _hinweis_offen,
-                   _gestoppt, _enden):
+                   _gestoppt):
         ablage.clear()
 
 
@@ -96,13 +101,18 @@ def beruehrt_pause(beginn: datetime | None, ende: datetime | None,
                    pausen: list[dict]) -> bool:
     """R4/R11a: Beginn in einem Fenster (termin_akte.in_pause: von inklusive, bis
     exklusiv, offen = unendlich) ODER Beginn vor `von` und Ende nach `von`.
+    Fail closed (R16): ohne Beginn immer beruehrend; ohne (lesbares) Ende
+    beruehrend, sobald IRGENDEINE Pause nach dem Beginn anfaengt - es bleibt nur,
+    wenn es nach allen Pausenanfaengen beginnt und in keiner Pause liegt.
     Nur aware datetimes hineingeben."""
     if not pausen:
         return False
     if beginn is None:
         return True
-    unten, oben = (beginn, ende) if ende is None or ende >= beginn else (ende, beginn)
-    oben = oben or unten
+    if ende is None:
+        return (termin_akte.in_pause(beginn, pausen)
+                or any(p["von"] > beginn for p in pausen))
+    unten, oben = (beginn, ende) if ende >= beginn else (ende, beginn)
     if termin_akte.in_pause(unten, pausen):
         return True
     return any(unten < p["von"] < oben for p in pausen)
@@ -154,29 +164,40 @@ def _zustand(z: dict) -> dict | None:
         return None            # unbekannt: wie "keine Bestaetigung"
 
 
-def _hinweis_text(z: dict, von: datetime) -> str:
+def _hinweis_text(z: dict, art: str, klick: datetime) -> str:
     try:
         zone = ZoneInfo(z.get("zeitzone") or "Europe/Berlin")
     except Exception:  # noqa: BLE001 - unbekannte Zone: Vorgabe
         zone = ZoneInfo("Europe/Berlin")
-    zeilen = [f"⚠️ Aufnahme-Pause nicht bestätigt (Klick {von.astimezone(zone):%H:%M:%S}).",
-              "Die Aufnahme läuft womöglich weiter – bitte die Steuerseite prüfen."]
+    uhr = f"{klick.astimezone(zone):%H:%M:%S}"
+    if art == "weiter":
+        zeilen = [f"⚠️ Weiter (Aufnahme fortsetzen) nicht bestätigt (Klick {uhr}).",
+                  "Die Aufnahme ist womöglich noch angehalten – bitte die Steuerseite prüfen."]
+    else:
+        zeilen = [f"⚠️ Aufnahme-Pause nicht bestätigt (Klick {uhr}).",
+                  "Die Aufnahme läuft womöglich weiter – bitte die Steuerseite prüfen."]
     ui = os.environ.get("UI_BASIS_URL", "").strip().rstrip("/")
     if ui:
         zeilen.append(f"Steuerung: {ui}/termine/{quote(z['uid'], safe='')}/live")
     return "\n".join(zeilen)
 
 
-def _nicht_bestaetigt(z: dict, von: datetime, jetzt: datetime) -> None:
-    """Fehler setzen (nur beim Wechsel) und EIN Betreiber-Hinweis je Pause.
-    Nach einem Neustart steht der Fehler schon - dann kein zweiter Hinweis."""
-    uid, schluessel = z["uid"], (z["uid"], _ms(von))
+def _nicht_bestaetigt(z: dict, art: str, klick: datetime, jetzt: datetime) -> None:
+    """Fehler setzen (nur beim Wechsel) und EIN Betreiber-Hinweis je Ereignis
+    (`art` 'pause' je Pausenklick, 'weiter' je Weiter-Klick). Nach einem Neustart
+    steht der Fehler schon - dann kein zweiter Hinweis. Ein Fehler der anderen Art
+    wird ueberschrieben: es zaehlt, was gerade gewuenscht ist."""
+    uid, schluessel = z["uid"], (z["uid"], art, _ms(klick))
+    bedingung = ("aufnahme_wunsch = 'pause' and aufnahme_pausiert_seit is null"
+                 if art == "pause" else "aufnahme_wunsch = 'an'")
     gesetzt = server._q(
-        "update termin_akten set aufnahme_pause_fehler = 'nicht_bestaetigt' "
-        "where uid = %s and aufnahme_wunsch = 'pause' and aufnahme_pausiert_seit is null "
-        "and aufnahme_pause_fehler is null returning uid", (uid,))
+        "update termin_akten set aufnahme_pause_fehler = %s "
+        f"where uid = %s and {bedingung} "
+        "and aufnahme_pause_fehler is distinct from %s returning uid",
+        (FEHLER[art], uid, FEHLER[art]))
     if gesetzt:
-        LOG.warning("Pause nicht bestaetigt uid=%s (Frist %d s)", _h(uid),
+        LOG.warning("%s nicht bestaetigt uid=%s (Frist %d s)",
+                    "Pause" if art == "pause" else "Weiter", _h(uid),
                     int(FRIST.total_seconds()))
         if schluessel not in _gemeldet:
             _hinweis_offen.setdefault(schluessel, None)
@@ -184,21 +205,26 @@ def _nicht_bestaetigt(z: dict, von: datetime, jetzt: datetime) -> None:
         letzter = _hinweis_offen[schluessel]
         if letzter is not None and timedelta(0) <= jetzt - letzter < HINWEIS_NEU_NACH:
             return
-        if betreiber_hinweis.senden(_hinweis_text(z, von)) is True:
+        if betreiber_hinweis.senden(_hinweis_text(z, art, klick)) is True:
             _gemeldet.add(schluessel)
             del _hinweis_offen[schluessel]
         else:
             _hinweis_offen[schluessel] = jetzt
 
 
+def _hinweise_erledigt(uid: str, art: str) -> None:
+    for k in [k for k in _hinweis_offen if k[0] == uid and k[1] == art]:
+        del _hinweis_offen[k]
+
+
 def _live_im_fenster_loeschen(uid: str, von: datetime) -> int:
-    """R11b: schon geholte Live-Segmente, die die (offene) Pause beruehren:
-    Beginn ab `von` oder - laut letzter live_runde - Ende nach `von`."""
-    ueber = [sid for sid, ende in _enden.get(uid, {}).items() if ende > von]
+    """R11b/R13: schon geholte Live-Segmente, die die offene Pause beruehren -
+    reine DB-Abfrage: Beginn ab `von`, oder Beginn davor und Ende nach `von`,
+    oder Ende unbekannt (R16, fail closed)."""
     weg = server._q(
         "delete from termin_live_segmente where uid = %s "
-        "and (beginn >= %s or segment_id = any(%s::text[])) returning segment_id",
-        (uid, von, ueber))
+        "and (beginn >= %s or ende is null or greatest(beginn, ende) > %s) "
+        "returning segment_id", (uid, von, von))
     return len(weg)
 
 
@@ -211,9 +237,9 @@ def _pause(z: dict, jetzt: datetime) -> int:
         acts += _senden(z, von, jetzt)
     zustand = _zustand(z)
     seit_ms = zustand.get("seit_ms") if zustand else None
-    if (zustand and zustand["pausiert"] is True
-            and (seit_ms is None or _aus_ms(seit_ms) <= von + TOLERANZ)):
-        seit = _aus_ms(seit_ms) if seit_ms is not None else von
+    seit = _aus_ms(seit_ms) if seit_ms is not None else None
+    if (zustand and zustand["pausiert"] is True and seit is not None
+            and von - SEIT_VOR <= seit <= von + SEIT_NACH):     # R15
         erste = server._q(
             "update termin_pausen set bestaetigt_am = %s where id = %s "
             "and bestaetigt_am is null returning id", (jetzt, z["pause_id"]))
@@ -230,7 +256,8 @@ def _pause(z: dict, jetzt: datetime) -> int:
         if (uid, von_ms) in _nachschuss and _senden(z, von, jetzt):
             _nachschuss.discard((uid, von_ms))
             acts += 1
-        _hinweis_offen.pop((uid, von_ms), None)
+        _hinweise_erledigt(uid, "pause")
+        _hinweise_erledigt(uid, "weiter")
         return acts
     # Nicht (mehr) bestaetigt: Lobby-Rennen, Vexa-Neustart, Act verloren.
     if z["aufnahme_pausiert_seit"] is not None:
@@ -240,7 +267,7 @@ def _pause(z: dict, jetzt: datetime) -> int:
     if not erstmals and _faellig((uid, f"pause:{von_ms}"), jetzt):
         acts += _senden(z, von, jetzt)
     if jetzt - von > FRIST:
-        _nicht_bestaetigt(z, von, jetzt)
+        _nicht_bestaetigt(z, "pause", von, jetzt)
     return acts
 
 
@@ -258,15 +285,23 @@ def _weiter(z: dict, jetzt: datetime) -> int:
                   "returning uid", (uid,))
         if _letzter_act.pop(uid, None) == "resume":
             LOG.info("Weiter bestaetigt uid=%s", _h(uid))
+        _hinweise_erledigt(uid, "weiter")
         return 0
     vielleicht_pausiert = (
         (zustand is not None and zustand["pausiert"] is True)
         or z["aufnahme_pausiert_seit"] is not None
         or z["aufnahme_pause_fehler"] is not None
         or _letzter_act.get(uid) == "pause")
-    if vielleicht_pausiert and _faellig((uid, "resume"), jetzt):
-        return int(_senden(z, None, jetzt))
-    return 0
+    if not vielleicht_pausiert:
+        return 0
+    acts = int(_senden(z, None, jetzt)) if _faellig((uid, "resume"), jetzt) else 0
+    # R14: Klickzeit des Weiter = `bis` der zuletzt geschlossenen Pausenzeile (der
+    # ERSTE Weiter-Klick; aufnahme_wunsch_am setzt ein Doppelklick neu). Ohne
+    # geschlossene Zeile: aufnahme_wunsch_am.
+    klick = z["weiter_am"] or z["aufnahme_wunsch_am"]
+    if klick is not None and jetzt - klick > FRIST:
+        _nicht_bestaetigt(z, "weiter", klick, jetzt)
+    return acts
 
 
 def _notbremse(z: dict) -> int:
@@ -324,9 +359,10 @@ def wache_runde(jetzt: datetime) -> int:
         return 0
     zeilen = server._q(
         "select a.uid, a.zeitzone, a.vexa_meeting_id, a.vexa_plattform, a.vexa_native_id, "
-        "a.aufnahme_wunsch, a.aufnahme_pausiert_seit, a.aufnahme_pause_fehler, "
-        "p.id as pause_id, p.von, "
-        "exists (select 1 from termin_pausen q where q.uid = a.uid) as hatte_pause "
+        "a.aufnahme_wunsch, a.aufnahme_wunsch_am, a.aufnahme_pausiert_seit, "
+        "a.aufnahme_pause_fehler, p.id as pause_id, p.von, "
+        "exists (select 1 from termin_pausen q where q.uid = a.uid) as hatte_pause, "
+        "(select max(q.bis) from termin_pausen q where q.uid = a.uid) as weiter_am "
         "from termin_akten a "
         "left join termin_pausen p on p.uid = a.uid and p.bis is null "
         "where a.status = any(%s) and a.vexa_meeting_id is not null "
@@ -357,15 +393,13 @@ def _segment_id(seg: dict, beginn: datetime) -> str:
 
 def _live_eine(uid: str, mid: int) -> int:
     roh = vexa.segmente_holen(int(mid))
-    kandidaten, enden = [], {}
+    kandidaten = []
     for seg in roh:
         beginn = zeitpunkt(seg.get("beginn") or "")
         if beginn is None:
             continue                      # nicht einzuordnen: nie live zeigen
         ende = zeitpunkt(seg.get("ende") or "")
-        sid = _segment_id(seg, beginn)
-        enden[sid] = max(beginn, ende) if ende else beginn
-        kandidaten.append((sid, beginn, ende, seg))
+        kandidaten.append((_segment_id(seg, beginn), beginn, ende, seg))
     with server.pool.connection() as conn:
         with conn.transaction():
             # Sperre gegen einen gleichzeitigen Klick: was vor uns committet ist,
@@ -379,46 +413,50 @@ def _live_eine(uid: str, mid: int) -> int:
                 return 0
             pausen = conn.execute("select von, bis from termin_pausen where uid = %s "
                                   "order by von", (uid,)).fetchall()
-            behalten = [(sid, beginn, seg) for sid, beginn, ende, seg in kandidaten
+            behalten = [(sid, beginn, ende, seg) for sid, beginn, ende, seg in kandidaten
                         if not beruehrt_pause(beginn, ende, pausen)]
             # Spiegel: was Vexa zurueckzog oder was ein Fenster beruehrt, geht.
             conn.execute("delete from termin_live_segmente where uid = %s "
                          "and not (segment_id = any(%s::text[]))",
-                         (uid, [sid for sid, _, _ in behalten]))
-            for sid, beginn, seg in behalten:
+                         (uid, [b[0] for b in behalten]))
+            for sid, beginn, ende, seg in behalten:
                 conn.execute(
-                    "insert into termin_live_segmente (uid, segment_id, beginn, sprecher, text) "
-                    "values (%s, %s, %s, %s, %s) on conflict (uid, segment_id) do update set "
-                    "beginn = excluded.beginn, sprecher = excluded.sprecher, text = excluded.text "
-                    "where (termin_live_segmente.beginn, termin_live_segmente.sprecher, "
-                    "termin_live_segmente.text) is distinct from "
-                    "(excluded.beginn, excluded.sprecher, excluded.text)",
-                    (uid, sid, beginn, seg.get("sprecher") or None, seg.get("text") or ""))
-    _enden[uid] = enden
+                    "insert into termin_live_segmente "
+                    "(uid, segment_id, beginn, ende, sprecher, text) "
+                    "values (%s, %s, %s, %s, %s, %s) on conflict (uid, segment_id) do update set "
+                    "beginn = excluded.beginn, ende = excluded.ende, "
+                    "sprecher = excluded.sprecher, text = excluded.text "
+                    "where (termin_live_segmente.beginn, termin_live_segmente.ende, "
+                    "termin_live_segmente.sprecher, termin_live_segmente.text) "
+                    "is distinct from "
+                    "(excluded.beginn, excluded.ende, excluded.sprecher, excluded.text)",
+                    (uid, sid, beginn, ende, seg.get("sprecher") or None,
+                     seg.get("text") or ""))
     return len(behalten)
 
 
-def _aufraeumen() -> None:
+def _aufraeumen(jetzt: datetime) -> None:
     """Akten ausserhalb von wartet_auf_einlass/laeuft (Ende jeder Art): offene
-    Pause mit bis = Terminende schliessen (R2; nie vor `von`), Live-Ablage leeren.
-    Den Normalfall (fertig) erledigt termin_takt._mitschrift_ablegen in seiner
-    Transaktion; dies faengt fehlgeschlagen, ohne_aufnahme usw."""
+    Pause schliessen mit bis = Zeitpunkt, an dem das Ende hier erkannt wird
+    (R12: das TATSAECHLICHE Ende, nicht das geplante; nie vor `von`), Live-Ablage
+    leeren. Den Normalfall (fertig) erledigt termin_takt._mitschrift_ablegen in
+    seiner Transaktion; dies faengt fehlgeschlagen, ohne_aufnahme usw."""
     server._q(
-        "update termin_pausen p set bis = greatest(a.ende, p.von) from termin_akten a "
-        "where a.uid = p.uid and p.bis is null and not (a.status = any(%s)) returning p.id",
-        (list(BOT_STATUS),))
-    weg = server._q(
+        "update termin_pausen p set bis = greatest(%s::timestamptz, p.von) "
+        "from termin_akten a where a.uid = p.uid and p.bis is null "
+        "and not (a.status = any(%s)) returning p.id", (jetzt, list(BOT_STATUS)))
+    server._q(
         "delete from termin_live_segmente l using termin_akten a "
         "where a.uid = l.uid and not (a.status = any(%s)) returning l.uid",
         (list(BOT_STATUS),))
-    for uid in {z["uid"] for z in weg}:
-        _enden.pop(uid, None)
 
 
 def live_runde(jetzt: datetime) -> int:
     """Laufende Akten: Segmente holen und in termin_live_segmente spiegeln, nie
     ein Segment, das eine Pause beruehrt. -> Anzahl gespeicherter Segmente."""
-    _aufraeumen()
+    if jetzt.tzinfo is None:
+        jetzt = jetzt.replace(tzinfo=timezone.utc)
+    _aufraeumen(jetzt)
     if not vexa.konfiguriert():
         return 0
     zeilen = server._q(
@@ -433,8 +471,6 @@ def live_runde(jetzt: datetime) -> int:
         except Exception as e:  # noqa: BLE001 - nur der Typname ins Log
             LOG.warning("Live-Transkript uid=%s fehlgeschlagen (%s)", _h(z["uid"]),
                         type(e).__name__)
-    for uid in [u for u in _enden if u not in {z["uid"] for z in zeilen}]:
-        del _enden[uid]
     return n
 
 
