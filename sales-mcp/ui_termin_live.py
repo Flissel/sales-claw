@@ -88,14 +88,19 @@ def _iso(t) -> str | None:
 def _live_daten(uid: str, z: dict) -> dict:
     zone = _zone_der(z)
     name = zustand(z)
-    segmente = server._q(
+    # Wie die Termin-Akte: ist jemand gesperrt, gibt es keinen Inhalt (nur den
+    # Zustand, damit die Notbremse erreichbar bleibt).
+    gesperrt = termin_akte.hat_gesperrte(uid)
+    segmente = [] if gesperrt else server._q(
         "select beginn, sprecher, text from (select * from termin_live_segmente "
         "where uid = %s order by beginn desc, segment_id desc limit %s) s "
         "order by beginn, segment_id", (uid, SEGMENTE_MAX))
-    pausen = termin_akte.pausen(uid)
-    bilder = server._q("select count(*) as n from termin_bilder where uid = %s "
-                       "and beschreibung_status = 'fertig'", (uid,))[0]["n"]
+    pausen = [] if gesperrt else termin_akte.pausen(uid)
+    bilder = 0 if gesperrt else server._q(
+        "select count(*) as n from termin_bilder where uid = %s "
+        "and beschreibung_status = 'fertig'", (uid,))[0]["n"]
     return {
+        "gesperrt": gesperrt,
         "zustand": name,
         "zustand_text": zustand_text(name, z, zone),
         "pausiert_seit": _iso(z.get("aufnahme_pausiert_seit")),
@@ -143,6 +148,9 @@ def routen(ui) -> list:
                     f'role="status">{_e(zustand_text(name, z, _zone_der(z)))}</p>'
                     '<p class="fehler" id="live-verbindung" hidden>Verbindung unterbrochen</p>'
                     + (_knoepfe(ui, uid, name) if schreiben else "")
+                    + ('<p class="fehler">Ein Teilnehmer ist gesperrt – die Live-Ansicht '
+                       'zeigt keine Mitschrift und keine Bilder.</p>'
+                       if termin_akte.hat_gesperrte(uid) else "")
                     + '<p class="meta" id="live-bilder"></p>'
                     '<h2>Live-Mitschrift</h2><div class="live-text" id="live-text"></div></div>'
                     '<script src="/termine/live.js" defer></script>')

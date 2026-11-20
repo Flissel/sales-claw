@@ -14,7 +14,6 @@ os.environ["SALES_DB_SCHEMA"] = "sales_test"
 import server  # noqa: E402
 import termin_akte  # noqa: E402
 import ui  # noqa: E402
-import ui_termin_live  # noqa: E402
 
 CLIENT = TestClient(ui.app)
 HOST_OK = "127.0.0.1:8791"
@@ -29,6 +28,7 @@ def leer(monkeypatch):
     with server.pool.connection() as conn:
         conn.execute("truncate sales_test.termin_akten, sales_test.activities, "
                      "sales_test.drafts, sales_test.leads cascade")
+        conn.execute("truncate compliance_test.sperrliste")
     monkeypatch.setenv("POST_BESITZER", "felix")
     yield
 
@@ -160,6 +160,9 @@ def test_post_ohne_csrf_abgewiesen():
     assert _post("u1", "pause", csrf=False).status_code == 403
     assert _zeile()["aufnahme_wunsch_am"] is None
     assert server._q("select 1 from termin_pausen where uid = 'u1'") == []
+    # Gegenprobe (sonst bestuende der Test auch ohne die Route): mit Token geht es.
+    assert _post("u1", "pause").status_code == 303
+    assert _zeile()["aufnahme_wunsch"] == "pause"
 
 
 def test_post_pause_setzt_wunsch():
@@ -340,3 +343,49 @@ def test_bildschirm_zeigt_pausenzeile():
               "('u1', %s, 'felix') returning id", (JETZT + timedelta(minutes=3),))
     t = _get(_pfad("u1") + "?reiter=bildschirm").text
     assert "Pause seit 13:03" in t
+
+
+# --- Gesperrte Teilnehmer ---------------------------------------------------
+# Die bestehende Mitschrift-Ansicht filtert nicht je Sprecher, sondern nur auf
+# Akte-/Kontakt-Ebene (Teilnehmerliste; der Bot startet bei gesperrtem
+# Teilnehmer gar nicht: termin_akte.hat_gesperrte). Dieselbe Regel gilt hier:
+# ist jemand gesperrt, liefert die Live-Ansicht keinen Inhalt.
+
+def _teilnehmer(uid, adresse, grund=None):
+    server._q("insert into termin_teilnehmer (uid, adresse, name, rolle, grund) "
+              "values (%s, %s, 'Gesperrt Gustav', 'gast', %s) returning uid",
+              (uid, adresse, grund))
+
+
+def _inhalt_vorbereiten():
+    _akte("u1", zeitzone="Europe/Berlin")
+    _segment("u1", "s1", 1)
+    server._q("insert into termin_pausen (uid, von, bis, angefordert_von) values "
+              "('u1', %s, %s, 'felix') returning id",
+              (JETZT + timedelta(minutes=3), JETZT + timedelta(minutes=7)))
+
+
+def _ohne_inhalt(d):
+    assert d["segmente"] == [] and d["pausen"] == [] and d["bilder_anzahl"] == 0
+    assert d["gesperrt"] is True
+    assert GEHEIM not in json.dumps(d) and "Pause" not in json.dumps(d)
+
+
+def test_live_gesperrter_teilnehmer_markiert_ohne_inhalt():
+    _inhalt_vorbereiten()
+    _teilnehmer("u1", "weg@firma.de", grund="gesperrt")
+    _ohne_inhalt(_json())
+    t = _get(_pfad("u1") + "/live").text
+    assert "GEHEIMTEXT" not in t and "gesperrt" in t.lower()
+
+
+def test_live_spaeter_gesperrter_teilnehmer_ohne_inhalt():
+    import sperrliste
+    _inhalt_vorbereiten()
+    _teilnehmer("u1", "spaeter@firma.de")
+    assert _json()["gesperrt"] is False and _json()["segmente"]
+    sperrliste.sperren(server._q, email="spaeter@firma.de", quelle="test", grund="Widerruf")
+    _ohne_inhalt(_json())
+    # Der Zustand bleibt sichtbar (Notbremse muss weiter erreichbar sein).
+    assert _json()["zustand"] == "an"
+    assert "Notbremse" in _get(_pfad("u1") + "/live").text
