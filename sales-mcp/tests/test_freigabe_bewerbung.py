@@ -3132,6 +3132,22 @@ def test_am_pc_liste_steht_oben(client, falsch):
     assert "Erste GmbH" not in kopf and "Dritte KG" not in kopf
 
 
+def test_am_pc_liste_zeigt_bot_laeuft_nicht_wie_die_karte(client, falsch):
+    seit = "2026-11-20T08:00:00+00:00"
+
+    def kopf(worker) -> str:
+        falsch.karten = [karte(application_id="bw-2", firma="Zweite AG", rolle="Analyst",
+                               portal=portal(am_pc=True, zustand="wartet_auf_worker", worker=worker))]
+        s = _abschnitt(client)
+        return s[:s.index('<details class="karte"')]
+
+    k = kopf({"laeuft": False, "seit": seit})
+    assert "Zweite AG – Analyst" in k and "(Bot läuft nicht)" in k and "Bot liest" not in k
+    for roh in ({"laeuft": True, "seit": seit}, None, "x", {"laeuft": None}, {}):
+        k = kopf(roh)
+        assert "(Bot liest das Formular)" in k and "läuft nicht" not in k
+
+
 def test_am_pc_liste_maskiert_und_fehlt_ohne_eintrag(client, falsch):
     falsch.karten = [karte(firma=BOESE, portal=portal(am_pc=True))]
     kopf = _abschnitt(client)

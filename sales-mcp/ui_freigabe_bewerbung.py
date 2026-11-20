@@ -240,6 +240,16 @@ PORTAL_ZUSTAENDE = {"wartet_auf_worker": "Bot liest das Formular", "frage_offen"
                     "fenster_angefragt": "Fenster angefragt", "im_fenster": "im Fenster",
                     "unklar": "unklar, ob abgeschickt", "selbst_bewerben": "selbst bewerben",
                     "offline": "Anzeige offline"}
+_BOT_LAEUFT_NICHT = "Bot läuft nicht"
+
+
+def _bot_laeuft_nicht(p: dict) -> bool:
+    """Ob die Zentrale meldet, dass der Portal-Worker nicht laeuft (`worker.laeuft` ist False).
+    Fehlt die Angabe oder ist sie unbrauchbar, behauptet weder Karte noch Liste etwas."""
+    worker = p.get("worker")
+    return isinstance(worker, dict) and worker.get("laeuft") is False
+
+
 _PORTAL_CSS = ("<style>@media (max-width: 899px) { .nur-pc { display: none } } "
                "@media (min-width: 900px) { .nur-handy { display: none } } "
                "table.feldtabelle { border-collapse: collapse; width: 100%; } "
@@ -758,10 +768,9 @@ def _portal_inhalt(ui, k: dict, p: dict, basis: str, nr, lauf_id: str) -> str:
         return f'<div class="meta">Letzter Versuch: {e(fehler)}</div>' if fehler else ""
 
     if zustand == "wartet_auf_worker":
-        worker = p.get("worker")
-        if isinstance(worker, dict) and worker.get("laeuft") is False:
-            seit = _in_ortszeit(worker.get("seit"), ui._zeit)
-            status = f'<div class="warnung">Bot läuft nicht{f" (seit {e(seit)})" if seit else ""}</div>'
+        if _bot_laeuft_nicht(p):
+            seit = _in_ortszeit(p["worker"].get("seit"), ui._zeit)
+            status = f'<div class="warnung">{_BOT_LAEUFT_NICHT}{f" (seit {e(seit)})" if seit else ""}</div>'
         else:
             status = '<p class="meta">Bot liest das Formular …</p>'
         return status + links() + ausgang()
@@ -858,6 +867,8 @@ def _portal_kopf(ui, karten: list[dict]) -> str:
     if am_pc:
         def stand(p: dict) -> str:
             z = p.get("zustand")
+            if z == "wartet_auf_worker" and _bot_laeuft_nicht(p):
+                return _BOT_LAEUFT_NICHT
             return PORTAL_ZUSTAENDE.get(z, "Stand unbekannt") if isinstance(z, str) else "Stand unbekannt"
 
         zeilen = "".join(f'<li>{e(k.get("firma"))} – {e(k.get("rolle"))} '
