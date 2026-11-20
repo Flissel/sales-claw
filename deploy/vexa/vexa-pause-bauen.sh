@@ -8,7 +8,9 @@
 #   2. Bot:         npm test, tsc --noEmit, check:isolation
 #   3. Meeting-API: pytest (ohne Postgres: die PG-Tests werden uebersprungen)
 #   4. Gateway:     pytest
-# Letzte Zeile "ABBILD OK" nur, wenn alles gruen ist; sonst Exit != 0.
+# Gebaut wird unter einem Bau-Tag (sales-vexa-lite:bau-<pid>); erst wenn alles
+# gruen ist, haengt der Tag pause1 um und die letzte Zeile ist "ABBILD OK".
+# Sonst Exit != 0, der Bau-Tag wird gezielt entfernt, pause1 bleibt wie er war.
 # Der Wegwerf-Container wird in jedem Fall entfernt (trap). Laufende Container
 # (vexa-lite usw.) werden nicht angefasst; es wird nichts gestartet ausser dem
 # Pruef-Container und nichts aufgeraeumt ausser ihm.
@@ -19,13 +21,18 @@
 set -euo pipefail
 
 TAG="sales-vexa-lite:v0.12.28-pause1"
+# Final-Review M8: gebaut wird unter einem Bau-Tag; erst nach allen Pruefungen
+# (ABBILD OK) traegt das Abbild den Tag, den .env nennt. Scheitert etwas, wird
+# nur der Bau-Tag gezielt entfernt - der bisherige $TAG bleibt unberuehrt.
+BAU_TAG="sales-vexa-lite:bau-$$"
+FERTIG=0
 HIER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH="$HIER/patch"
 DOCKERFILE="$HIER/Dockerfile.pause"
 PRUEF="vexa-pause-bau-$$"
 # Untergrenzen (Stand v0.12.28 + pause1): weniger heisst, Tests wurden nicht
 # gefunden oder nicht ausgefuehrt. Erwartet sind genau diese Zahlen.
-MIN_BOT_OK=759          # ✅-Zeilen: 758 aus npm test + 1 check:isolation, 0 ❌
+MIN_BOT_OK=769          # ✅-Zeilen: 768 aus npm test + 1 check:isolation, 0 ❌
 MIN_MA_PASSED=1458      # Meeting-API ohne PG: 1458 passed, 5 skipped
 MIN_GW_PASSED=386       # Gateway: 386 passed, 1 xfailed
 
@@ -40,6 +47,7 @@ done
 LOGS="$(mktemp -d)"
 aufraeumen() {
   docker rm -f "$PRUEF" >/dev/null 2>&1 || true
+  if [ "$FERTIG" != 1 ]; then docker rmi "$BAU_TAG" >/dev/null 2>&1 || true; fi
   rm -rf "$LOGS"
 }
 trap aufraeumen EXIT
@@ -86,13 +94,13 @@ echo "== $n_dateien Patch-Dateien, $(wc -l < "$SUMMEN") Zielorte"
 
 # ── Bauen ───────────────────────────────────────────────────────────────────
 # Kontext ist patch/ (nicht deploy/vexa: dort liegt die .env mit Geheimnissen).
-echo "== baue $TAG"
-timeout 1800 docker build -f "$DOCKERFILE" -t "$TAG" "$PATCH"
-ID="$(docker image inspect "$TAG" --format '{{.Id}}')"
-echo "== Abbild $TAG = $ID"
+echo "== baue $BAU_TAG (wird erst nach allen Pruefungen $TAG)"
+timeout 1800 docker build -f "$DOCKERFILE" -t "$BAU_TAG" "$PATCH"
+ID="$(docker image inspect "$BAU_TAG" --format '{{.Id}}')"
+echo "== Abbild $BAU_TAG = $ID"
 
 # ── Wegwerf-Container aus dem NEUEN Abbild ──────────────────────────────────
-timeout 120 docker run -d --name "$PRUEF" --network none --entrypoint sleep "$TAG" infinity >/dev/null
+timeout 120 docker run -d --name "$PRUEF" --network none --entrypoint sleep "$BAU_TAG" infinity >/dev/null
 [ "$(docker inspect "$PRUEF" --format '{{.Image}}')" = "$ID" ] || fehler "Pruef-Container laeuft nicht auf $ID"
 
 # Fuehrt ein sh-Skript (stdin) im Pruef-Container aus; innen und aussen begrenzt.
@@ -115,6 +123,7 @@ npx tsc -p . --outDir /tmp/dist-pruef
 # .map traegt den Ausgabepfad, browser-utils.global.js baut esbuild (nicht tsc).
 diff -r -x '*.map' -x browser-utils.global.js /tmp/dist-pruef dist
 grep -q 'pauseGate' dist/index.js
+grep -q 'gateCaptureSignalSink' dist/index.js    # I4: Capture-Signal-Tap hinter dem Tor
 cmp /app/browser-utils.global.js dist/browser-utils.global.js
 grep -q 'exec node dist/index.js' /usr/local/bin/vexa-bot-launch
 echo "   bot: dist/ entspricht src/ (Starter: node dist/index.js)"
@@ -190,5 +199,10 @@ set -e
 tail -n 3 "$GW_LOG"
 pytest_pruefen gateway "$GW_LOG" "$rc" "$MIN_GW_PASSED"
 
+# Alles gruen: erst jetzt den Tag umhaengen, dann den Bau-Tag gezielt entfernen.
+docker tag "$BAU_TAG" "$TAG"
+[ "$(docker image inspect "$TAG" --format '{{.Id}}')" = "$ID" ] || fehler "$TAG zeigt nicht auf $ID"
+FERTIG=1
+docker rmi "$BAU_TAG" >/dev/null
 echo "== $TAG = $ID"
 echo "ABBILD OK"
