@@ -951,3 +951,167 @@ def test_beschreiben_rechnet_vektor_bild_nur_wenn_null(monkeypatch):
     assert bild_arbeit.naechste_beschreiben(Zaehler()) is True
     assert gerechnet == []
     assert server._q("select vektor_bild is not null as h from termin_bilder")[0]["h"]
+
+
+# ---------- Aufnahmepause (Meeting-Steuerseite, Task 6, R17) ----------
+
+import termin_akte  # noqa: E402
+
+
+def _bilder(uid="a1"):
+    return bildschirm.bilder(uid, auch_ungeprueft=True)
+
+
+def test_ist_pausiert():
+    _akte("a1")
+    assert bildschirm.ist_pausiert("a1") is False
+    termin_akte.aufnahme_wuenschen("a1", "pause", "felix", T0)
+    assert bildschirm.ist_pausiert("a1") is True
+    termin_akte.aufnahme_wuenschen("a1", "an", "felix", T0 + timedelta(seconds=5))
+    assert bildschirm.ist_pausiert("a1") is False
+    termin_akte.aufnahme_wuenschen("a1", "notbremse", "felix", T0 + timedelta(seconds=9))
+    assert bildschirm.ist_pausiert("a1") is True
+    assert bildschirm.ist_pausiert("unbekannt") is False
+
+
+def test_pause_wunsch_nimmt_kein_bild_auf_bleibt_im_raum():
+    _akte("a1")
+    sitzungen = _sitzung("a1", [_teilt("links"), _teilt("diagonal")])
+    auge.runde(sitzungen, T0)
+    assert len(_bilder()) == 1
+    von = T0 + timedelta(seconds=10)
+    termin_akte.aufnahme_wuenschen("a1", "pause", "felix", von)
+    auge.runde(sitzungen, T0 + timedelta(seconds=12))
+    s = sitzungen["a1"]
+    assert not s.seite.geschlossen and "a1" in sitzungen        # Raum bleibt offen
+    assert len(s.seite.skripte) == 1                            # kein Frame geholt
+    assert len(_bilder()) == 1 and s.anzahl == 1
+    assert _bilder()[0]["bis"] == von                           # Freigabe endet mit der Pause
+    auge.runde(sitzungen, T0 + timedelta(seconds=14))           # weiter pausiert
+    assert len(s.seite.skripte) == 1 and len(_bilder()) == 1
+
+
+def test_nach_weiter_wieder_bilder():
+    _akte("a1")
+    sitzungen = _sitzung("a1", [_teilt("links"), _teilt("diagonal")])
+    auge.runde(sitzungen, T0)
+    termin_akte.aufnahme_wuenschen("a1", "pause", "felix", T0 + timedelta(seconds=10))
+    auge.runde(sitzungen, T0 + timedelta(seconds=12))
+    assert len(_bilder()) == 1
+    termin_akte.aufnahme_wuenschen("a1", "an", "felix", T0 + timedelta(seconds=20))
+    auge.runde(sitzungen, T0 + timedelta(seconds=22))
+    assert len(_bilder()) == 2
+    assert _bilder()[1]["aufgenommen_am"] == T0 + timedelta(seconds=22)
+
+
+def test_nach_weiter_gleiches_bild_wird_neu_aufgenommen():
+    """Pausenzeit zaehlt nicht als Inhalt: das erste Bild danach ist ein neues."""
+    _akte("a1")
+    sitzungen = _sitzung("a1", [_teilt("links"), _teilt("links")])
+    auge.runde(sitzungen, T0)
+    termin_akte.aufnahme_wuenschen("a1", "pause", "felix", T0 + timedelta(seconds=10))
+    auge.runde(sitzungen, T0 + timedelta(seconds=12))
+    termin_akte.aufnahme_wuenschen("a1", "an", "felix", T0 + timedelta(seconds=20))
+    auge.runde(sitzungen, T0 + timedelta(seconds=22))
+    assert len(_bilder()) == 2
+
+
+def test_notbremse_verlaesst_raum():
+    _akte("a1")
+    oeffner = Oeffner()
+    sitzungen = {}
+    auge.abgleichen(sitzungen, oeffner, T0)
+    sitzungen["a1"].seite.antworten.append(_teilt("links"))
+    auge.runde(sitzungen, T0 + timedelta(seconds=1))
+    termin_akte.aufnahme_wuenschen("a1", "notbremse", "felix", T0 + timedelta(seconds=5))
+    auge.abgleichen(sitzungen, oeffner, T0 + timedelta(seconds=6))
+    assert sitzungen == {} and oeffner.seiten[0].geschlossen
+    assert len(_bilder()) == 1                                  # Bilder davor bleiben
+    assert _bilder()[0]["bis"] == T0 + timedelta(seconds=6)
+    # und kein erneuter Beitritt
+    auge.abgleichen(sitzungen, oeffner, T0 + timedelta(seconds=8))
+    assert sitzungen == {} and len(oeffner.urls) == 1
+
+
+def test_r17a_wunsch_kippt_mitten_in_der_runde_kein_bild():
+    _akte("a1")
+
+    class Kippt(Seite):
+        def evaluate(self, skript):
+            termin_akte.aufnahme_wuenschen("a1", "pause", "felix", T0)
+            return super().evaluate(skript)
+
+    sitzungen = {"a1": auge.Sitzung(uid="a1", seite=Kippt([_teilt("links")]))}
+    auge.runde(sitzungen, T0 + timedelta(seconds=1))
+    assert _bilder() == []
+    assert sitzungen["a1"].anzahl == 0
+
+
+def test_r17a_bild_ablegen_verweigert_bei_pause():
+    _akte("a1")
+    termin_akte.aufnahme_wuenschen("a1", "pause", "felix", T0)
+    assert bildschirm.bild_ablegen("a1", _jpeg("links"), T0 + timedelta(seconds=3), "A") is None
+    assert _bilder() == []
+
+
+def test_r17b_bilder_ab_dem_klick_werden_geloescht():
+    _akte("a1")
+    von = T0 + timedelta(seconds=10)
+    bildschirm.bild_ablegen("a1", _jpeg("links"), T0, "Anna")                       # davor
+    bildschirm.bild_ablegen("a1", _jpeg("oben"), von, "Anna")                       # == von
+    bildschirm.bild_ablegen("a1", _jpeg("diagonal"), von + timedelta(seconds=1), "Anna")
+    termin_akte.aufnahme_wuenschen("a1", "pause", "felix", von)
+    sitzungen = _sitzung("a1")
+    auge.runde(sitzungen, T0 + timedelta(seconds=12))
+    z = _bilder()
+    assert [b["aufgenommen_am"] for b in z] == [T0]
+    assert z[0]["bis"] == von
+    assert sitzungen["a1"].anzahl == 1
+    # Doppelklick setzt den Wunsch-Zeitpunkt neu, `von` der Pause bleibt
+    termin_akte.aufnahme_wuenschen("a1", "pause", "felix", T0 + timedelta(seconds=30))
+    auge.runde(sitzungen, T0 + timedelta(seconds=32))
+    assert len(_bilder()) == 1
+
+
+def test_r17b_notbremse_nach_pause_raeumt_beim_verlassen_auf():
+    _akte("a1")
+    oeffner = Oeffner()
+    sitzungen = {}
+    auge.abgleichen(sitzungen, oeffner, T0)
+    von = T0 + timedelta(seconds=10)
+    bildschirm.bild_ablegen("a1", _jpeg("oben"), von + timedelta(seconds=1), "Anna")
+    termin_akte.aufnahme_wuenschen("a1", "pause", "felix", von)
+    termin_akte.aufnahme_wuenschen("a1", "notbremse", "felix", von + timedelta(seconds=3))
+    auge.abgleichen(sitzungen, oeffner, von + timedelta(seconds=4))
+    assert sitzungen == {} and _bilder() == []
+
+
+def test_r17c_beschreiben_ueberspringt_bilder_in_pausenfenstern(monkeypatch):
+    _akte("a1")
+    bildschirm.bild_ablegen("a1", _jpeg("links"), T0 + timedelta(seconds=30), "Anna")   # im Fenster
+    bildschirm.bild_ablegen("a1", _jpeg("oben"), T0 + timedelta(seconds=40), "Anna")    # im Fenster
+    # Fenster nachtraeglich: [T0+20, T0+60) geschlossen, danach offen ab T0+100
+    server._q("insert into termin_pausen (uid, von, bis, angefordert_von) values "
+              "('a1', %s, %s, 'x') returning id",
+              (T0 + timedelta(seconds=20), T0 + timedelta(seconds=60)))
+    server._q("insert into termin_pausen (uid, von, angefordert_von) values "
+              "('a1', %s, 'x') returning id", (T0 + timedelta(seconds=100),))
+    bildschirm.bild_ablegen("a1", _jpeg("diagonal"), T0 + timedelta(seconds=110), "Anna")  # offen
+    bildschirm.bild_ablegen("a1", _jpeg("diagonal"), T0 + timedelta(seconds=70), "Anna")   # ausserhalb
+    aufrufe = []
+    monkeypatch.setattr(ollama, "chat", lambda *a, **kw: aufrufe.append(1) or "Folie")
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is True      # nur das ausserhalb
+    assert bild_arbeit.naechste_beschreiben(Attrappe()) is False
+    assert len(aufrufe) == 1
+    fertig = [b for b in _bilder() if b["beschreibung_status"] == "fertig"]
+    assert [b["aufgenommen_am"] for b in fertig] == [T0 + timedelta(seconds=70)]
+
+
+def test_pausenbilder_loeschen_nutzt_fenster():
+    _akte("a1")
+    bildschirm.bild_ablegen("a1", _jpeg("links"), T0 + timedelta(seconds=5), "Anna")
+    bildschirm.bild_ablegen("a1", _jpeg("oben"), T0 + timedelta(seconds=30), "Anna")
+    server._q("insert into termin_pausen (uid, von, angefordert_von) values ('a1', %s, 'x') "
+              "returning id", (T0 + timedelta(seconds=20),))
+    assert bildschirm.pausenbilder_loeschen("a1") == 1
+    assert [b["aufgenommen_am"] for b in _bilder()] == [T0 + timedelta(seconds=5)]

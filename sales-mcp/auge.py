@@ -12,6 +12,9 @@ Jede Runde (`AUGE_RUNDE_S`, Vorgabe 2 s):
   1. Soll-Abgleich aus der DB (`bildschirm.beobachtung_soll`): neue Termine
      betreten (eine Seite je Termin), nicht mehr gewollte sofort verlassen
      (Seite schliessen, offenes Bild bekommt `bis`).
+  1b. Aufnahmewunsch (Steuerseite): 'pause' -> kein Frame, kein Bild, Raum bleibt offen,
+     Bilder ab dem Klick (`von` der offenen Pause) werden geloescht; 'notbremse' ->
+     nicht mehr im Soll, der Raum wird verlassen. bild_ablegen prueft den Wunsch erneut.
   2. Je Sitzung `window.__lauraBild()`; je gleichzeitiger Freigabe (Quelle,
      hoechstens MAX_QUELLEN) bei spuerbarer Aenderung (dHash des ROHEN Frames
      gegen den rohen Hash des letzten abgelegten Frames DIESER Quelle, Ruling R4)
@@ -50,6 +53,7 @@ from typing import Any, Callable
 import bild_arbeit
 import bildschirm
 import server
+import termin_akte
 import termin_link
 
 LOG = logging.getLogger("sales-auge")
@@ -129,6 +133,7 @@ class Sitzung:
     fehler: int = 0
     gestartet: datetime | None = field(default=None)
     uebersprungen: int = 0               # heikle, nicht gespeicherte Bilder dieser Sitzung
+    pausiert: bool = False               # Aufnahmepause erkannt und aufgeraeumt (R17b)
 
 
 _gesperrt_bis: dict[str, datetime] = {}
@@ -188,6 +193,11 @@ def _beenden(sitzungen: dict[str, Sitzung], uid: str, jetzt: datetime) -> None:
     if s is None:
         return
     _schliessen(s.seite, uid)
+    try:
+        # R17b: ein Bild, das knapp vor dem Klick (Notbremse nach Pause) noch ankam, geht mit.
+        bildschirm.pausenbilder_loeschen(uid)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("Pausenbilder loeschen uid=%s fehlgeschlagen (%s)", _h(uid), _typ(e))
     try:
         bildschirm.freigabe_ende(uid, jetzt)
     except Exception as e:  # noqa: BLE001
@@ -331,7 +341,7 @@ def _quelle_aufnehmen(s: Sitzung, q: Quelle, roh: Any, jetzt: datetime) -> None:
         return
     bild_id = bildschirm.bild_ablegen(s.uid, jpeg, jetzt, q.von, vektor_bild=vektor)
     if bild_id is None:
-        LOG.info("Ablage verweigert uid=%s (nicht mehr beobachtet)", _h(s.uid))
+        LOG.info("Ablage verweigert uid=%s (nicht mehr beobachtet oder pausiert)", _h(s.uid))
         return
     q.letzter_hash, q.letzte_zeit = neu, jetzt
     s.letzter_hash, s.letzte_zeit, s.anzahl = neu, jetzt, s.anzahl + 1
@@ -339,7 +349,34 @@ def _quelle_aufnehmen(s: Sitzung, q: Quelle, roh: Any, jetzt: datetime) -> None:
              len(s.quellen))
 
 
+def _pause_beginnen(s: Sitzung, jetzt: datetime) -> None:
+    """Erste Runde unter einer Pause (R17b): Bilder ab dem Klick loeschen (`von` der
+    offenen Pause, nicht `aufnahme_wunsch_am`), die Freigabe mit dem Klick enden lassen,
+    Zaehler aus der DB neu lesen. Der Raum bleibt offen. Wirft bei DB-Fehlern: dann
+    bleibt `pausiert` aus und die naechste Runde versucht es neu."""
+    offen = [p["von"] for p in termin_akte.pausen(s.uid) if p["bis"] is None]
+    von = max(offen) if offen else jetzt
+    bildschirm.pausenbilder_loeschen(s.uid)
+    bildschirm.freigabe_ende(s.uid, von)
+    anzahl, letzter, zeit = _bestand(s.uid)
+    s.anzahl, s.letzte_zeit = anzahl, zeit
+    s.letzter_hash = letzter if anzahl >= bildschirm.OBERGRENZE else None
+    # Pausenzeit ist kein Inhalt: nach dem Weiter beginnt jede Quelle neu.
+    s.teilt, s.quellen = False, {}
+    s.pausiert = True
+    LOG.info("Aufnahmepause uid=%s (Bilder %d)", _h(s.uid), anzahl)
+
+
 def _eine(s: Sitzung, jetzt: datetime) -> None:
+    # Pause/Notbremse (Steuerseite) gilt je Runde, vor jedem Frame (R17a, erste Pruefung).
+    if bildschirm.ist_pausiert(s.uid):
+        s.fehler = 0
+        if not s.pausiert:
+            _pause_beginnen(s, jetzt)
+        return                       # kein Frame, Sitzung bleibt offen
+    if s.pausiert:
+        s.pausiert = False
+        LOG.info("Aufnahme wieder an uid=%s", _h(s.uid))
     antwort = s.seite.evaluate(AUFRUF)
     s.fehler = 0
     teilt, frames = _frame(antwort)

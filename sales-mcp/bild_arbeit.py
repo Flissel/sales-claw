@@ -86,6 +86,7 @@ def _beanspruchen() -> dict | None:
         "versucht_am = now() "
         "where id = (select id from termin_bilder "
         "where beschreibung_status in ('offen', 'fehler') "
+        f"and not {bildschirm.PAUSENFENSTER.format(b='termin_bilder')} "   # R17c
         "and (versucht_am is null or versucht_am <= now() - case "
         "  when beschreibung_versuche >= 2 then %s::interval else %s::interval end) "
         "order by (beschreibung_status = 'fehler'), aufgenommen_am, id "

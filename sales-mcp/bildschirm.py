@@ -24,7 +24,29 @@ _NAME_MAX = 200
 # Bedingung, unter der ein Termin beobachtet wird (eine Quelle fuer Liste und Pruefung).
 _SOLL = ("bildschirm_auswerten and plattform = 'jitsi' "
          "and status in ('wartet_auf_einlass', 'laeuft') "
-         "and abgesagt_am is null and not kein_bot and vexa_meeting_id is not null")
+         "and abgesagt_am is null and not kein_bot and vexa_meeting_id is not null "
+         "and aufnahme_wunsch <> 'notbremse'")   # Notbremse: Raum verlassen (Steuerseite)
+
+# Aufnahme liegt in einem Pausenfenster (von inklusive, bis exklusiv, offen = unendlich),
+# R17c. `{b}` ist der Name der Tabelle/des Alias von termin_bilder.
+PAUSENFENSTER = ("exists (select 1 from termin_pausen p where p.uid = {b}.uid "
+                 "and {b}.aufgenommen_am >= p.von and (p.bis is null or {b}.aufgenommen_am < p.bis))")
+
+
+def ist_pausiert(uid: str) -> bool:
+    """Steht der Wunsch der Akte nicht auf 'an' (Pause oder Notbremse)? Dann wird
+    kein Bild aufgenommen. Unbekannte Akte: False."""
+    return bool(server._q("select 1 from termin_akten where uid = %s and aufnahme_wunsch <> 'an'",
+                          (uid,)))
+
+
+def pausenbilder_loeschen(uid: str) -> int:
+    """Loescht Bilder der Akte, die in einem Pausenfenster aufgenommen wurden (R17b;
+    offene Pause = ab `von`). Bild-Bytes liegen nur in termin_bilder.bild: mit der
+    Zeile weg. Liefert die Anzahl."""
+    return len(server._q(
+        f"delete from termin_bilder b where b.uid = %s and {PAUSENFENSTER.format(b='b')} "
+        "returning b.id", (uid,)))
 
 
 def dhash(jpeg: bytes) -> int:
@@ -100,6 +122,11 @@ def bild_ablegen(uid: str, jpeg: bytes, zeitpunkt: datetime,
             return None
         if not conn.execute(f"select 1 from termin_akten where uid = %s and {_SOLL}",
                             (uid,)).fetchall():
+            return None
+        # R17a: der Wunsch kann zwischen Aufnahme und Ablage gekippt sein. Die Zeile ist
+        # gesperrt (for update): ein Klick ist entweder davor oder danach - nie dazwischen.
+        if conn.execute("select 1 from termin_akten where uid = %s and aufnahme_wunsch <> 'an'",
+                        (uid,)).fetchall():
             return None
         conn.execute(f"update termin_bilder set bis = %s where {_OFFEN_VON}",
                      (zeitpunkt, uid, name))
