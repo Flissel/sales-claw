@@ -61,8 +61,8 @@ const baseInv = (over: Partial<Invocation> = {}): Invocation => ({
   container_name: 'mtg-abc-bot', nativeMeetingId: 'abc', ...over,
 });
 
-const seg = (id: string, startS: number): TranscriptSegment => ({
-  segment_id: id, speaker: 'Alice', text: 'x', start: startS, end: startS + 1, completed: true,
+const seg = (id: string, startS: number, endS = startS + 0.05): TranscriptSegment => ({
+  segment_id: id, speaker: 'Alice', text: 'x', start: startS, end: endS, completed: true,
 });
 
 async function gateUnit(): Promise<void> {
@@ -77,6 +77,10 @@ async function gateUnit(): Promise<void> {
     check('pause(1000): allowsSegment(0.999) true (before the click)', g.allowsSegment(0.999) === true);
     check('pause(1000): allowsSegment(1.0) false (at the click)', g.allowsSegment(1.0) === false);
     check('pause(1000): allowsSegment(5) false (after the click)', g.allowsSegment(5) === false);
+    // R4 ("lieber weg / ganzen Satz loeschen"): a segment that starts before the click but ends after it goes too.
+    check('R4 pause(1000): allowsSegment(0.5, 1.2) false (straddles the click)', g.allowsSegment(0.5, 1.2) === false);
+    check('R4 pause(1000): allowsSegment(0.5, 0.9) true (ends before the click)', g.allowsSegment(0.5, 0.9) === true);
+    check('R4 pause(1000): allowsSegment(0.5, 1.0) true (ends exactly at the click)', g.allowsSegment(0.5, 1.0) === true);
     c.t = 3000;
     g.resume();
     check('resume(): allowsAudio() true', g.allowsAudio() === true);
@@ -86,6 +90,9 @@ async function gateUnit(): Promise<void> {
     check('resume() at 3000: allowsSegment(1.0) stays false', g.allowsSegment(1.0) === false);
     check('resume() at 3000: allowsSegment(3.0) true (window end is exclusive)', g.allowsSegment(3.0) === true);
     check('resume() at 3000: allowsSegment(0.5) true (before the window)', g.allowsSegment(0.5) === true);
+    check('R4 resume() at 3000: allowsSegment(0.5, 1.5) false (straddles the closed window start)', g.allowsSegment(0.5, 1.5) === false);
+    check('R4 resume() at 3000: allowsSegment(2.5, 3.5) false (straddles the resume)', g.allowsSegment(2.5, 3.5) === false);
+    check('R4 resume() at 3000: allowsSegment(3.0, 4.0) true (starts at the resume)', g.allowsSegment(3.0, 4.0) === true);
   }
   {
     const c = clock(10_000);
@@ -128,18 +135,23 @@ async function sinkUnit(): Promise<void> {
   await sink.publish(seg('old', 50));        // published 50 s before the click → outside the 30 s memory
   c.t = 140_000;
   await sink.publish(seg('a', 95));
+  await sink.publish(seg('straddle', 99.5, 100.5));
   await sink.publish(seg('b', 101));
   await sink.publish(seg('c', 120));
-  check('not paused: everything is published', inner.published.length === 4);
+  check('not paused: everything is published', inner.published.length === 5);
   c.t = 141_000;
   g.pause(100_000);
   await sleep(5);
   check('pause(at): published segments with start ≥ at are retracted',
     inner.retracted.includes('b') && inner.retracted.includes('c'), JSON.stringify(inner.retracted));
+  check('R4 pause(at): a published segment straddling the click (end > at) is retracted',
+    inner.retracted.includes('straddle'), JSON.stringify(inner.retracted));
   check('pause(at): segments before the click stay', !inner.retracted.includes('a') && !inner.retracted.includes('old'));
   await sink.publish(seg('late', 100.5));
-  await sink.publish(seg('pre', 99.9));
+  await sink.publish(seg('pre', 99.9, 99.95));
+  await sink.publish(seg('straddle-late', 99.8, 100.2));
   check('paused: a result for audio after the click is dropped', !inner.published.some((s) => s.segment_id === 'late'));
+  check('R4 paused: a result straddling the click is dropped', !inner.published.some((s) => s.segment_id === 'straddle-late'));
   check('paused: a result for audio before the click still publishes', inner.published.some((s) => s.segment_id === 'pre'));
   await sink.retract?.(['pre']);
   check('retract passes through', inner.retracted.includes('pre'));
@@ -175,6 +187,7 @@ async function pipelineMixed(): Promise<void> {
 
   // A segment published BEFORE the act arrives, for audio after the click (at = 1_000_000).
   cb!.publish('Alice', [{ text: 'vorher', startMs: 998_000, endMs: 999_500, language: 'de', segmentId: 't:1:0' }], []);
+  cb!.publish('Alice', [{ text: 'ueber den Klick', startMs: 999_600, endMs: 1_000_400, language: 'de', segmentId: 't:1:s' }], []);
   cb!.publish('Alice', [{ text: 'nach Klick', startMs: 1_000_500, endMs: 1_001_000, language: 'de', segmentId: 't:2:0' }],
     [{ text: 'entwurf', startMs: 1_001_000, endMs: 1_001_500, language: 'de', segmentId: 't:2:p' }]);
   await sleep(5);
@@ -188,6 +201,8 @@ async function pipelineMixed(): Promise<void> {
   await sleep(5);
   check('pause: already-published segments with start ≥ at are retracted',
     sink.retracted.includes('t:2:0') && sink.retracted.includes('t:2:p'), JSON.stringify(sink.retracted));
+  check('R4 pause: an already-published segment straddling the click is retracted (whole sentence)',
+    sink.retracted.includes('t:1:s'), JSON.stringify(sink.retracted));
   check('pause: the segment before the click is not retracted', !sink.retracted.includes('t:1:0'));
 
   // Raced against a timer: a gate that forwarded to the (pending) mock must FAIL, not hang.
@@ -207,8 +222,11 @@ async function pipelineMixed(): Promise<void> {
   cb!.publish('Alice', [
     { text: 'spaet nach Klick', startMs: 1_000_200, endMs: 1_000_900, language: 'de', segmentId: 't:3:0' },
     { text: 'spaet vor Klick', startMs: 999_000, endMs: 999_900, language: 'de', segmentId: 't:4:0' },
+    { text: 'spaet ueber den Klick', startMs: 999_900, endMs: 1_000_300, language: 'de', segmentId: 't:4:s' },
   ], []);
   await sleep(5);
+  check('R4 in-flight result straddling the click is never published',
+    !sink.published.some((s) => s.segment_id === 't:4:s'));
   check('in-flight result for audio at/after the click is never published',
     !sink.published.some((s) => s.segment_id === 't:3:0'));
   check('in-flight result for audio before the click is published', sink.published.some((s) => s.segment_id === 't:4:0'));
@@ -223,9 +241,11 @@ async function pipelineMixed(): Promise<void> {
   await afterResume;
   cb!.publish('Alice', [
     { text: 'in der Pause', startMs: 1_003_000, endMs: 1_004_000, language: 'de', segmentId: 't:5:0' },
+    { text: 'ueber das Weiter', startMs: 1_004_500, endMs: 1_005_500, language: 'de', segmentId: 't:5:s' },
     { text: 'danach', startMs: 1_005_200, endMs: 1_006_000, language: 'de', segmentId: 't:6:0' },
   ], []);
   await sleep(5);
+  check('R4 resume: a segment straddling the resume stays dropped', !sink.published.some((s) => s.segment_id === 't:5:s'));
   check('resume: a segment inside the paused window stays dropped', !sink.published.some((s) => s.segment_id === 't:5:0'));
   check('resume: a segment after the resume publishes', sink.published.some((s) => s.segment_id === 't:6:0'));
   await pipe.stop();

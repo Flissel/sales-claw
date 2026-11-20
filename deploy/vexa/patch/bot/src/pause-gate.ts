@@ -6,10 +6,11 @@
  *   • the pause begins at the CLICK time carried by the act (`at`, epoch ms), not at its arrival;
  *   • while paused the stt port is never called and the lane is fed silence (`gateTranscribe`,
  *     `gateBotPipeline`) — buffered, untranscribed audio is thereby discarded;
- *   • every segment whose start lies in a pause window [at, resume) is dropped at the transcript
+ *   • every segment that touches a pause window [at, resume) — starts inside it, or starts before
+ *     and ends after its start (ruling R4: "ganzen Satz loeschen") — is dropped at the transcript
  *     egress, even when its STT call started before the pause or it surfaces after the resume;
- *   • segments already published with start ≥ at (between the click and the act's arrival) are
- *     retracted when the pause takes effect (`gateTranscriptSink`).
+ *   • segments already published with start ≥ at or end > at (between the click and the act's
+ *     arrival) are retracted when the pause takes effect (`gateTranscriptSink`).
  * One gate instance is shared by the orchestrator (acts → gate → lifecycle confirmation) and the
  * pipeline; it is built at the composition root BEFORE the join, so a pause sent from the lobby is
  * already in effect when the pipeline starts.
@@ -55,12 +56,18 @@ export class PauseGate {
     return this.since === null;
   }
 
-  /** May a segment starting at `startEpochS` (epoch SECONDS, the transcript.v1 timing) be kept? */
-  allowsSegment(startEpochS: number): boolean {
-    const ms = startEpochS * 1000;
-    if (!Number.isFinite(ms)) return this.since === null && this.windows.length === 0;
-    if (this.since !== null && ms >= this.since) return false;
-    return !this.windows.some((w) => ms >= w.from && ms < w.to);
+  /** May a segment [startEpochS, endEpochS] (epoch SECONDS, the transcript.v1 timing) be kept?
+   *  Ruling R4 ("lieber weg / ganzen Satz loeschen"): NO if it touches any pause window at all —
+   *  it starts inside one, or starts before and ends after the window's start. A segment ending
+   *  exactly at the click is kept. Without `endEpochS` the segment is treated as a point. */
+  allowsSegment(startEpochS: number, endEpochS?: number): boolean {
+    const start = startEpochS * 1000;
+    if (!Number.isFinite(start)) return this.since === null && this.windows.length === 0;
+    const endRaw = endEpochS === undefined ? start : endEpochS * 1000;
+    const end = Number.isFinite(endRaw) ? Math.max(start, endRaw) : start;
+    const touches = (from: number, to: number): boolean => start < to && (start >= from || end > from);
+    if (this.since !== null && touches(this.since, Number.POSITIVE_INFINITY)) return false;
+    return !this.windows.some((w) => touches(w.from, w.to));
   }
 
   /** Called with the click time whenever a pause takes effect. Returns an unsubscribe fn. */
@@ -80,11 +87,11 @@ export function gateTranscribe(transcribe: Transcribe, gate: PauseGate, language
 }
 
 /** How long published segment ids are remembered for the retraction on pause (plan: 30 s). Older
- *  ones are removed server-side by the meeting-api's deletion of segments with start ≥ at. */
+ *  ones are removed server-side by the meeting-api (Task 2: start ≥ at, and under R4 end > at). */
 export const RETRACT_WINDOW_MS = 30_000;
 
-/** The transcript egress: drop every segment inside a pause window; on pause, retract the ids
- *  published in the last RETRACT_WINDOW_MS whose start is at/after the click. */
+/** The transcript egress: drop every segment touching a pause window (R4); on pause, retract the ids
+ *  published in the last RETRACT_WINDOW_MS that start at/after the click or end after it (R4). */
 export function gateTranscriptSink(
   sink: TranscriptSink,
   gate: PauseGate,
@@ -92,7 +99,7 @@ export function gateTranscriptSink(
 ): TranscriptSink {
   const now = opts.now ?? Date.now;
   const windowMs = opts.windowMs ?? RETRACT_WINDOW_MS;
-  const recent = new Map<string, { startS: number; publishedMs: number }>();
+  const recent = new Map<string, { startS: number; endS: number; publishedMs: number }>();
   const prune = (): void => {
     const floor = now() - windowMs;
     for (const [id, r] of recent) if (r.publishedMs < floor) recent.delete(id);
@@ -100,7 +107,8 @@ export function gateTranscriptSink(
   gate.onPause((atMs) => {
     prune();
     const ids: string[] = [];
-    for (const [id, r] of recent) if (!(r.startS * 1000 < atMs)) ids.push(id);
+    // R4: start ≥ at, or straddling the click (end > at) — the whole sentence goes.
+    for (const [id, r] of recent) if (!(r.startS * 1000 < atMs) || r.endS * 1000 > atMs) ids.push(id);
     for (const id of ids) recent.delete(id);
     if (ids.length === 0) return;
     if (!sink.retract) {
@@ -111,9 +119,9 @@ export function gateTranscriptSink(
   });
   return {
     async publish(segment) {
-      if (!gate.allowsSegment(segment.start)) return;
+      if (!gate.allowsSegment(segment.start, segment.end)) return;
       prune();
-      recent.set(segment.segment_id, { startS: segment.start, publishedMs: now() });
+      recent.set(segment.segment_id, { startS: segment.start, endS: segment.end, publishedMs: now() });
       await sink.publish(segment);
     },
     ...(sink.retract
