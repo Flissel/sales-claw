@@ -10,14 +10,16 @@
  *     and ends after its start (ruling R4: "ganzen Satz loeschen") — is dropped at the transcript
  *     egress, even when its STT call started before the pause or it surfaces after the resume;
  *   • segments already published with start ≥ at or end > at (between the click and the act's
- *     arrival) are retracted when the pause takes effect (`gateTranscriptSink`).
+ *     arrival) are retracted when the pause takes effect (`gateTranscriptSink`);
+ *   • the capture-signal tape (O-TEL-1, teed before the feed) gets silence and no captions while
+ *     paused (`gateCaptureSignalSink`).
  * One gate instance is shared by the orchestrator (acts → gate → lifecycle confirmation) and the
  * pipeline; it is built at the composition root BEFORE the join, so a pause sent from the lobby is
  * already in effect when the pipeline starts.
  */
 import type { TranscriptionResult } from '@vexa/transcribe-whisper';
 import type { BotPipeline, Transcribe } from './pipeline.js';
-import type { TranscriptSink } from './ports.js';
+import type { CapturedFrame, TelemetrySink, TranscriptSink } from './ports.js';
 
 export class PauseGate {
   private since: number | null = null;
@@ -147,4 +149,27 @@ export function gateBotPipeline(pipeline: BotPipeline, gate: PauseGate): BotPipe
     feedMixedAudio: (pcm, tsMs) =>
       pipeline.feedMixedAudio(blocked(tsMs) ? new Float32Array(pcm.length) : pcm, tsMs),
   };
+}
+
+/** Final-Review I4 — the O-TEL-1 capture-signal tap (`signalRecorder.sink`) is teed by the capture
+ *  bridge BEFORE the pipeline feed, so the feed gate above never sees it; if capture-signal is ever
+ *  switched on, the raw room audio of a pause would be persisted and uploaded. Gate it the same way:
+ *  while paused (or for a frame stamped inside a pause window) the tape gets silence of the same
+ *  length (seq/clock intact, no sound), and caption text (Teams CC) is dropped. Hints, CSRC and
+ *  observations carry no speech and pass through unchanged (prototype delegation). */
+export function gateCaptureSignalSink<S extends TelemetrySink>(sink: S, gate: PauseGate): S {
+  const blocked = (tsMs: number): boolean => !gate.allowsAudio() || !gate.allowsSegment(tsMs / 1000);
+  const gated = Object.create(sink) as S;
+  (gated as TelemetrySink).captureFrame = (frame: CapturedFrame): void => {
+    if (!blocked(frame.ts)) { sink.captureFrame(frame); return; }
+    const samples = Number.isFinite(frame.pcm_len) && frame.pcm_len > 0 ? frame.pcm_len : 0;
+    sink.captureFrame({ ...frame, pcm: Buffer.alloc(samples * 4).toString('base64'), rms: 0 });
+  };
+  const caption = (sink as { captureCaption?: (c: unknown) => void }).captureCaption;
+  if (typeof caption === 'function') {
+    (gated as { captureCaption?: (c: unknown) => void }).captureCaption = (c: unknown): void => {
+      if (gate.allowsAudio()) caption.call(sink, c);
+    };
+  }
+  return gated;
 }

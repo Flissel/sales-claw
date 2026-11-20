@@ -17,12 +17,12 @@ import addFormats from 'ajv-formats';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PauseGate, gateTranscriptSink } from './pause-gate.js';
+import { PauseGate, gateCaptureSignalSink, gateTranscriptSink } from './pause-gate.js';
 import { createBotPipeline } from './pipeline.js';
 import { createOrchestrator } from './orchestrator.js';
 import { parseAct, type Act, type LifecycleEvent, type TranscriptSegment } from './contracts.js';
 import type { Invocation } from './config.js';
-import type { JoinDriver, JoinOutcome, LifecycleSink, Pipeline, TranscriptSink } from './ports.js';
+import type { CapturedFrame, JoinDriver, JoinOutcome, LifecycleSink, Pipeline, TranscriptSink } from './ports.js';
 import type { TranscriptionResult } from '@vexa/transcribe-whisper';
 import type { ChunkedTranscriberCallbacks } from '@vexa/mixed-pipeline';
 import { noopAloneness, noopActs } from './test-doubles.js';
@@ -277,6 +277,50 @@ async function pipelineGmeet(): Promise<void> {
   check('gmeet lane, paused: nothing published', sink.published.length === 0, JSON.stringify(sink.published));
 }
 
+// ── capture-signal tap (O-TEL-1, Final-Review I4) ──
+async function captureSignalUnit(): Promise<void> {
+  console.log('capture-signal tap');
+  const c = clock(10_000);
+  const gate = new PauseGate(c.now);
+  const frames: CapturedFrame[] = [];
+  const captions: unknown[] = [];
+  const observations: unknown[] = [];
+  const inner = {
+    captureFrame(f: CapturedFrame) { frames.push(f); },
+    captureHint() { /* */ },
+    captureCaption(cap: unknown) { captions.push(cap); },
+    captureObservation(o: unknown) { observations.push(o); },
+  };
+  const tap = gateCaptureSignalSink(inner, gate);
+  const pcm = new Float32Array([0.5, -0.25, 0.75]);
+  const b64 = Buffer.from(pcm.buffer).toString('base64');
+  const frame = (ts: number): CapturedFrame => ({ ts, speakerIndex: 999, pcm: b64, pcm_len: pcm.length, rms: 0.5, lane: 'mixed' });
+  const silent = (f: CapturedFrame | undefined): boolean =>
+    !!f && Buffer.from(f.pcm, 'base64').every((x) => x === 0)
+    && Buffer.from(f.pcm, 'base64').length === pcm.length * 4 && f.pcm_len === pcm.length && f.rms === 0;
+
+  tap.captureFrame(frame(9_000));
+  check('not paused: the raw frame reaches the tape unchanged', frames[0]?.pcm === b64);
+  tap.captureCaption?.({ text: 'vorher' });
+  check('not paused: captions pass', captions.length === 1);
+
+  gate.pause(9_500);
+  tap.captureFrame(frame(9_800));
+  check('paused: the tape gets silence of the same length, never the captured audio', silent(frames[1]), JSON.stringify(frames[1]));
+  check('paused: frame metadata (ts, lane) is kept', frames[1]?.ts === 9_800 && frames[1]?.lane === 'mixed');
+  tap.captureCaption?.({ text: 'GEHEIM' });
+  check('paused: caption text is dropped', captions.length === 1, JSON.stringify(captions));
+  (tap as typeof inner).captureObservation({ type: 'observation' });
+  check('paused: observations (no speech) still pass through', observations.length === 1);
+
+  c.t = 12_000;
+  gate.resume();
+  tap.captureFrame(frame(11_000));
+  check('after resume: a frame stamped inside the closed window stays silent', silent(frames[2]));
+  tap.captureFrame(frame(12_500));
+  check('after resume: live audio reaches the tape again', frames[3]?.pcm === b64);
+}
+
 // ── orchestrator ──
 const recordingLifecycle = (): LifecycleSink & { readonly events: LifecycleEvent[] } => {
   const events: LifecycleEvent[] = [];
@@ -317,6 +361,13 @@ async function orchestratorPause(): Promise<void> {
   const run = orch.run();
   await sleep(10);
   check('lobby: bot is awaiting admission', lifecycle.events.at(-1)?.status === 'awaiting_admission');
+  // Final-Review I3: a NEW session reports its (fresh) pause state with its FIRST lifecycle event,
+  // so a confirmation an earlier session left in meeting.data never survives into this one.
+  const first = lifecycle.events[0];
+  check('I3: the first lifecycle event (joining) carries aufnahme_pause = { pausiert:false, seit_ms:null }',
+    first?.status === 'joining' && first?.aufnahme_pause?.pausiert === false && first?.aufnahme_pause?.seit_ms === null,
+    JSON.stringify(first));
+  check('I3: that joining event conforms to lifecycle.v1', validateLifecycle(first), JSON.stringify(validateLifecycle.errors));
 
   // The real wire shape from the meeting-api: unknown extra fields (meeting_id) ride along.
   const raw = parseAct({ action: 'pause', at: 1_700_000_000_000, meeting_id: 42 });
@@ -379,6 +430,7 @@ async function main(): Promise<void> {
   await sinkUnit();
   await pipelineMixed();
   await pipelineGmeet();
+  await captureSignalUnit();
   await orchestratorPause();
   finished = true;
   if (failed > 0) {

@@ -252,7 +252,14 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     // secondary (redis); BOTH down ⇒ refuse to join BEFORE any meeting navigation and terminate
     // with the dedicated infra signal — rather than proceeding toward a human meeting the bot can
     // never report about (the 2026-07-09 fresh-node signature: opaque join_failure / stuck-requested).
-    const joiningExtra: Partial<LifecycleEvent> = base.container_id ? { container_id: base.container_id } : {};
+    const joiningExtra: Partial<LifecycleEvent> = {
+      ...(base.container_id ? { container_id: base.container_id } : {}),
+      // sales-claw pause patch (Final-Review I3): a NEW session reports its pause state with its
+      // FIRST event, so a confirmation an earlier session left in meeting.data never survives.
+      ...(deps.pauseGate
+        ? { aufnahme_pause: { pausiert: deps.pauseGate.pausedSince !== null, seit_ms: deps.pauseGate.pausedSince } }
+        : {}),
+    };
     const primaryReachable = await emitJoining(joiningExtra);
     if (!primaryReachable) {
       // Either-channel rule: EITHER channel up ⇒ the bot can still report ⇒ proceed. Absent probe

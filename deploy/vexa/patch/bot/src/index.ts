@@ -38,7 +38,7 @@ import { createSttFaultReporter } from './stt-faults.js';
 import { launchBrowser, startCaptureBridge, startRecording, restartMixedCapture, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
 import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneSilenceWindowMs } from './aloneness.js';
 import { installSignalHandlers } from './signals.js';
-import { PauseGate, gateTranscriptSink } from './pause-gate.js'; // sales-claw pause patch
+import { PauseGate, gateCaptureSignalSink, gateTranscriptSink } from './pause-gate.js'; // sales-claw pause patch
 import type {
   JoinDriver,
   Pipeline,
@@ -263,6 +263,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // the page.evaluate on the BLANK pre-navigation page (no VexaBrowserUtils, no audio), and the
     // subsequent goto to the meeting URL destroyed that context — so capture never attached. (L4.)
     const sess = session, bp = botPipeline, rec = recording;
+    // sales-claw pause patch (Final-Review I4): the capture-signal tap sits before the pipeline
+    // feed — gate it too, so no pause audio/caption ever lands on a tape.
+    const signalSink = signalRecorder ? gateCaptureSignalSink(signalRecorder.sink, pauseGate) : undefined;
     restartCapture = () => {
       void restartMixedCapture(sess.page)
         .then((requested) => console.log(`[bot] capture restart ${requested ? 'requested' : 'not applicable (no mixed rescan)'}`))
@@ -293,7 +296,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // each failure surfaces LOUD via onFault (console with a full-fidelity serr(e)) instead of
     // throwing into the orchestrator's leave-on-fail backstop (which would hang the bot up).
     pipeline = createLivePipeline({
-      startCapture: () => startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, remoteAudioActivity),   // on the live meeting page
+      startCapture: () => startCaptureBridge(sess.page, inv, bp, signalSink, publishChat, remoteAudioActivity),   // on the live meeting page (sales-claw pause patch: gated tap)
       startRecording: rec ? () => startRecording(sess.page, inv, rec) : undefined,          // MediaRecorder → recording.v1
       engine: bp,
       onFault: (stage, e) => {

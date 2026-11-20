@@ -11,7 +11,7 @@ Basis, nur die Dateien unter `patch/` darueber.
 
 | Teil | Was der Patch tut |
 |---|---|
-| Bot (`patch/bot/`) | Acts `pause`/`resume`, Pausen-Tor (`pause-gate.ts`): kein Aufruf von Whisper, Stille statt Ton in der Lane, Segmente, die das Pausenfenster beruehren, werden verworfen bzw. zurueckgezogen; Bestaetigung per Lifecycle `aufnahme_pause`. |
+| Bot (`patch/bot/`) | Acts `pause`/`resume`, Pausen-Tor (`pause-gate.ts`): kein Aufruf von Whisper, Stille statt Ton in der Lane, Segmente, die das Pausenfenster beruehren, werden verworfen bzw. zurueckgezogen; Bestaetigung per Lifecycle `aufnahme_pause` (auch mit dem ersten `joining`-Ereignis jeder Sitzung, damit keine alte Bestaetigung ueberlebt). Der Capture-Signal-Mitschnitt (O-TEL-1) liegt ebenfalls hinter dem Tor (Stille, keine Untertitel). |
 | Meeting-API (`patch/meeting-api/`) | `POST /bots/{platform}/{native_meeting_id}/pause` (`{"at_ms": <int>}`) und `/resume`, Pausenzustand in `meeting.data.aufnahme_pause`, Sicherheitsloeschung (DB, Hash, Feed, Bus `transcription_segments`). |
 | Gateway (`patch/gateway/`) | Weiterleitung der beiden Routen an die Meeting-API, Scope `bot` in `routes.v1.json`. |
 
@@ -45,9 +45,13 @@ Wegwerf-Container **des neuen Abbilds** (`--network none`, wird immer entfernt):
 3. Meeting-API: `pytest` ohne Postgres (die PG-Tests werden uebersprungen).
 4. Gateway: `pytest`.
 
-Erwartet (Stand pause1): Bot 759 ✅ (758 aus `npm test` + 1 Isolation) / 0 ❌, Meeting-API **1458 passed, 5 skipped**,
+Erwartet (Stand pause1): Bot 769 ✅ (768 aus `npm test` + 1 Isolation) / 0 ❌, Meeting-API **1458 passed, 5 skipped**,
 Gateway **386 passed, 1 xfailed**. Die letzte Zeile ist `ABBILD OK`, sonst
 endet das Skript mit Exit != 0. Die Untergrenzen stehen oben im Skript.
+Gebaut wird unter einem Bau-Tag `sales-vexa-lite:bau-<pid>`; erst nach allen
+Pruefungen traegt das neue Abbild `sales-vexa-lite:v0.12.28-pause1`. Scheitert
+etwas, wird nur der Bau-Tag entfernt, der bisherige pause1-Tag bleibt. Das
+vorherige pause1-Abbild bleibt nach dem Umhaengen unbenannt liegen (kein prune).
 
 ## Wo die Dateien im Abbild landen (wichtig)
 
@@ -104,6 +108,13 @@ bleibt es `vexaai/vexa-lite:v0.12.28@sha256:9eeb...` (Prod unveraendert).
 VEXA_LITE_IMAGE=sales-vexa-lite:v0.12.28-pause1
 docker compose -f docker-compose.yml -p vexa up -d --no-deps vexa-lite   # nur dieser Dienst
 ```
+
+**Capture-Signal (O-TEL-1) muss aus sein und wird beim Einschalten geprueft:**
+der Mitschnitt roher Signale (`diagnostics.capture_signal` des Vexa-Nutzers von
+sales-termine bzw. `VEXA_CAPTURE_SIGNAL=1`) gehoert nicht in den Betrieb. Der
+Patch gated ihn zwar (Pausen-Ton wird Stille, Untertitel fallen weg), aber
+ausserhalb der Pause wuerde er weiter rohen Ton speichern und hochladen.
+Vor dem Tausch pruefen (Plan Task 9), dass er fuer den sales-termine-Nutzer aus ist.
 
 Zurueck: Zeile aus der `.env` nehmen, denselben Befehl noch einmal. Das
 Patch-Abbild liegt nur lokal (keine Registry) – nach einem neuen Host erst
