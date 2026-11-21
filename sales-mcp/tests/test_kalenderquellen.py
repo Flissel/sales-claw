@@ -358,8 +358,14 @@ def test_kaputtes_ical_wirft_nicht_und_nennt_keine_adresse(server_stub):
 
 def test_unlesbares_vorkommen_wird_gemeldet_und_der_gute_bleibt(
         server_stub, monkeypatch):
-    gut = _BALD
-    schlecht = _BALD + _td(days=1)
+    # Mittags UTC und ohne Sekundenbruchteile (12.11.2026): `zickig` sieht
+    # Beginn UND Ende jedes Vorkommens. Mit `_BALD` ab 23:00 UTC lag das
+    # Ende des guten Termins (+1 h) schon auf dem Datum des schlechten —
+    # beide galten als unlesbar, der Test fiel je nach Tageszeit
+    # (CI 11.11.2026, 23:53 UTC: `[] == ['Gut']`). Darum trifft `zickig` nur
+    # noch den exakten Beginn des schlechten Termins.
+    gut = _BALD.replace(hour=12, minute=0, second=0, microsecond=0)
+    schlecht = gut + _td(days=1)
     server_stub.rumpf = _ics(
         _vevent("gut@google", gut.strftime("%Y%m%dT%H%M%SZ"),
                "DTEND:" + (gut + _td(hours=1)).strftime("%Y%m%dT%H%M%SZ")
@@ -370,7 +376,7 @@ def test_unlesbares_vorkommen_wird_gemeldet_und_der_gute_bleibt(
     echt = kalenderquellen._ortszeit_utc
 
     def zickig(wert, zone):
-        if wert.date() == schlecht.date():
+        if wert == schlecht:
             raise ValueError("kaputt")
         return echt(wert, zone)
 
