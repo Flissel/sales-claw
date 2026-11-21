@@ -267,7 +267,7 @@ def test_bot_eine_minute_vorher_mit_festen_parametern(monkeypatch):
     assert len(post) == 1 and post[0][1] == "/bots"
     body = post[0][2]
     assert body["meeting_url"] == MEET
-    assert body["bot_name"] == "VibeMind Mitschrift" and body["language"] == "de"
+    assert body["bot_name"] == "VibeMind Mitschrift" and "language" not in body
     assert body["recording_enabled"] is False
     assert body["automatic_leave"]["max_wait_for_admission"] == 1800000
     a = _zeile("u1")

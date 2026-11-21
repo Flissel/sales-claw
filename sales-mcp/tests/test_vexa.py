@@ -61,9 +61,25 @@ def test_bot_body_exakt(stub):
     assert (methode, pfad, key) == ("POST", "/bots", SCHLUESSEL)
     assert json.loads(koerper) == {
         "meeting_url": "https://meet.ffmuc.net/R1",
-        "bot_name": "VibeMind Mitschrift", "language": "de",
+        "bot_name": "VibeMind Mitschrift",
         "recording_enabled": False,
         "automatic_leave": {"max_wait_for_admission": 1800000}}
+
+
+def test_bot_ohne_sprache_erkennt_automatisch(stub, monkeypatch):
+    # Englisch darf nicht ins Deutsche uebersetzt werden: ohne feste Sprache
+    # erkennt Whisper sie je Segment selbst.
+    monkeypatch.delenv("VEXA_SPRACHE", raising=False)
+    stub.antworten[("POST", "/bots")] = (201, {"id": 1})
+    vexa.bot_schicken("https://x/y")
+    assert "language" not in json.loads(stub.anfragen[0][3])
+
+
+def test_feste_sprache_aus_umgebung(stub, monkeypatch):
+    monkeypatch.setenv("VEXA_SPRACHE", " en ")
+    stub.antworten[("POST", "/bots")] = (201, {"id": 1})
+    vexa.bot_schicken("https://x/y")
+    assert json.loads(stub.anfragen[0][3])["language"] == "en"
 
 
 def test_lobby_warten_aus_umgebung(stub, monkeypatch):

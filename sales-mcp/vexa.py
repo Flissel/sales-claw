@@ -24,7 +24,13 @@ log = logging.getLogger("vexa")
 _EPOCHE = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 BOT_NAME = "VibeMind Mitschrift"
-SPRACHE = "de"
+
+
+def _sprache() -> str:
+    """Feste Transkriptionssprache aus VEXA_SPRACHE; leer = Whisper erkennt die
+    Sprache je Segment selbst. Eine feste Sprache uebersetzt fremdsprachige
+    Saetze in diese Sprache (Live-Test 21.11.: Englisch kam deutsch an)."""
+    return os.environ.get("VEXA_SPRACHE", "").strip()
 
 
 class VexaFehler(Exception):
@@ -120,14 +126,16 @@ def _anfrage(methode: str, pfad: str, body: dict | None = None,
 
 
 def bot_schicken(meeting_url: str) -> dict:
-    antwort = _anfrage("POST", "/bots", {
+    koerper = {
         "meeting_url": meeting_url,
         "bot_name": BOT_NAME,
-        "language": SPRACHE,
         "recording_enabled": False,
         "automatic_leave": {
             "max_wait_for_admission": _zahl("VEXA_LOBBY_WARTEN_MS", 1800000)},
-    })
+    }
+    if _sprache():
+        koerper["language"] = _sprache()
+    antwort = _anfrage("POST", "/bots", koerper)
     if not isinstance(antwort, dict) or "id" not in antwort:
         raise VexaFehler("Vexa-Antwort auf POST /bots ohne Meeting-Id")
     return {"meeting_id": antwort["id"],
