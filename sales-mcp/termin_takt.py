@@ -198,8 +198,12 @@ def _bot_starten(uid: str, link: str, jetzt: datetime) -> None:
         return
     # Eine noch offene Pause der alten Sitzung (sonst schliesst sie termin_pause._aufraeumen)
     # endet jetzt - sie wuerde sonst die ganze neue Sitzung wegfiltern.
+    # Rennen: ein Klick zwischen Claim und hier oeffnet eine Zeile mit von > bot_geschickt_am;
+    # die gehoert zur neuen Sitzung und bleibt offen.
     server._q("update termin_pausen set bis = greatest(now(), von) "
-              "where uid = %s and bis is null returning id", (uid,))
+              "where uid = %s and bis is null "
+              "and von < (select bot_geschickt_am from termin_akten where uid = %s) "
+              "returning id", (uid, uid))
     try:
         m = vexa.bot_schicken(link)
     except vexa.VexaFehler:

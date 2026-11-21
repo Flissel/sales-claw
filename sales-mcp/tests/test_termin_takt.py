@@ -752,8 +752,9 @@ def test_bot_start_setzt_alten_aufnahme_wunsch_zurueck(fake, wunsch):
     _akte("u1", beginn=JETZT + timedelta(seconds=30), aufnahme_wunsch=wunsch,
           aufnahme_wunsch_am=alt, aufnahme_pausiert_seit=alt,
           aufnahme_pause_fehler="nicht_bestaetigt", aufnahme_notbremse_am=alt)
+    # von muss vor dem echten bot_geschickt_am (now() der DB) liegen, nicht vor JETZT (2099)
     server._q("insert into termin_pausen (uid, von, angefordert_von) values ('u1', %s, 'felix') "
-              "returning id", (alt,))
+              "returning id", (datetime.now(timezone.utc) - timedelta(days=1),))
     termin_takt._bot_starten("u1", MEET, JETZT)
     z = _zeile("u1")
     assert z["status"] == "wartet_auf_einlass" and fake.anzahl("bot") == 1
@@ -1633,3 +1634,30 @@ def test_ablage_veralteter_bericht_geht_weg(fake, ablage, ki, monkeypatch, statu
     termin_takt.runde(JETZT + timedelta(minutes=2, seconds=30))   # bleibt weg
     assert _mit("u1")["bericht_pfad"] is None
     assert _html(ablage) == sorted([pfade["u2"], pfade["u3"]])
+
+
+def test_bot_start_schliesst_keine_pause_die_zwischen_claim_und_schliessen_kommt(
+        fake, monkeypatch):
+    """Rennen: ein Pause-/Notbremse-Klick zwischen Claim und Schliessen der alten
+    Pausen oeffnet eine Zeile mit von > bot_geschickt_am. Sie gehoert zur neuen
+    Sitzung und bleibt offen - sonst wuerde die Zeit bis zum Stopp mitgeschrieben.
+    (Eine alte offene Zeile derselben Akte kann es hier nicht geben: der
+    Unique-Index laesst nur eine offene Pause zu; deren Schliessen deckt
+    test_bot_start_setzt_alten_aufnahme_wunsch_zurueck ab.)"""
+    _akte("u1", beginn=JETZT + timedelta(seconds=30))
+    echt = server._q
+
+    def q_mit_klick(sql, params=(), *a, **kw):
+        rows = echt(sql, params, *a, **kw)
+        if sql.startswith("update termin_akten set status = 'wartet_auf_einlass'") and rows:
+            # der Klick landet genau jetzt: Pausenzeile ab nach dem Claim
+            echt("insert into termin_pausen (uid, von, angefordert_von) values "
+                 "('u1', (select bot_geschickt_am + interval '1 second' from termin_akten "
+                 "where uid = 'u1'), 'felix') returning id")
+        return rows
+
+    monkeypatch.setattr(server, "_q", q_mit_klick)
+    termin_takt._bot_starten("u1", MEET, JETZT)
+    monkeypatch.setattr(server, "_q", echt)
+    zeilen = echt("select bis is null as offen from termin_pausen where uid = 'u1'")
+    assert [z["offen"] for z in zeilen] == [True]
