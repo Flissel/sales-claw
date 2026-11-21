@@ -77,6 +77,12 @@ IMAP_TIMEOUT_S = 120          # ein haengender Anbieter darf die Runde nicht ewi
 # aelteste offene Mail nicht ewig vorne halten: nach so vielen Versuchen wird
 # sie `fehler` und die Runde geht weiter (Ruling R8).
 VERSUCHE_MAX = 3
+# 21.11.2026: Ein Modell-Eintrag ohne maxTokens liess das Gateway jeden Aufruf ablehnen;
+# als endgueltig gewertet landeten 13 Tage lang alle Mails einzeln auf `fehler` (6487).
+# Scheitern so viele VERSCHIEDENE Mails in Folge am Gateway (kein Erfolg dazwischen),
+# liegt es am Dienst, nicht an der Mail: pausieren, laut melden, je Runde eine Probe.
+GATEWAY_SERIE_MAX = 3
+_gateway_serie: set[str] = set()   # Mail-IDs der laufenden Serie; lebt im Prozess
 KOPF_MAX = 1000               # Absender/Empfaenger/Betreff: Fremddaten, gedeckelt
 ANHANG_NAME_MAX = 200
 ANHAENGE_MAX = 50
@@ -492,19 +498,17 @@ def einordnen_offene(grenze: int) -> int:
             LOG.info("Einordnen pausiert: Gateway voruebergehend nicht bereit")
             break
         except GatewayFehler:
-            # Endgueltig fuer DIESE Mail. Fester Text: die Gateway-Meldung
-            # koennte Teile der Anfrage (also der Mail) spiegeln.
-            LOG.warning("Mail %s: Einordnung endgueltig fehlgeschlagen", mail["id"])
-            server._q(
-                "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
-                "fehler = 'Einordnung durch das Modell endgueltig fehlgeschlagen', "
-                # Der Aufruf hat das Modell erreicht: zaehlt zur Tagesgrenze.
-                "einordnung_quelle = 'modell', modellaufrufe = 1, einordnung_version = 2, "
-                "aufmerksamkeit = true, eingeordnet_am = now() where id = %s and status = 'neu'",
-                (post_struktur.UNKLAR, mail["id"]))
-            erledigt += 1
+            if _gateway_fehler(mail["id"]):
+                erledigt += 1
+            if len(_gateway_serie) >= GATEWAY_SERIE_MAX:
+                # Nur Zahl und fester Text: die Gateway-Meldung koennte Mailinhalt spiegeln.
+                LOG.error("Einordnen pausiert: das Gateway lehnt %d verschiedene Mails in "
+                          "Folge ab - Gateway-Log und Modell-Eintrag pruefen; je Runde "
+                          "eine Probe, keine Mail wird dabei fehler", len(_gateway_serie))
+                break
             continue
         except post_einordnung.PrueferFehlgeschlagen as e:
+            _gateway_serie.clear()      # der Sortierer hat geantwortet: das Gateway geht
             # Sortierer-Aufrufe (e.vorschlag.aufrufe) plus der gescheiterte Pruefer
             # haben gekostet. fehl_aufrufe/fehl_am machen sie am Tag ihres Anfalls fuer
             # die Tagesgrenze sichtbar, auch solange die Mail `neu` ist.
@@ -536,9 +540,41 @@ def einordnen_offene(grenze: int) -> int:
             LOG.warning("Einordnen abgebrochen (%s) - naechste Runde erneut",
                         type(e).__name__)
             break
+        if ergebnis.aufrufe:
+            _gateway_serie.clear()      # ein Modellaufruf ist durchgegangen
         _ergebnis_speichern(mail["id"], ergebnis)
         erledigt += 1
     return erledigt
+
+
+def _gateway_fehler(mail_id: str) -> bool:
+    """Ein GatewayFehler fuer `mail_id` buchen. True, wenn die Mail damit `neu`
+    verlassen hat (VERSUCHE_MAX erreicht -> fehler/privat/Zum Nachsehen).
+
+    Der Aufruf koennte das Modell erreicht haben: er zaehlt immer zur Tagesgrenze
+    (fehl_aufrufe am Tag des Anfalls). Laeuft schon eine Pause (Serie voll), ist
+    dieser Aufruf nur die Probe: kein Versuch fuer die Mail - der Dienst ist schuld."""
+    pausiert = len(_gateway_serie) >= GATEWAY_SERIE_MAX
+    _gateway_serie.add(mail_id)
+    zeilen = server._q(
+        "update post_mails set versuche = versuche + %s, " + _FEHL_KOSTEN_SQL + " "
+        "where id = %s and status = 'neu' returning versuche",
+        (0 if pausiert else 1, 1, mail_id))
+    if pausiert or not zeilen or zeilen[0]["versuche"] < VERSUCHE_MAX:
+        if not pausiert:
+            LOG.warning("Mail %s: Gateway hat abgelehnt - bleibt neu", mail_id)
+        return False
+    # Fester Text: die Gateway-Meldung koennte Teile der Anfrage (also der Mail) spiegeln.
+    LOG.warning("Mail %s: Einordnung nach %d Versuchen endgueltig fehlgeschlagen",
+                mail_id, VERSUCHE_MAX)
+    server._q(
+        "update post_mails set status = 'fehler', bereich = 'privat', fach = %s, "
+        "fehler = 'Einordnung durch das Modell endgueltig fehlgeschlagen', "
+        # Kosten stehen schon auf fehl_aufrufe (Tag des Anfalls): modellaufrufe bleibt 0.
+        "einordnung_quelle = 'modell', einordnung_version = 2, "
+        "aufmerksamkeit = true, eingeordnet_am = now() where id = %s and status = 'neu'",
+        (post_struktur.UNKLAR, mail_id))
+    return True
 
 
 def kunde_aktiv() -> bool:

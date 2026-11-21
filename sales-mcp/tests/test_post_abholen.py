@@ -64,6 +64,8 @@ def kein_modell(monkeypatch):
     monkeypatch.setattr(post_einordnung.einordnen, "__defaults__", (verboten,))
     monkeypatch.setattr(gateway, "funktion_aufrufen", verboten)
     monkeypatch.setattr(post_abholen, "_STOPP", post_abholen.threading.Event())
+    # Die Gateway-Fehlerserie lebt im Prozess; jeder Test beginnt ohne Serie.
+    monkeypatch.setattr(post_abholen, "_gateway_serie", set(), raising=False)
 
 
 # --- IMAP-Attrappe ---------------------------------------------------------
@@ -428,7 +430,7 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
         # Transient zaehlt keinen Versuch: das Gateway, nicht die Mail ist schuld.
         assert {(r["status"], r["versuche"]) for r in _mails()} == {("neu", 0)}
 
-    # Endgueltiger Fehler: diese Mail -> fehler/Zum Nachsehen, die naechste laeuft weiter.
+    # Gateway-Fehler: diese Mail zaehlt einen Versuch und bleibt neu, die naechste laeuft weiter.
     reihe = iter([gateway.GatewayFehler("Gateway HTTP 400: Geheimer Betreff Eins"),
                   _einordnung()])
 
@@ -438,10 +440,9 @@ def test_transient_laesst_mail_neu(monkeypatch, caplog):
             raise x
         return x
     monkeypatch.setattr(post_einordnung, "einordnen", gemischt)
-    assert post_abholen.einordnen_offene(10) == 2
+    assert post_abholen.einordnen_offene(10) == 1
     r1, r2 = _mails()
-    assert (r1["status"], r1["fach"]) == ("fehler", post_struktur.UNKLAR)
-    assert "Geheim" not in (r1["fehler"] or "") and r1["fehler"]
+    assert (r1["status"], r1["versuche"], r1["fehler"]) == ("neu", 1, None)
     assert r2["status"] == "eingeordnet"
     assert "Geheim" not in caplog.text and "anna@example.org" not in caplog.text
 
@@ -505,9 +506,87 @@ def test_gatewayfehler_zaehlt_zur_tagesgrenze(monkeypatch):
     def einordnen(mail, konto):
         raise gateway.GatewayFehler("Gateway HTTP 400")
     monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
-    assert post_abholen.einordnen_offene(5) == 1
-    assert _mails()[0]["status"] == "fehler"
+    assert post_abholen.einordnen_offene(5) == 0
+    r = _mails()[0]
+    assert (r["status"], r["versuche"], r["fehl_aufrufe"], r["modellaufrufe"]) == ("neu", 1, 1, 0)
     assert post_abholen.modellaufrufe_heute() == 1
+
+
+def _gateway_mails(n):
+    """n Mails, neueste zuerst nach imap_uid (gleiches Datum)."""
+    _konto()
+    post_abholen.konto_abholen(_zeile("gmx-test"), Attrappe({
+        u: _mail(f"<{u}@x>", betreff=f"Geheimer Betreff {u}") for u in range(1, n + 1)}))
+
+
+def test_gatewayfehler_serie_pausiert_ohne_mails_zu_verlieren(monkeypatch, caplog):
+    """21.11.2026: Ein Modell-Eintrag ohne maxTokens liess das Gateway JEDEN Aufruf
+    ablehnen; als endgueltig gewertet landeten 13 Tage lang alle Mails auf `fehler`.
+    Drei VERSCHIEDENE Mails mit Gateway-Fehler in Folge (ohne Erfolg dazwischen) =
+    Dienstfehler: pausieren,
+    laut melden, nichts mehr auf `fehler` setzen. Danach eine Probe je Runde."""
+    _gateway_mails(5)
+    aufrufe = []
+
+    def einordnen(mail, konto):
+        aufrufe.append(mail["id"])
+        raise gateway.GatewayFehler("Gateway HTTP 400: Geheimer Betreff")
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+
+    assert post_abholen.einordnen_offene(10) == 0
+    assert len(aufrufe) == post_abholen.GATEWAY_SERIE_MAX
+    assert sorted(r["versuche"] for r in _mails()) == [0, 0, 1, 1, 1]
+    assert any(r.levelname == "ERROR" and "pausiert" in r.getMessage() for r in caplog.records)
+
+    # Viele weitere Runden: je eine Probe, kein Versuch mehr, keine Mail wird fehler.
+    for _ in range(post_abholen.VERSUCHE_MAX + 2):
+        aufrufe.clear()
+        assert post_abholen.einordnen_offene(10) == 0
+        assert len(aufrufe) == 1
+    assert {r["status"] for r in _mails()} == {"neu"}
+    assert max(r["versuche"] for r in _mails()) == 1
+    # Jeder Aufruf zaehlt zur Tagesgrenze (er koennte das Modell erreicht haben).
+    assert post_abholen.modellaufrufe_heute() == \
+        post_abholen.GATEWAY_SERIE_MAX + post_abholen.VERSUCHE_MAX + 2
+    assert "Geheim" not in caplog.text
+
+
+def test_gatewayfehler_nach_pause_laeuft_es_mit_der_probe_weiter(monkeypatch):
+    _gateway_mails(5)
+    kaputt = {"an": True}
+
+    def einordnen(mail, konto):
+        if kaputt["an"]:
+            raise gateway.GatewayFehler("Gateway HTTP 400")
+        return _einordnung()
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    assert post_abholen.einordnen_offene(10) == 0          # Serie -> Pause
+    kaputt["an"] = False                                    # Eintrag repariert
+    assert post_abholen.einordnen_offene(10) == 5          # Probe gelingt, Rest folgt
+    assert {r["status"] for r in _mails()} == {"eingeordnet"}
+
+
+def test_gatewayfehler_nur_bei_einer_mail_wird_nach_versuchen_fehler(monkeypatch, caplog):
+    """Scheitert nur EINE Mail (andere gelingen dazwischen), ist es ihr Problem:
+    nach VERSUCHE_MAX Runden fehler/privat/Zum Nachsehen, ohne Pause."""
+    _gateway_mails(3)
+    schlecht = str(_mails()[-1]["id"])          # hoechste UID = zuerst dran
+
+    def einordnen(mail, konto):
+        if mail["id"] == schlecht:
+            raise gateway.GatewayFehler("Gateway HTTP 400")
+        return _einordnung()
+    monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
+    assert post_abholen.einordnen_offene(10) == 2
+    for _ in range(post_abholen.VERSUCHE_MAX - 2):
+        assert post_abholen.einordnen_offene(10) == 0
+    assert post_abholen.einordnen_offene(10) == 1
+    r = _mails("id = %s", (schlecht,))[0]
+    assert (r["status"], r["bereich"], r["fach"], r["versuche"], r["aufmerksamkeit"]) == \
+        ("fehler", "privat", post_struktur.UNKLAR, post_abholen.VERSUCHE_MAX, True)
+    assert r["fehler"] == "Einordnung durch das Modell endgueltig fehlgeschlagen"
+    assert (r["fehl_aufrufe"], r["modellaufrufe"]) == (post_abholen.VERSUCHE_MAX, 0)
+    assert not any(r.levelname == "ERROR" for r in caplog.records)
 
 
 # --- Runde: Vorrang und Tagesgrenze ------------------------------------------
@@ -1019,11 +1098,11 @@ def test_pruefer_fehler_dann_gatewayfehler_summiert_die_aufrufe(monkeypatch):
         raise next(reihe)
     monkeypatch.setattr(post_einordnung, "einordnen", einordnen)
     post_abholen.einordnen_offene(10)       # Pruefer aus: 2 Aufrufe, bleibt neu
-    post_abholen.einordnen_offene(10)       # Sortierer endgueltig: +1
+    post_abholen.einordnen_offene(10)       # Gateway-Fehler: +1, zweiter Versuch, bleibt neu
     r = _mails()[0]
-    assert r["status"] == "fehler" and (r["fehl_aufrufe"], r["modellaufrufe"]) == (2, 1)
+    assert (r["status"], r["versuche"]) == ("neu", 2)
+    assert (r["fehl_aufrufe"], r["modellaufrufe"]) == (3, 0)
     assert post_abholen.modellaufrufe_heute() == 3
-    assert r["aufmerksamkeit"] is True          # Zum Nachsehen bleibt im Posteingang
 
 
 def test_unklar_erzwingt_aufmerksamkeit_beim_speichern(monkeypatch):
